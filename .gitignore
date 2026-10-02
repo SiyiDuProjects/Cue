@@ -63,3 +63,8 @@ apps/server/web/*
 *.tsbuildinfo
 /.codex/
 /apps/server/context/
+
+# Reproducible test and deployment output
+/artifacts/
+/artifacts-*.txt
+/apps/desktop/artifacts/
