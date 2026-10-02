@@ -9,6 +9,7 @@ on:
       - "apps/desktop/package.json"
       - "apps/desktop/package-lock.json"
       - "apps/desktop/src/**"
+      - "apps/desktop/scripts/**"
       - "apps/desktop/public/**"
       - "apps/desktop/tsconfig.json"
       - "apps/desktop/vite.config.ts"
@@ -48,6 +49,8 @@ jobs:
 
       - name: Build shared web client
         working-directory: apps/desktop
+        env:
+          HEROUI_AUTH_TOKEN: ${{ secrets.HEROUI_AUTH_TOKEN }}
         run: |
           npm ci
           npm run test:ui
@@ -79,6 +82,8 @@ jobs:
 
       - name: Stage shared web client
         working-directory: apps/desktop
+        env:
+          HEROUI_AUTH_TOKEN: ${{ secrets.HEROUI_AUTH_TOKEN }}
         run: |
           npm ci
           npm run build
@@ -123,6 +128,7 @@ jobs:
             --exclude '.venv' \
             --exclude '__pycache__' \
             --exclude '.pytest_cache' \
+            --exclude '/data' \
             apps/server/ "deploy-server:$STAGING_PATH/"
 
       - name: Drain, release, verify protocol and models, and retain rollback

@@ -27,7 +27,7 @@ import type { CandidateContext, RealtimeAnswer, RealtimeMessage, Speaker, Transc
 const API_BASE_URL =
   resolveApiBaseUrl(window.glassDesktop?.apiBaseUrl, window.glassDesktop?.localApiEnabled) ||
   resolveApiBaseUrl(import.meta.env.VITE_API_BASE_URL, false) ||
-  "https://interview.reachard.co";
+  "https://interview.siyidu.com";
 
 const MIN_AUDIO_CHUNK_BYTES = 2048;
 const MAX_HISTORY_TURNS = 80;

@@ -10,14 +10,11 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
+from app.config import get_settings
 from app.services.context_store import ContextStore
-from app.services.realtime_context import build_answer_style_instructions
 from app.services.openai_realtime import (
     InterviewRuntime,
-    QUICK_ANSWER_ACTIONS,
     OpenAIRealtimeError,
-    CandidateTranscriptRelay,
-    _analyze_problem,
     _begin_response,
     _forward_capture_controls,
     _forward_ui_controls,
@@ -60,12 +57,6 @@ class FakeUpstream:
         self.queue.put_nowait(None)
 
 
-def attach_live(runtime, upstream):
-    from app.services.live_session import LiveSession
-    runtime.main_upstream = upstream
-    runtime.live = LiveSession(runtime)
-    runtime.live.socket = upstream
-    return runtime.live
 
 
 class FakeEventStream:
@@ -231,14 +222,14 @@ async def _populate_answer_store(runtime, stream):
 
 class RealtimeProtocolTests(unittest.TestCase):
 
-    def test_candidate_transcription_uses_native_vad_and_streaming_model(self) -> None:
+    def test_candidate_streaming_transcription_omits_unsupported_server_vad(self) -> None:
         upstream = FakeUpstream()
         with patch.dict(os.environ, {"OPENAI_REALTIME_TRANSCRIPTION_LANGUAGES": "en,zh", "OPENAI_REALTIME_TRANSCRIPTION_MODEL": "gpt-live-transcribe"}):
             asyncio.run(_send_transcription_session_update(upstream))  # type: ignore[arg-type]
         session = upstream.messages[0]["session"]
         self.assertEqual(session["type"], "transcription")
         self.assertEqual(session["audio"]["input"]["format"], {"type": "audio/pcm", "rate": 24000})
-        self.assertEqual(session["audio"]["input"]["turn_detection"], {"type": "server_vad"})
+        self.assertIsNone(session["audio"]["input"]["turn_detection"])
         self.assertEqual(session["audio"]["input"]["transcription"],
                          {"model": "gpt-live-transcribe", "languages": ["en", "zh"], "delay": "low"})
         self.assertNotIn("language", session["audio"]["input"]["transcription"])
@@ -259,121 +250,12 @@ class RealtimeProtocolTests(unittest.TestCase):
 
         main_messages, candidate_messages, kinds = asyncio.run(run())
         self.assertEqual(kinds, ["candidate", "main"])
-        self.assertEqual([item["type"] for item in main_messages], ["session.start", "response.item.create", "response.item.create"])
-        self.assertEqual(json.loads(main_messages[1]["item"]["content"][0]["text"].split("\n", 1)[1]), {"documents": []})
+        self.assertEqual([item["type"] for item in main_messages], ["session.update"])
         self.assertEqual([item["type"] for item in candidate_messages], ["session.update"])
 
-    def test_runtime_state_is_isolated(self) -> None:
-        async def run() -> tuple[list[dict], list[dict]]:
-            first = make_runtime("first")
-            second = make_runtime("second")
-            first.main_upstream = FakeUpstream()  # type: ignore[assignment]
-            second.main_upstream = FakeUpstream()  # type: ignore[assignment]
-            await first.append_candidate_context("first-only")
-            await second.append_candidate_context("second-only")
-            return first.main_upstream.messages, second.main_upstream.messages  # type: ignore[union-attr]
 
-        first_messages, second_messages = asyncio.run(run())
-        self.assertIn("first-only", first_messages[0]["item"]["content"][0]["text"])
-        self.assertNotIn("second-only", first_messages[0]["item"]["content"][0]["text"])
-        self.assertIn("second-only", second_messages[0]["item"]["content"][0]["text"])
 
-    def test_every_new_main_upstream_receives_all_background_without_answering(self) -> None:
-        async def run(root: Path, documents: dict[str, str]) -> None:
-            runtime = make_runtime(context_store=ContextStore(root))
-            first = FakeUpstream()
-            second = FakeUpstream()
-            candidate = FakeUpstream()
-            # A running interview keeps the same background snapshot on reconnect.
-            (root / "resume.md").write_text("later file changes", encoding="utf-8")
-            connect = AsyncMock(side_effect=[first, second, candidate])
-            with patch("app.services.openai_realtime._connect_openai_realtime", new=connect):
-                self.assertIs(await runtime.ensure_main(), first)
-                self.assertIs(await runtime.ensure_main(), first)
-                first_reader = runtime._main_reader_task
-                await first.close()
-                await first_reader
-                runtime._main_retry_after = 0  # Advance past transport retry backoff.
-                self.assertIs(await runtime.ensure_main(), second)
-                await runtime.ensure_candidate()
-            for main in (first, second):
-                self.assertEqual([event["type"] for event in main.messages], ["session.start", "response.item.create", "response.item.create"])
-                background = json.loads(main.messages[1]["item"]["content"][0]["text"].split("\n", 1)[1])
-                self.assertEqual({doc["source"]: doc["text"] for doc in background["documents"]}, documents)
-                self.assertNotIn("TAIL_RESUME_FACT", main.messages[0]["session"]["instructions"])
-            self.assertEqual([event["type"] for event in candidate.messages], ["session.update"])
-            await runtime.close()
 
-        with tempfile.TemporaryDirectory() as temp_dir:
-            root = Path(temp_dir)
-            documents = {
-                "resume.md": "## Education\n\nSTART_RESUME_FACT\n" + "Full background detail.\n" * 450 + "TAIL_RESUME_FACT",
-                **{f"project-{index}.txt": f"Project {index} has a distinct complete fact." for index in range(7)},
-            }
-            for source, text in documents.items():
-                (root / source).write_text(text, encoding="utf-8", newline="")
-            asyncio.run(run(root, documents))
-
-    def test_initialization_failure_keeps_all_pending_context_for_retry(self) -> None:
-        class FailingInitializationUpstream(FakeUpstream):
-            async def send(self, payload: str) -> None:
-                if len(self.messages) == 3:
-                    raise RuntimeError("synthetic initialization failure")
-                await super().send(payload)
-
-        async def run() -> None:
-            runtime = make_runtime()
-            pending = [f"candidate-context-{index}" for index in range(64)]
-            for text in pending:
-                await runtime.append_candidate_context(text)
-            failing = FailingInitializationUpstream()
-            retry = FakeUpstream()
-            with patch("app.services.openai_realtime._connect_openai_realtime", new=AsyncMock(side_effect=[failing, retry])):
-                with self.assertRaisesRegex(RuntimeError, "synthetic initialization failure"):
-                    await runtime.ensure_main()
-                self.assertTrue(failing.closed)
-                self.assertIsNone(runtime.main_upstream)
-                self.assertIsNone(runtime._main_reader_task)
-                self.assertEqual(list(runtime.pending_candidate_context), pending)
-                # This test exercises preserved input after retry, not the
-                # independently tested reconnect backoff clock.
-                runtime._main_retry_after = 0
-                await runtime.ensure_main()
-            self.assertEqual([message["item"]["content"][0]["text"] for message in retry.messages[3:] if message["type"] == "response.item.create"], pending)
-            self.assertEqual(list(runtime.pending_candidate_context), [])
-            await runtime.close()
-
-        asyncio.run(run())
-
-    def test_cancelling_background_initialization_closes_unpublished_upstream(self) -> None:
-        class BlockedBackgroundUpstream(FakeUpstream):
-            def __init__(self) -> None:
-                super().__init__()
-                self.background_started = asyncio.Event()
-
-            async def send(self, payload: str) -> None:
-                if self.messages:
-                    self.background_started.set()
-                    await asyncio.Event().wait()
-                await super().send(payload)
-
-        async def run() -> None:
-            runtime = make_runtime()
-            await runtime.append_candidate_context("Keep this complete candidate statement.")
-            upstream = BlockedBackgroundUpstream()
-            with patch("app.services.openai_realtime._connect_openai_realtime", new=AsyncMock(return_value=upstream)):
-                task = asyncio.create_task(runtime.ensure_main())
-                await upstream.background_started.wait()
-                task.cancel()
-                with self.assertRaises(asyncio.CancelledError):
-                    await task
-            self.assertTrue(upstream.closed)
-            self.assertIsNone(runtime.main_upstream)
-            self.assertIsNone(runtime._main_reader_task)
-            self.assertEqual(list(runtime.pending_candidate_context), ["Keep this complete candidate statement."])
-            await runtime.close()
-
-        asyncio.run(run())
 
     def test_idle_capture_audio_does_not_open_upstream(self) -> None:
         async def run() -> tuple[AsyncMock, AsyncMock]:
@@ -423,24 +305,22 @@ class RealtimeProtocolTests(unittest.TestCase):
                 patch.object(runtime, "ensure_main", new=ensure_main),
                 patch.object(runtime, "ensure_candidate", new=ensure_candidate),
             ):
-                await runtime.start_interview(ui)  # type: ignore[arg-type]
+                await runtime.start_transcription(ui)  # type: ignore[arg-type]
                 attach_capture(runtime, interviewer, "interviewer")
                 attach_capture(runtime, candidate, "candidate")
                 await runtime.mark_capture_ready("interviewer", interviewer)  # type: ignore[arg-type]
-                await runtime.start_interview(ui)  # type: ignore[arg-type]
+                await runtime.start_transcription(ui)  # type: ignore[arg-type]
                 await runtime.mark_capture_ready("candidate", candidate)  # type: ignore[arg-type]
-                await runtime.start_interview(ui)  # type: ignore[arg-type]
+                await runtime.start_transcription(ui)  # type: ignore[arg-type]
             return runtime, ui, interviewer, candidate, ensure_main, ensure_candidate
 
         runtime, ui, interviewer, candidate, ensure_main, ensure_candidate = asyncio.run(run())
         self.assertTrue(runtime.active)
         self.assertEqual(interviewer.messages[-1], {"type": "capture_start"})
         self.assertEqual(candidate.messages[-1], {"type": "capture_start"})
-        self.assertEqual(
-            len([message for message in ui.messages if message.get("detail") == "Capture device is not ready."]),
-            2,
-        )
-        self.assertTrue(any(message == {"type": "interview_state", "active": True} for message in ui.messages))
+        self.assertTrue(any(message.get("type") == "error" for message in ui.messages))
+        self.assertIn({"type": "prepare_capture", "mode": "assist"}, interviewer.messages)
+        self.assertTrue(any(all(message.get(k) == v for k, v in {"type": "interview_state", "active": True, "mode": "assist"}.items()) for message in ui.messages))
         ensure_main.assert_not_awaited()
         ensure_candidate.assert_not_awaited()
 
@@ -495,31 +375,41 @@ class RealtimeProtocolTests(unittest.TestCase):
         self.assertNotIn("failed", runtime._ui_clients)
         self.assertIsNone(runtime.main_upstream)
 
+    def test_slow_ui_sender_cannot_block_healthy_client_or_event_lock(self) -> None:
+        async def run() -> None:
+            class SlowSocket(FakeSocket):
+                def __init__(self):
+                    super().__init__()
+                    self.started = asyncio.Event()
+                    self.release = asyncio.Event()
 
-    def test_candidate_deltas_relay_immediately_and_native_completion_deduplicates(self) -> None:
-        async def run() -> tuple[list[dict], list[str]]:
-            runtime = make_runtime()
-            socket = FakeSocket()
-            attach_ui(runtime, socket)
-            relay = CandidateTranscriptRelay(runtime)
-            await relay.add("What", "a")
-            await relay.add(" is", "a")
-            await relay.complete("What is", "a")
-            await relay.complete("What is", "a")
-            await relay.close()
-            return socket.messages, list(runtime.pending_candidate_context)
+                async def send_json(self, payload: dict) -> None:
+                    self.started.set()
+                    await self.release.wait()
+                    await super().send_json(payload)
 
-        messages, pending = asyncio.run(run())
-        deltas = [message["delta"] for message in messages if message.get("delta")]
-        self.assertEqual(deltas, ["What", " is"])
-        finals = [message for message in messages if message["type"] == "transcript_final"]
-        self.assertEqual(len(finals), 1)
-        self.assertEqual({key: finals[0][key] for key in ("type", "speaker", "text")}, {"type": "transcript_final", "speaker": "candidate", "text": "What is"})
-        self.assertTrue(finals[0]["turn_id"])
-        self.assertTrue(finals[0]["created_at"])
-        self.assertEqual(len(pending), 3)
-        self.assertEqual([json.loads(text).get("delta") for text in pending[:2]], ["What", " is"])
-        self.assertEqual(json.loads(pending[-1])["text"], "What is")
+            runtime = make_runtime("slow-ui")
+            slow, healthy = SlowSocket(), FakeSocket()
+            runtime._ui_clients["slow"] = slow  # type: ignore[assignment]
+            runtime._ready_ui_clients.add("slow")
+            queue: asyncio.Queue[dict] = asyncio.Queue(maxsize=2)
+            runtime._ui_queues["slow"] = queue
+            runtime._ui_senders["slow"] = asyncio.create_task(runtime._send_ui_events("slow", slow, queue))
+            attach_ui(runtime, healthy, "healthy")
+            await asyncio.wait_for(runtime.broadcast_to_clients({"type": "first"}), .2)
+            await slow.started.wait()
+            await asyncio.wait_for(runtime.broadcast_to_clients({"type": "second"}), .2)
+            await asyncio.wait_for(runtime.broadcast_to_clients({"type": "third"}), .2)
+            await asyncio.wait_for(runtime.broadcast_to_clients({"type": "fourth"}), .2)
+            self.assertEqual([event["type"] for event in healthy.messages], ["first", "second", "third", "fourth"])
+            self.assertFalse(runtime._event_lock.locked())
+            self.assertNotIn("slow", runtime._ui_clients)
+            slow.release.set()
+            await runtime.close()
+
+        asyncio.run(run())
+
+
 
     def test_invalid_first_frame_never_registers_client_or_connects_upstream(self) -> None:
         async def run() -> tuple[FakeClientWebSocket, AsyncMock, InterviewRuntime]:
@@ -614,8 +504,8 @@ class RealtimeProtocolTests(unittest.TestCase):
             },
         ]
         expected = [{**snapshot, "question_id": "", "operation_id": ""} for snapshot in expected]
-        self.assertEqual(first_snapshots, expected)
-        self.assertEqual(second_snapshots, expected)
+        self.assertEqual(first_snapshots, [{**item, "activities": []} for item in expected])
+        self.assertEqual(second_snapshots, [{**item, "activities": []} for item in expected])
         self.assertEqual(
             runtime.response_order,
             ["resp_partial", "resp_done", "resp_interrupted"],
@@ -661,21 +551,23 @@ class RealtimeProtocolTests(unittest.TestCase):
 
         messages = asyncio.run(run())
         self.assertEqual(
-            [message["type"] for message in messages[:6]],
+            [message["type"] for message in messages[:8]],
             [
                 "session_ready",
+                "conversation_info",
                 "device_status",
                 "interview_state",
                 "context_status",
                 "transcript_snapshot",
+                "chat_snapshot",
                 "answer_snapshot",
             ],
         )
-        self.assertEqual(len(messages[4]["turns"]), 1)
-        turn = messages[4]["turns"][0]
+        self.assertEqual(len(messages[5]["turns"]), 1)
+        turn = messages[5]["turns"][0]
         self.assertEqual((turn["speaker"], turn["text"]), ("interviewer", "Existing question"))
         self.assertTrue(all(turn[key] for key in ("turn_id", "question_id", "created_at")))
-        self.assertEqual([message["type"] for message in messages[6:]], ["answer_snapshot_done", "question_state", "code_state", "screen_collection", "operation_snapshot", "model_status", "session_metrics", "answer_started", "answer_delta"])
+        self.assertEqual([message["type"] for message in messages[8:]], ["answer_snapshot_done", "question_state", "code_state", "screen_collection", "operation_snapshot", "model_status", "session_metrics", "answer_started", "answer_delta"])
         self.assertEqual(messages[-2]["response_id"], "live")
 
     def test_terminal_state_survives_client_send_failure(self) -> None:
@@ -706,59 +598,8 @@ class RealtimeProtocolTests(unittest.TestCase):
         self.assertIn("resp_failed_send", runtime.terminal_responses)
 
 
-    def test_quick_answer_rejects_unknown_empty_and_idle_controls_without_upstream(self) -> None:
-        async def run(active: bool, action: object, with_question: bool) -> None:
-            runtime = make_runtime()
-            runtime.active = active
-            if with_question:
-                await runtime.remember_dialogue("interviewer", "A question")
-            payload = {"type": "quick_answer", "action": action}
-            if action == "shorten":
-                payload["response_id"] = "unavailable-answer"
-            websocket = FakeClientWebSocket({}, controls=[
-                {"type": "websocket.receive", "text": json.dumps(payload)},
-                {"type": "websocket.disconnect"},
-            ])
-            attach_ui(runtime, websocket)
-            ensure_main = AsyncMock()
-            with patch.object(runtime, "ensure_main", new=ensure_main):
-                await _forward_ui_controls(runtime, websocket)
-                await finish_operations(runtime)
-            ensure_main.assert_not_awaited()
-            self.assertEqual([event["status"] for event in websocket.messages], ["accepted", "failed"])
-            self.assertTrue(websocket.messages[-1]["detail"])
-
-        for case in [(False, "answer", True), (True, "unknown", True), (True, [], True),
-                     (True, "answer", False), (True, "shorten", True)]:
-            with self.subTest(case=case):
-                asyncio.run(run(*case))
 
 
-    def test_manual_correction_is_explicit_and_keeps_original_dialogue(self) -> None:
-        async def run() -> None:
-            runtime = make_runtime()
-            runtime.active = True
-            await runtime.remember_dialogue("interviewer", "Wrong question")
-            original_turn = runtime.recent_dialogue[0]
-            websocket = FakeClientWebSocket({}, controls=[
-                {"type": "websocket.receive", "text": json.dumps({"type": "manual_text", "kind": "correction", "text": "Correct question", "question_id": original_turn["question_id"], "turn_id": original_turn["turn_id"]})},
-                {"type": "websocket.disconnect"},
-            ])
-            attach_ui(runtime, websocket)
-            upstream = FakeUpstream()
-            attach_live(runtime, upstream)
-            with patch.object(runtime, "ensure_main", new=AsyncMock(return_value=upstream)):
-                await _forward_ui_controls(runtime, websocket)
-                await finish_operations(runtime)
-            self.assertEqual([turn["text"] for turn in runtime.recent_dialogue], ["Wrong question", "Correct question"])
-            self.assertEqual(runtime.recent_dialogue[1]["corrects_turn_id"], original_turn["turn_id"])
-            text = upstream.messages[0]["item"]["content"][0]["text"]
-            self.assertIn("replaces the misheard wording", text)
-            self.assertTrue(text.endswith("Correct question"))
-            self.assertEqual(upstream.messages[-1]["type"], "response.create")
-            self.assertEqual(len([event for event in websocket.messages if event["type"] == "transcript_final"]), 1)
-
-        asyncio.run(run())
 
 
     def test_idle_ui_rejects_audio_manual_text_and_screen_without_upstream(self) -> None:
@@ -862,59 +703,7 @@ class RealtimeToolTests(unittest.TestCase):
         asyncio.run(run())
 
 
-    def test_ui_screen_request_routes_only_to_interviewer_capture_and_creates_answer(self) -> None:
-        async def run() -> tuple[list[dict], list[dict]]:
-            runtime = make_runtime("ui-screen")
-            runtime.active = True
-            capture = FakeSocket()
-            ui = FakeSocket()
-            attach_capture(runtime, capture)
-            attach_ui(runtime, ui)
-            upstream = FakeUpstream()
-            attach_live(runtime, upstream)
-            await runtime.start_operation({"type": "request_screen_capture", "operation_id": "screen-operation"}, ui)
-            await wait_until(lambda: bool(capture.messages))
-            request = capture.messages[0]
-            self.assertEqual(request["type"], "screen_capture_request")
-            await runtime.accept_screen_snapshot(
-                {"request_id": request["request_id"], "image_data": PNG_DATA_URL},
-            )
-            await finish_operations(runtime)
-            return capture.messages, upstream.messages
 
-        capture_messages, upstream_messages = asyncio.run(run())
-        self.assertEqual(len(capture_messages), 1)
-        self.assertEqual(upstream_messages[0]["item"]["content"][1]["type"], "input_image")
-        self.assertEqual(upstream_messages[-1]["type"], "response.create")
-        self.assertEqual(set(upstream_messages[-1]), {"type", "event_id"})
-
-    def test_analyze_problem_is_stateless_and_auto_includes_runtime_context(self) -> None:
-        async def run(root: Path, client: FakeHTTPClient) -> str:
-            runtime = make_runtime(context_store=ContextStore(root))
-            await runtime.remember_dialogue("interviewer", "Design a job queue")
-            runtime.history.add_screen("observed-screen", PNG_DATA_URL, "queue diagram", question_id=runtime.current_question_id)
-            with patch("app.services.openai_realtime.httpx.AsyncClient", return_value=client):
-                return await _analyze_problem(runtime, "How should backpressure work?")
-
-        with tempfile.TemporaryDirectory() as temp_dir:
-            root = Path(temp_dir)
-            (root / "background.txt").write_text("The system uses a bounded job queue with workers.", encoding="utf-8")
-            client = FakeHTTPClient()
-            with patch.dict(os.environ, {"OPENAI_API_KEY": "test-key"}):
-                answer = asyncio.run(run(root, client))
-
-        self.assertIn("bounded queue", answer)
-        request = client.requests[0]["json"]
-        self.assertEqual(request["model"], "gpt-6-astra")
-        self.assertEqual(request["reasoning"], {"effort": "high"})
-        self.assertEqual(request["max_output_tokens"], 8192)
-        self.assertIs(request["store"], False)
-        self.assertEqual(request["truncation"], "disabled")
-        self.assertNotIn(build_answer_style_instructions(), request["instructions"])
-        content = request["input"][0]["content"]
-        self.assertTrue(any(part["type"] == "input_image" and part["image_url"] == PNG_DATA_URL for part in content))
-        self.assertIn("Design a job queue", content[0]["text"])
-        self.assertIn("bounded job queue", content[0]["text"])
 
     def test_screenshot_rejects_mime_signature_mismatch_and_size(self) -> None:
         invalid = "data:image/png;base64," + base64.b64encode(b"not-png").decode("ascii")
@@ -923,34 +712,29 @@ class RealtimeToolTests(unittest.TestCase):
         with self.assertRaises(OpenAIRealtimeError):
             _validate_image_data_url(PNG_DATA_URL, max_bytes=4)
 
-    def test_analysis_preserves_all_documents_and_recorded_dialogue(self) -> None:
-        async def run(root: Path, client: FakeHTTPClient) -> str:
+    def test_chat_input_preserves_dialogue_without_injecting_server_documents(self) -> None:
+        from tests.test_realtime_recovery import Upstream
+        async def run(root: Path) -> str:
             runtime = make_runtime(context_store=ContextStore(root))
+            runtime.active = True
             await runtime.emit_transcript_final("interviewer", "EARLY_FULL_QUESTION " + "x" * 3500 + " QUESTION_END")
             for index in range(45):
                 await runtime.remember_dialogue("interviewer", f"Recorded turn {index}: " + "context " * 40)
             await runtime.remember_dialogue("candidate", "LATEST_CORRECTION_START " + "y" * 3500 + " LATEST_CORRECTION_END")
             runtime.history.add_screen("full-screen", PNG_DATA_URL, "SCREEN_START " + "s" * 1500 + " SCREEN_END", question_id=runtime.current_question_id)
-            with patch("app.services.openai_realtime.httpx.AsyncClient", return_value=client):
-                await _analyze_problem(runtime, "A question unrelated to document keywords")
+            content, _ = runtime.chat.input({"action": "send", "text": "解释一下", "screens": []})
+            await runtime.close()
             self.assertEqual(len(runtime.recent_dialogue), 47)
-            return client.requests[0]["json"]["input"][0]["content"][0]["text"]
-
+            return "\n".join(part.get("text", "") for item in content for part in item["content"] if isinstance(part, dict))
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             documents = {f"background-{index}.md": f"## Source {index}\n\nBEGIN_{index}\n" + "Full supplied facts.\n" * 450 + f"END_{index}" for index in range(8)}
             for source, text in documents.items():
                 (root / source).write_text(text, encoding="utf-8", newline="")
-            client = FakeHTTPClient()
-            with patch.dict(os.environ, {"OPENAI_API_KEY": "test-only-not-real"}):
-                input_text = asyncio.run(run(root, client))
-        # Exact JSON representations prove no file was selected, shortened or omitted.
+            input_text = asyncio.run(run(root))
         for source, text in documents.items():
-            self.assertTrue(
-                json.dumps({"source": source, "text": text}, ensure_ascii=False) in input_text,
-                f"Complete source missing or altered: {source}",
-            )
-        for marker in ("EARLY_FULL_QUESTION", "QUESTION_END", "Recorded turn 0:", "Recorded turn 44:", "LATEST_CORRECTION_START", "LATEST_CORRECTION_END", "SCREEN_START", "SCREEN_END"):
+            self.assertNotIn(source, input_text)  # Codex reads local materials as needed.
+        for marker in ("EARLY_FULL_QUESTION", "QUESTION_END", "Recorded turn 0:", "Recorded turn 44:", "LATEST_CORRECTION_START", "LATEST_CORRECTION_END"):
             self.assertIn(marker, input_text)
 
 

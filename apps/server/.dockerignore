@@ -8,3 +8,4 @@ tests
 
 # Interview background belongs to the read-only runtime mount, never the image.
 context
+data

@@ -46,11 +46,11 @@ class RuntimeLifecycleTests(unittest.IsolatedAsyncioTestCase):
             await asyncio.wait_for(cancellation_started.wait(), timeout=1)
             analysis = AsyncMock(side_effect=lambda *_: "Unexpected analysis")
             try:
-                with patch.object(rt, "_analyze_problem", analysis):
+                with patch.object(runtime.chat, "request", analysis):
                     # A second authenticated UI may still send a queued action
                     # while a cancelled network task is running its cleanup.
                     await runtime.start_operation(
-                        {"type": "quick_answer", "action": "deep", "operation_id": "late"},
+                        {"type": "chat_send", "action": "answer", "operation_id": "late"},
                         object(),
                     )
                     await asyncio.sleep(0)

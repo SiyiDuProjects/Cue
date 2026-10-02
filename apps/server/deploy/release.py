@@ -24,8 +24,10 @@ else:
 MODEL_SETTINGS = {
     "OPENAI_LIVE_MODEL": "gpt-live-1",
     "OPENAI_REALTIME_TRANSCRIPTION_MODEL": "gpt-live-transcribe",
-    "OPENAI_CODE_MODEL": "gpt-6-astra",
-    "OPENAI_CODE_REASONING_EFFORT": "high",
+    "OPENAI_CODE_MODEL": "gpt-6.1-sol",
+    "OPENAI_RESPONSES_MODEL": "gpt-6.1-sol",
+    "OPENAI_CODE_REASONING_EFFORT": "xhigh",
+    "OPENAI_RESPONSES_REASONING_EFFORT": "xhigh",
 }
 
 
@@ -249,7 +251,7 @@ def main(argv: list[str] | None = None) -> int:
         # code release. Production context must remain outside the checkout.
         mutated = True
         run(["rsync", "-a", "--delete", "--exclude=.env*", "--exclude=/context",
-             "--exclude=/.venv", "--exclude=*backup*", "--exclude=*.bak*",
+             "--exclude=/.venv", "--exclude=/data", "--exclude=*backup*", "--exclude=*.bak*",
              str(staging) + "/", str(deploy) + "/"])
         env_file = deploy / ".env"
         env_file.write_text(update_environment(env_file.read_text(encoding="utf-8"), release_id=args.release_id), encoding="utf-8")
@@ -281,7 +283,7 @@ def main(argv: list[str] | None = None) -> int:
                 raise
         if mutated:
             run(["rsync", "-a", "--delete", "--exclude=.env*", "--exclude=/context",
-                 "--exclude=/.venv", "--exclude=*backup*", "--exclude=*.bak*",
+                 "--exclude=/.venv", "--exclude=/data", "--exclude=*backup*", "--exclude=*.bak*",
                  str(backup / "source") + "/", str(deploy) + "/"])
             shutil.copy2(backup / "source" / ".env", deploy / ".env")
             compose_up(backup / "rollback-candidate-compose.json")

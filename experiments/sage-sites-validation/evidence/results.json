@@ -1,0 +1,132 @@
+{
+  "url": "https://sage-runtime-validation.dusiyi0916.chatgpt.site",
+  "scope": "run_1790837273488",
+  "started_at": "2026-10-01T06:47:53.488Z",
+  "results": [
+    {
+      "name": "private_access",
+      "at_ms": 743,
+      "pass": true,
+      "unauthenticated_status": 401
+    },
+    {
+      "name": "bindings",
+      "at_ms": 1927,
+      "pass": true,
+      "synthetic_only": true,
+      "instance": "f26d8a9e-0662-41d6-b793-7c032783c521",
+      "d1": true,
+      "r2": true,
+      "version": 1
+    },
+    {
+      "name": "image_integrity_and_visibility",
+      "at_ms": 6733,
+      "pass": false,
+      "error": "HTTP 401 Unauthorized"
+    },
+    {
+      "name": "cross_client_cancel",
+      "at_ms": 9100,
+      "pass": true,
+      "job": {
+        "id": "run_1790837273488_cancel",
+        "scope": "run_1790837273488",
+        "kind": "synthetic",
+        "status": "cancelled",
+        "created": 1790837270206,
+        "updated": 1790837274129,
+        "count": 2,
+        "cancelled": 1
+      },
+      "elapsed_ms": 6922,
+      "first_headers_ms": 1435,
+      "first_delta_ms": 2742,
+      "chunks": 4,
+      "max_chunk_gap_ms": 1405
+    },
+    {
+      "name": "transcript_revisions_and_timeline_boundary",
+      "at_ms": 9415,
+      "pass": true,
+      "transcripts": 20,
+      "corrections": 1,
+      "cross_timeline_status": 409
+    },
+    {
+      "name": "two_audio_channels",
+      "at_ms": 10474,
+      "pass": true,
+      "channels": [
+        {
+          "speaker": "interviewer",
+          "frames": 250,
+          "max_round_trip_ms": 185,
+          "bytes": 240000
+        },
+        {
+          "speaker": "candidate",
+          "frames": 250,
+          "max_round_trip_ms": 124,
+          "bytes": 240000
+        }
+      ]
+    },
+    {
+      "name": "detached_task_90s",
+      "at_ms": 100737,
+      "pass": false,
+      "job": {
+        "id": "run_1790837273488_detached",
+        "scope": "run_1790837273488",
+        "kind": "synthetic",
+        "status": "running",
+        "created": 1790837271337,
+        "updated": 1790837300958,
+        "count": 23,
+        "cancelled": 0
+      },
+      "elapsed_ms": 98557
+    },
+    {
+      "name": "disconnected_stream_90s",
+      "at_ms": 101690,
+      "pass": false,
+      "job": {
+        "id": "run_1790837273488_disconnected",
+        "scope": "run_1790837273488",
+        "kind": "synthetic",
+        "status": "running",
+        "created": 1790837269434,
+        "updated": 1790837302423,
+        "count": 26,
+        "cancelled": 0
+      },
+      "elapsed_ms": 99512,
+      "first_headers_ms": 629,
+      "first_delta_ms": 1906,
+      "chunks": 4,
+      "max_chunk_gap_ms": 1322
+    },
+    {
+      "name": "connected_stream_90s",
+      "at_ms": 120741,
+      "pass": true,
+      "job": {
+        "id": "run_1790837273488_connected",
+        "scope": "run_1790837273488",
+        "kind": "synthetic",
+        "status": "completed",
+        "created": 1790837269790,
+        "updated": 1790837386044,
+        "count": 90,
+        "cancelled": 0
+      },
+      "elapsed_ms": 118563,
+      "first_headers_ms": 1007,
+      "first_delta_ms": 2305,
+      "chunks": 92,
+      "max_chunk_gap_ms": 1790
+    }
+  ]
+}

@@ -10,6 +10,7 @@ export interface CaptureHealth {
 export interface AudioCaptureHandle {
   getHealth: () => CaptureHealth;
   stop: () => void;
+  finish: () => Promise<boolean>;
 }
 
 interface LocalAudioCaptureOptions {
@@ -19,7 +20,9 @@ interface LocalAudioCaptureOptions {
   onEnded?: () => void;
 }
 
-const DISPLAY_MEDIA_CONSTRAINTS: DisplayMediaStreamOptions = { audio: true, video: true };
+const DISPLAY_MEDIA_CONSTRAINTS: DisplayMediaStreamOptions = {
+  audio: true, video: { frameRate: { max: 1 }, width: { max: 64 }, height: { max: 64 } },
+};
 const USER_MEDIA_CONSTRAINTS: MediaStreamConstraints = {
   audio: {
     channelCount: 1,
@@ -66,6 +69,8 @@ export function startLocalAudioCapture(options: LocalAudioCaptureOptions): Audio
   }
 
   let stopped = false;
+  let finishing: Promise<boolean> | undefined;
+  let finishAck: ((complete: boolean) => void) | undefined;
   let endedNotified = false;
   let processorFailed = false;
   let receivedPcm = false;
@@ -120,6 +125,7 @@ export function startLocalAudioCapture(options: LocalAudioCaptureOptions): Audio
     });
     processorNode.onprocessorerror = () => { processorFailed = true; checkHealth(); };
     processorNode.port.onmessage = ({ data }) => {
+      if (data?.type === 'finished') { finishAck?.(true); return; }
       if (stopped || !(data.pcm instanceof ArrayBuffer)) return;
       if (audioContext.currentTime - data.endTime > MAX_PCM_AGE_SECONDS) {
         reportHealth({ phase: "interrupted", detail: "界面处理延迟，部分过期音频已跳过；请补充遗漏内容。" });
@@ -142,9 +148,7 @@ export function startLocalAudioCapture(options: LocalAudioCaptureOptions): Audio
     });
   }
 
-  return {
-    getHealth: () => ({ ...health }),
-    stop: () => {
+  const stop = () => {
       if (stopped) return;
       stopped = true;
       window.clearInterval(healthTimer);
@@ -164,7 +168,21 @@ export function startLocalAudioCapture(options: LocalAudioCaptureOptions): Audio
         track.stop();
       });
       if (audioContext.state !== "closed") void audioContext.close().catch(() => {});
-    },
+      finishAck?.(false);
+    };
+  return {
+    getHealth: () => ({ ...health }),
+    stop,
+    finish: () => {
+      if (finishing) return finishing;
+      if (stopped || !processorNode) { stop(); return Promise.resolve(!receivedPcm); }
+      finishing = new Promise<boolean>(resolve => {
+        const timer = window.setTimeout(() => finishAck?.(false), 750);
+        finishAck = complete => { finishAck = undefined; window.clearTimeout(timer); stop(); resolve(complete); };
+        processorNode!.port.postMessage({ type: 'finish' });
+      });
+      return finishing;
+    }
   };
 }
 

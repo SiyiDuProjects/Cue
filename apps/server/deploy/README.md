@@ -1,5 +1,12 @@
 # Safe interview-server releases
 
+The Responses/MCP release also packages public `app/prompts/*.md` and
+`app/plugin/*` assets. `/health` advertises Responses and authenticated ChatGPT MCP;
+the release gate validates their presence. `INTERVIEW_PUBLIC_URL` is the canonical
+OAuth origin (default `https://interview.siyidu.com`). No private materials are
+copied into the image. The MCP SDK is pinned in requirements; desktop 0.1.12 adds
+the read-only local material bridge, provider/profile controls, and plugin setup.
+
 The workflow stages code separately, then asks the running server to atomically
 enter deployment mode. An active interview returns 409 and aborts the release
 before deployed code or `.env` changes. New sessions and Start are excluded by
@@ -13,11 +20,24 @@ outside `/opt/interview/server`, through a read-only mount. Production images do
 not copy background documents. Release preflight checks that the running context
 directory has a read-only mount before changing code or replacing the service.
 
+Conversation records and workspace archives use `INTERVIEW_WORKSPACE_HISTORY_DIR`. Production must point
+it at a writable private mount outside the deployed source, for example
+`/opt/interview/private/workspace-history:/var/lib/interview/workspace-history`.
+Keep this mount in the persistent Compose configuration so ordinary recreation
+also retains archives. The local `data/` directory is excluded from images and
+source synchronization; it is not a production archive backup.
+
 The candidate process starts drained. Both local and public `/health` must report
-the exact release ID, protocol and configured main/transcription/analysis models. No paid
+the exact release ID, `interview-chat-v12` protocol, codex-app-server answer transport,
+chat=true and pinned_code=false capabilities, and configured transcription/code/optional mock models. No paid
 model or audio probe is performed. The verified image is then started normally,
 so a later ordinary container restart does not leave it in deployment mode.
 The release also persists `INTERVIEW_RELEASE_ID` and `INTERVIEW_START_DRAINED=0` in the production `.env` loaded by the service's `env_file`, so recreation through the original Compose configuration retains its release identity and accepts interviews normally.
+
+This release replaces the assistant Live connection with two independent realtime
+transcription connections plus explicit local Codex requests relayed to Electron. `OPENAI_LIVE_MODEL`
+is used only by the optional mock interviewer. Release the server and verify v12
+before distributing the matching desktop client; v5/v6/v7/v8/v9/v10/v11 clients are incompatible with v12.
 
 The release retains the old image, source, environment, sanitized health snapshot
 and private resolved Compose files under `/opt/interview/server.deploy-backups/`.

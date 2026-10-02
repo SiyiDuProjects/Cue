@@ -8,7 +8,7 @@ const { app, BrowserWindow, desktopCapturer, globalShortcut, ipcMain, nativeThem
 
 const WINDOW_TITLE = "Sage Glass";
 const DEFAULT_API_PORT = 8000;
-const DEFAULT_REMOTE_API_BASE_URL = "https://interview.reachard.co";
+const DEFAULT_REMOTE_API_BASE_URL = "https://interview.siyidu.com";
 const FALLBACK_API_PORTS = [8000, 8001];
 const API_START_TIMEOUT_MS = 15000;
 const REQUIRED_REALTIME_PROTOCOL = "realtime-text-events-v2";

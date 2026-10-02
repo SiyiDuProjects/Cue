@@ -1,0 +1,7 @@
+[
+  {"id":"regex","text":"口述一道算法题：实现 is_match(s,p)，s只含小写字母，p含小写字母、.和*。.匹配任意单个字符，*使前一元素出现零次或多次；保证*前总有合法元素。必须匹配整个字符串。例s='aab',p='c*a*b'为True；s='mississippi',p='mis*is*p*.'为False。请帮我理解并实现Python。"},
+  {"id":"regex-followup","text":"我没懂遇到*为什么还有一种选择是j不变、i加一。用很小的例子解释，不修改代码。"},
+  {"id":"ood-clarify","text":"下一题是设计一个文件系统。先讨论需要澄清什么，不写代码。"},
+  {"id":"ood-implement","text":"范围：内存中目录树，绝对路径，根目录已存在。mkdir(path)递归创建目录；write_file(path,content)要求父目录存在，覆盖已有同名文件；read_file(path)返回字符串；ls(path)返回目录内直接子项名字排序。路径无.和..，不会有文件与目录同名冲突；找不到路径抛FileNotFoundError。先解释设计，再实现。"},
+  {"id":"formatter","text":"换一道普通后端函数题。实现expand(template,values)：占位符格式%NAME%，NAME为非空英文字母数字下划线；%%输出一个%。values字典的值也可以引用其他key，递归展开。未定义key抛KeyError；循环引用抛ValueError；无法闭合或名字非法的%片段原样保留。示例expand('hi %A%',{'A':'%B%','B':'Sam'})返回'hi Sam'。不用OO框架，解释后写Python函数。"}
+]

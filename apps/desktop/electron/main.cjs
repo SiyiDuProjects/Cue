@@ -6,9 +6,12 @@ const nodeNet = require("node:net");
 const fs = require("node:fs");
 const { spawn } = require("node:child_process");
 const { loadDesktopEnvironment } = require("./desktop-environment.cjs");
-const { FLOATING_WINDOW_OPTIONS, createFloatingControls } = require("./floating-window.cjs");
+const { loadConnection, saveConnection } = require("./desktop-connection.cjs");
+const { DESKTOP_WINDOW_OPTIONS } = require("./desktop-window.cjs");
 const { createScreenCaptureService } = require("./screen-capture.cjs");
 const { createRendererRecovery } = require("./renderer-recovery.cjs");
+const { CodexHost } = require("./codex-host.cjs");
+const { createRuntimeContext, configArguments } = require("./codex-runtime.cjs");
 const {
   app,
   BrowserWindow,
@@ -19,12 +22,16 @@ const {
   net: electronNet,
   nativeImage,
   session,
+  safeStorage,
   screen,
   shell,
   Tray,
 } = require("electron");
 
-loadDesktopEnvironment();
+if (!app.isPackaged) loadDesktopEnvironment();
+
+const diagnosticReport = process.argv.find(value => value.startsWith("--diagnose-package="))?.slice("--diagnose-package=".length);
+const configurationSource = process.argv.find(value => value.startsWith("--configure-from="))?.slice("--configure-from=".length);
 
 const WINDOW_TITLE = "Sage";
 const DEFAULT_API_PORT = 8000;
@@ -33,21 +40,27 @@ const FALLBACK_API_PORTS = [8000, 8001];
 const API_START_TIMEOUT_MS = 15000;
 const API_HEALTH_MAX_BYTES = 64 * 1024;
 const DEV_RENDERER_URL = "http://127.0.0.1:5173/";
-const ALLOWED_MEDIA_PERMISSIONS = new Set(["media", "display-capture", "microphone"]);
+// Text copying uses Chromium's write-only clipboard permission. The handlers
+// below still restrict every permission to this window's trusted main frame.
+const ALLOWED_RENDERER_PERMISSIONS = new Set(["media", "display-capture", "microphone", "clipboard-sanitized-write"]);
 const TRAY_ICON_DATA_URL =
   "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAAAAXNSR0IArs4c6QAAAARnQU1BAACxjwv8YQUAAAAJcEhZcwAADsMAAA7DAcdvqGQAAALoSURBVFhH1Vc9aFUxFO7o2LH0Vp7g5qRbt5Pm+oMgWoVCQZGCIlIUng7yBJEiguJQHYpCC6KCFGqx1KVdtINi0aUOgkMFUYcnahHpoJ0iX25zSU6S9/IuOvjBN+Xk/CXny71dXf8rst3Un+UkbHKbv4oaUU+vpNOZFAt9uVBRSrGcDVCjRrSN+6iEGlF3ltNYlotfXrD2vIPEuc9kFK0VPwKOk6kTlzTMfbfFVkkjFasOEl3kMaJAcO7AUIwcV2O3J9Tii+fq5ZsVhxPTD9W+Uye9PRZv8lgeNtvuVb5r6Iiaf/ZUpWD100d18MwoD66Ji8xjlsCFCZ05qv69scHjtATs0SnuC8X17qGdPLYGWsQ3gGitja9ra+rBk3k1evWKGjpf15yafaQr5wh1IsvFHI9tqvdaD8LJz/V1XdX4/Xtq+/69no3hscYFnaDB2/erng3odQHiwY2q8sTlS04X+o8OezbQCCcBKFjAqBIxCTZ2HDrg2WS5aJbBoXbcoCoRDCNpgGPjNoblMeBh4YudEEFxEa9NTeq7YuPirXHPvqRRyD5Jg95ihNADBLo791h9+f7NCcaBTvD9NjNJdZ0AxIEvcqJKjFqKHsAGoxs6eycBI89oBV+0ifby1oZg9AFd4j5CxOQVdyAnwRcN4cyeawDJIBA0YXJ2Rh2un/X2pRBvjpmCHr5ouPT6lRM8pbWpxOXfHEQtwx+4Afi52XSC8/WqhOrWiLbYCQTfATuBliPVIb33AKLAjUBbVHAX8DJyG5s4Howpnu6IBBeUNOgkACArbshlFSOGceSvHOy4EEV1QIoVHlsj1oWZxQUniVRgUrivIoFA9QaxV/HcjetJWgCYLkWebfcVDCHLxXRgoz5TTALe+BDwQYKqo2cvxbJz82OAUSwJOxnzNQS2Vb8ieDeP1RLQas9RNeIHpX3lIWiZlmIp4DSF71peuE4ARziW2HejTfw/ljr/L6D/HQaoUfwzOhSdtvoPkf0OHX9hJAwAAAAASUVORK5CYII=";
 
-const writableRoot = path.join(os.tmpdir(), "interview-copilot-electron");
+const writableRoot = diagnosticReport ? path.join(path.dirname(path.resolve(diagnosticReport)), "package-profile")
+  : app.isPackaged ? path.join(app.getPath("appData"), "Sage") : path.join(os.tmpdir(), "interview-copilot-electron");
 let apiProcess = null;
 let apiPort = DEFAULT_API_PORT;
 let mainWindow = null;
-let floatingControls = null;
 let tray = null;
 let isQuitting = false;
 let trustedRendererUrl = "";
-const screenCapture = createScreenCaptureService(desktopCapturer, screen);
+const screenCapture = createScreenCaptureService(desktopCapturer, screen, () => BrowserWindow.getAllWindows());
 const rendererRecovery = createRendererRecovery();
 let rendererRecoveryTimer = null;
+let startupStage = "connection";
+let codexHost = null;
+let codexLogin = null;
+let codexRuntimeContext = null;
 
 function isLoopbackHostname(hostname) {
   return ["127.0.0.1", "localhost", "::1", "[::1]"].includes(hostname);
@@ -106,25 +119,25 @@ async function readApiError(response) {
 }
 
 function configureIpcHandlers() {
+  ipcMain.handle("conversation:request", async (event, apiBaseUrl, payload) => {
+    assertTrustedIpcSender(event);
+    const { action, current_id, session_token, target_id, stop_active, title } = payload || {};
+    if (!["list", "switch", "rename"].includes(action) || typeof current_id !== "string" ||
+        typeof session_token !== "string" || !session_token) throw Error("无效会话操作。");
+    const endpoint = action === "list" ? "/api/conversations" : action === "switch" ? "/api/conversations/switch"
+      : `/api/conversations/${encodeURIComponent(current_id)}`;
+    const response = await electronNet.fetch(resolveApiEndpoint(apiBaseUrl, endpoint), {
+      method: action === "list" ? "GET" : action === "switch" ? "POST" : "PATCH",
+      redirect: "error", signal: AbortSignal.timeout(30000),
+      headers: { Authorization: `Bearer ${session_token}`, "Content-Type": "application/json" },
+      ...(action !== "list" ? { body: JSON.stringify({ current_id, target_id, stop_active, title }) } : {}),
+    });
+    if (!response.ok) throw Error(await readApiError(response));
+    return response.json();
+  });
   ipcMain.handle("window:state", (event) => {
     assertTrustedIpcSender(event);
-    return { ...floatingControls.getState(), recoveryNotice: rendererRecovery.getNotice() };
-  });
-  ipcMain.handle("window:collapse", (event, value) => {
-    assertTrustedIpcSender(event);
-    return floatingControls.setCollapsed(value);
-  });
-  ipcMain.handle("window:pin", (event, value) => {
-    assertTrustedIpcSender(event);
-    return floatingControls.setPinned(value);
-  });
-  ipcMain.handle("window:code", (event, value) => {
-    assertTrustedIpcSender(event);
-    return floatingControls.setCodeExpanded(value);
-  });
-  ipcMain.handle("window:hide", (event) => {
-    assertTrustedIpcSender(event);
-    floatingControls.hide();
+    return { recoveryNotice: rendererRecovery.getNotice() };
   });
   ipcMain.handle("screen:list-sources", async (event) => {
     assertTrustedIpcSender(event);
@@ -146,7 +159,7 @@ function configureIpcHandlers() {
         ...buildApiHeaders(),
         "Content-Type": "application/json",
       },
-      body: "{}",
+      body: JSON.stringify({ device_name: os.hostname().slice(0, 80) || "我的电脑" }),
       redirect: "error",
       signal: AbortSignal.timeout(10_000),
     });
@@ -162,6 +175,12 @@ function configureIpcHandlers() {
       typeof payload.capture_token !== "string"
     ) {
       throw new Error("创建面试返回了无效会话。");
+    }
+    if (codexHost?.closed || codexHost?.interviewId !== payload.interview_id || codexHost?.token !== payload.capture_token) {
+      await codexHost?.close();
+      codexHost = new CodexHost({ apiBaseUrl: configuredApiBaseUrl(),
+        interviewId: payload.interview_id, captureToken: payload.capture_token,
+        packaged: app.isPackaged, dataRoot: writableRoot, runtimeContext: codexRuntimeContext });
     }
     return {
       interview_id: payload.interview_id,
@@ -195,11 +214,13 @@ function configureIpcHandlers() {
     if (!response.ok && response.status !== 404) {
       throw new Error(await readApiError(response));
     }
+    if (codexHost?.interviewId === interviewId) { await codexHost.close(); codexHost = null; }
     return { ok: true };
   });
 
   ipcMain.handle("capture:initialize", async (event) => {
     assertTrustedIpcSender(event);
+    if (diagnosticReport) return;
     await event.senderFrame.executeJavaScript(
       "window.dispatchEvent(new Event('sage:capture-initialize'))",
       true,
@@ -367,7 +388,7 @@ function readApiHealth(port) {
 
 async function isApiCompatible(port) {
   const health = await readApiHealth(port);
-  return health?.status === "ok" && health?.realtime_protocol === "realtime-interview-v5";
+  return health?.status === "ok" && health?.realtime_protocol === "realtime-interview-v5" && health?.code_plan === true;
 }
 
 function findFreePort() {
@@ -472,10 +493,18 @@ async function ensureApiServer() {
 async function configureSession() {
   const ses = session.defaultSession;
 
+  if (diagnosticReport) {
+    ses.setPermissionCheckHandler(() => false);
+    ses.setPermissionRequestHandler((_webContents, _permission, callback) => callback(false));
+    ses.setDisplayMediaRequestHandler((_request, callback) => callback({}));
+    ses.webRequest.onBeforeRequest((details, callback) => callback({ cancel: !details.url.startsWith("file:") }));
+    return;
+  }
+
   ses.setPermissionCheckHandler((webContents, permission, _requestingOrigin, details) => {
     const frame = webContents?.mainFrame;
     return Boolean(
-      ALLOWED_MEDIA_PERMISSIONS.has(permission) &&
+      ALLOWED_RENDERER_PERMISSIONS.has(permission) &&
         details?.isMainFrame !== false &&
         isTrustedMainFrame(webContents, frame, details?.requestingUrl),
     );
@@ -485,7 +514,7 @@ async function configureSession() {
     const frame = webContents?.mainFrame;
     callback(
       Boolean(
-        ALLOWED_MEDIA_PERMISSIONS.has(permission) &&
+        ALLOWED_RENDERER_PERMISSIONS.has(permission) &&
           details?.isMainFrame !== false &&
           isTrustedMainFrame(webContents, frame, details?.requestingUrl),
       ),
@@ -561,6 +590,36 @@ function createTray() {
         label: `隐藏 ${WINDOW_TITLE}`,
         click: hideMainWindow,
       },
+      {
+        label: "面试资料目录",
+        click: () => {
+          try {
+            void shell.openPath(codexRuntimeContext.workspace);
+          } catch (error) { dialog.showErrorBox("无法打开资料目录", error.message); }
+        },
+      },
+      {
+        label: "Codex 登录",
+        click: () => {
+          if (codexLogin) return;
+          try {
+            const runtime = codexRuntimeContext.options();
+            // CLI owns its browser login and credential storage. No auth values
+            // enter React, the relay server, logs or our connection config.
+            codexLogin = spawn(runtime.binary, [...configArguments(), "login"], {
+              cwd: runtime.workspace, env: runtime.env, stdio: ["ignore", "pipe", "pipe"], windowsHide: true,
+            });
+            codexLogin.stdout.on("data", () => {});
+            codexLogin.stderr.on("data", () => {});
+            codexLogin.on("error", () => { codexLogin = null; dialog.showErrorBox("Codex 登录失败", "无法启动 CLI，请检查安装和路径。"); });
+            codexLogin.on("exit", code => {
+              codexLogin = null;
+              if (!isQuitting) void dialog.showMessageBox({ type: code === 0 ? "info" : "error",
+                title: "Codex 登录", message: code === 0 ? "登录完成，可以回到 Sage 发送消息。" : "登录未完成，请重试或使用项目的登录脚本。" });
+            });
+          } catch (error) { dialog.showErrorBox("Codex 登录失败", error.message); }
+        },
+      },
       { type: "separator" },
       {
         label: "退出",
@@ -577,7 +636,7 @@ async function createMainWindow() {
   trustedRendererUrl = rendererUrl || packagedRendererUrl();
 
   mainWindow = new BrowserWindow({
-    ...FLOATING_WINDOW_OPTIONS,
+    ...DESKTOP_WINDOW_OPTIONS,
     autoHideMenuBar: true,
     title: WINDOW_TITLE,
     webPreferences: {
@@ -589,8 +648,7 @@ async function createMainWindow() {
       sandbox: true,
     },
   });
-  floatingControls = createFloatingControls(mainWindow, screen);
-  mainWindow.once("ready-to-show", () => mainWindow?.show());
+  if (!diagnosticReport) mainWindow.once("ready-to-show", () => mainWindow?.show());
 
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
     try {
@@ -689,23 +747,57 @@ if (!hasSingleInstanceLock) {
   });
 
   app.whenReady().then(async () => {
+    if (process.platform === "win32") app.setAppUserModelId("com.siyidu.sage");
+    if (configurationSource) {
+      const settings = {};
+      loadDesktopEnvironment(path.resolve(configurationSource), settings);
+      await saveConnection(writableRoot, safeStorage, { apiBaseUrl: settings.INTERVIEW_API_BASE_URL, accessToken: settings.INTERVIEW_ACCESS_TOKEN,
+        codexWorkspace: settings.INTERVIEW_CODEX_WORKSPACE, codexBin: settings.INTERVIEW_CODEX_BIN });
+      // Chromium must flush its OS-protected encryption key before shutdown.
+      app.quit();
+      return;
+    }
+    // Keep the saved configuration in an ordinary object before passing it to
+    // long-lived consumers; process.env is only used for the existing API path.
+    const desktopEnvironment = { ...process.env };
+    const configured = app.isPackaged && !diagnosticReport && await loadConnection(writableRoot, safeStorage, desktopEnvironment);
+    for (const key of ["INTERVIEW_API_BASE_URL", "INTERVIEW_ACCESS_TOKEN", "INTERVIEW_CODEX_WORKSPACE", "INTERVIEW_CODEX_BIN"]) {
+      if (desktopEnvironment[key] !== undefined) process.env[key] = desktopEnvironment[key];
+    }
+    codexRuntimeContext = createRuntimeContext({ packaged: app.isPackaged, dataRoot: writableRoot, environment: desktopEnvironment });
+    startupStage = "server";
     await ensureApiServer();
     configureIpcHandlers();
     await configureSession();
-    createTray();
+    if (!diagnosticReport) createTray();
+    startupStage = "window";
     await createMainWindow();
+    if (diagnosticReport) {
+      startupStage = "renderer";
+      await require("./package-diagnostics.cjs").checkPackagedWindow(mainWindow, path.resolve(diagnosticReport), app, configured);
+      return;
+    }
 
     app.on("activate", () => {
       void showMainWindow();
     });
+  }).catch(() => {
+    if (diagnosticReport) fs.writeFileSync(path.resolve(diagnosticReport), JSON.stringify({ success: false, stage: startupStage }));
+    if (!diagnosticReport && !configurationSource) dialog.showErrorBox("Sage 无法启动", "请检查电脑连接配置，或重新安装 Sage。");
+    app.exit(1);
   });
 }
 
-app.on("before-quit", () => {
+app.on("before-quit", event => {
   isQuitting = true;
+  codexLogin?.kill();
   if (rendererRecoveryTimer) clearTimeout(rendererRecoveryTimer);
   rendererRecoveryTimer = null;
-  stopApiServer();
+  if (codexHost) {
+    event.preventDefault();
+    const host = codexHost; codexHost = null;
+    void host.close().finally(() => { stopApiServer(); app.quit(); });
+  } else stopApiServer();
 });
 
 app.on("window-all-closed", () => {

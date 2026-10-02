@@ -1,3 +1,4 @@
+import { MockAudio } from "./mockAudio";
 import {
   getCaptureLabel,
   startLocalAudioCapture,
@@ -12,6 +13,8 @@ interface CaptureAdapterCallbacks {
   onError: (message: string) => void;
   onMediaEnded: (speaker: Speaker) => void;
   onSessionEnded: () => void;
+  onPrepareCapture?: (mode: "assist" | "mock") => void;
+  onBrowserConnectionRequest?: (request: { request_id: string; name: string; read_only?: boolean } | null) => void;
 }
 
 const SPEAKERS: Speaker[] = ["interviewer", "candidate"];
@@ -39,18 +42,79 @@ export class CaptureAdapter {
   private readonly uploads = new Map<string, AbortController>();
   private session: InterviewSession | null = null;
   private disposed = false;
+  private mockAudio: MockAudio | null = null;
+  private supportsMock = false;
+  private browserRequestId = "";
+  private browserRequestTimer: number | undefined;
+
+  decideBrowserConnection(requestId: string, approved: boolean): boolean {
+    const socket = this.sockets.interviewer;
+    return this.browserRequestId === requestId && !!socket && safeSocketSend(socket, {
+      type: "browser_connection_decision", request_id: requestId, approved,
+    });
+  }
+
+  private clearBrowserRequest() {
+    window.clearTimeout(this.browserRequestTimer);
+    this.browserRequestId = "";
+    this.callbacks.onBrowserConnectionRequest?.(null);
+  }
+  private modeWaiter: { mode: string; resolve: () => void; reject: (error: Error) => void } | null = null;
+
+  get mode(): "assist" | "mock" { return this.mockAudio ? "mock" : "assist"; }
+
+  async prepareMode(mode: "assist" | "mock", systemStream?: MediaStream) {
+    if (mode === "mock" && !this.supportsMock) throw new Error("服务器尚未支持模拟面试，请先更新后端。");
+    const session = this.session;
+    if (!session || this.disposed) throw new Error("采集连接已关闭。");
+    if (mode === "mock") {
+      const audio = this.mockAudio ?? new MockAudio();
+      try {
+        await audio.resume();
+        if (this.session !== session || this.disposed) throw new Error("采集连接已关闭。");
+        if (!this.mockAudio || !["ready", "muted"].includes(this.mediaHealth.interviewer.phase)) {
+          const previous = this.mockAudio;
+          this.mockAudio = audio;
+          try { this.replaceChannel("interviewer", audio.stream.clone()); }
+          catch (error) { this.mockAudio = previous; throw error; }
+        }
+      } catch (error) {
+        if (this.mockAudio !== audio) audio.close();
+        throw error;
+      }
+    } else if (this.mockAudio) {
+      if (!systemStream) throw new Error("请重新连接系统音频。");
+      const previous = this.mockAudio;
+      this.mockAudio = null;
+      try { this.replaceChannel("interviewer", systemStream); }
+      catch (error) { this.mockAudio = previous; throw error; }
+      previous.close();
+    }
+    if (!this.session || this.disposed) throw new Error("采集连接已关闭。");
+    if (!this.supportsMock && mode === "assist") return;
+    this.modeWaiter?.reject(new Error("音频准备已被新的操作替代。"));
+    await new Promise<void>((resolve, reject) => {
+      const timeout = window.setTimeout(() => {
+        this.modeWaiter = null;
+        reject(new Error("音频模式确认超时，请恢复音频后重试。"));
+      }, READY_TIMEOUT_MS);
+      this.modeWaiter = { mode, resolve: () => { window.clearTimeout(timeout); resolve(); },
+        reject: (error) => { window.clearTimeout(timeout); reject(error); } };
+      this.reportCaptureHealth("interviewer", true);
+    });
+  }
+
 
   constructor(
     private readonly apiBaseUrl: string,
-    streams: Record<Speaker, MediaStream>,
+    streams: Partial<Record<Speaker, MediaStream>>,
     private readonly callbacks: CaptureAdapterCallbacks,
   ) {
     try {
-      this.replaceChannel("interviewer", streams.interviewer);
-      this.replaceChannel("candidate", streams.candidate);
+      SPEAKERS.forEach(speaker => { if (streams[speaker]) this.replaceChannel(speaker, streams[speaker]); });
     } catch (error) {
       this.dispose();
-      SPEAKERS.forEach((speaker) => streams[speaker].getTracks().forEach((track) => track.stop()));
+      SPEAKERS.forEach((speaker) => streams[speaker]?.getTracks().forEach((track) => track.stop()));
       throw error;
     }
   }
@@ -97,6 +161,35 @@ export class CaptureAdapter {
     }
   }
 
+  stopAudio() {
+    SPEAKERS.forEach(speaker => this.stopSpeaker(speaker));
+    this.mockAudio?.close();
+    this.mockAudio = null;
+  }
+
+  private stopSpeaker(speaker: Speaker) {
+      this.sending[speaker] = false;
+      this.mediaVersions[speaker] += 1;
+      this.handles[speaker]?.stop();
+      delete this.handles[speaker];
+      this.mediaHealth[speaker] = { phase: "interrupted", detail: "转录未开启。" };
+      delete this.transportHealth[speaker];
+    this.reportCaptureHealth(speaker, true);
+  }
+
+  private async finishSpeaker(speaker: Speaker, socket: WebSocket, requestId: string) {
+    const handle = this.handles[speaker];
+    let complete = !handle;
+    try { if (handle) complete = await handle.finish(); }
+    catch { complete = false; }
+    if (this.handles[speaker] === handle) this.stopSpeaker(speaker);
+    if (!this.handles.interviewer && !this.handles.candidate) {
+      this.mockAudio?.close(); this.mockAudio = null;
+    }
+    // The acknowledgement follows all PCM on this same ordered WebSocket.
+    if (this.sockets[speaker] === socket) safeSocketSend(socket, { type: 'capture_stopped', request_id: requestId, complete });
+  }
+
   async connect(session: InterviewSession) {
     if (this.disposed) throw new Error("采集设备已经关闭，请重新初始化。");
     if (!session.capture_token) throw new Error("采集会话缺少 capture_token。");
@@ -111,7 +204,12 @@ export class CaptureAdapter {
   }
 
   disconnectSession() {
+    this.clearBrowserRequest();
+    if (this.session) this.stopAudio();
     this.session = null;
+    this.mockAudio?.clear();
+    this.modeWaiter?.reject(new Error("采集连接已关闭。"));
+    this.modeWaiter = null;
     this.uploads.forEach((controller) => controller.abort());
     this.uploads.clear();
     SPEAKERS.forEach((speaker) => {
@@ -135,6 +233,8 @@ export class CaptureAdapter {
     this.disposed = true;
     this.disconnectSession();
     SPEAKERS.forEach((speaker) => this.handles[speaker]?.stop());
+    this.mockAudio?.close();
+    this.mockAudio = null;
   }
 
   private currentHealth(speaker: Speaker): CaptureHealth {
@@ -159,9 +259,9 @@ export class CaptureAdapter {
     }
     const socket = this.sockets[speaker];
     if (!this.ready[speaker] || socket?.readyState !== WebSocket.OPEN) return;
-    const key = JSON.stringify(health);
+    const key = JSON.stringify({ ...health, mode: this.mode });
     if (!force && this.reportedHealth[speaker] === key) return;
-    if (!safeSocketSend(socket, { type: "capture_status", ...health })) return;
+    if (!safeSocketSend(socket, { type: "capture_status", ...health, mode: this.mode })) return;
     this.reportedHealth[speaker] = key;
   }
 
@@ -195,7 +295,7 @@ export class CaptureAdapter {
       }, READY_TIMEOUT_MS);
 
       socket.addEventListener("open", () => {
-        if (!isCurrent() || !safeSocketSend(socket, { type: "authenticate", token: session.capture_token })) {
+        if (!isCurrent() || !safeSocketSend(socket, { type: "authenticate", token: session.capture_token, browser_connections: true })) {
           socket.close(4008, "authentication failed");
         }
       });
@@ -210,11 +310,14 @@ export class CaptureAdapter {
             this.disconnectSession();
             return;
           }
+          if (speaker === "interviewer") this.supportsMock = event.mock_interview === true;
           if (!authenticated) monitorSocket(socket);
           authenticated = true;
           this.ready[speaker] = true;
           this.reconnectAttempts[speaker] = 0;
-          this.reportCaptureHealth(speaker, true);
+          if (speaker === "interviewer" && event.mode === "mock" && this.mode !== "mock") {
+            void this.prepareMode("mock").catch((error) => this.callbacks.onError(errorMessage(error, "请恢复模拟音频。")));
+          } else this.reportCaptureHealth(speaker, true);
           if (!settled) {
             settled = true;
             window.clearTimeout(timeoutId);
@@ -222,8 +325,50 @@ export class CaptureAdapter {
           }
           return;
         }
-        if (event.type === "capture_start" || event.type === "capture_stop") {
-          this.sending[speaker] = event.type === "capture_start";
+        if (event.type === "capture_mode_ready" && speaker === "interviewer") {
+          if (this.modeWaiter && this.modeWaiter.mode === event.mode) {
+            const waiter = this.modeWaiter;
+            this.modeWaiter = null;
+            waiter.resolve();
+          }
+          return;
+        }
+        if (event.type === "browser_connection_request" && speaker === "interviewer" && event.request_id) {
+          this.clearBrowserRequest();
+          this.browserRequestId = event.request_id;
+          this.callbacks.onBrowserConnectionRequest?.({ request_id: event.request_id, name: event.text || "新浏览器", read_only: event.read_only });
+          this.browserRequestTimer = window.setTimeout(() => this.clearBrowserRequest(), 120_000);
+          return;
+        }
+        if (event.type === "browser_connection_result" && event.request_id === this.browserRequestId) {
+          this.clearBrowserRequest();
+          return;
+        }
+        if (event.type === "mock_audio" && speaker === "interviewer") {
+          if (!this.sending.interviewer || !this.mockAudio) return;
+          try { this.mockAudio.append(event.delta || ""); }
+          catch (error) {
+            this.mockAudio.clear();
+            this.callbacks.onError(errorMessage(error, "模拟面试官语音播放失败。"));
+            safeSocketSend(socket, { type: "mock_playback_error" });
+          }
+          return;
+        }
+        if (event.type === "mock_audio_reset" && speaker === "interviewer") {
+          this.mockAudio?.clear();
+          return;
+        }
+        if (event.type === "prepare_capture" && speaker === "interviewer") {
+          this.callbacks.onPrepareCapture?.(event.mode === "mock" ? "mock" : "assist");
+          return;
+        }
+        if (event.type === "capture_stop") {
+          if (event.request_id) void this.finishSpeaker(speaker, socket, event.request_id);
+          else this.stopAudio();
+          return;
+        }
+        if (event.type === "capture_start") {
+          this.sending[speaker] = true;
           this.reportCaptureHealth(speaker);
           return;
         }
@@ -247,6 +392,8 @@ export class CaptureAdapter {
         window.clearTimeout(timeoutId);
         const wasCurrent = this.sockets[speaker] === socket;
         if (wasCurrent) {
+          if (speaker === "interviewer") this.clearBrowserRequest();
+          if (speaker === "interviewer") this.mockAudio?.clear();
           delete this.sockets[speaker];
           this.ready[speaker] = false;
           this.sending[speaker] = false;

@@ -71,7 +71,7 @@ class InterviewHistory:
 
     def add_screen(
         self, request_id: str, image_url: str, summary: str, *, question_id: str,
-        source_id: str = "", captured_at: str = "",
+        source_id: str = "", captured_at: str = "", workspace_evidence: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         key = f"screen:{request_id}"
         if key in self.by_id:
@@ -80,6 +80,7 @@ class InterviewHistory:
             "kind": "screen", "request_id": request_id, "question_id": question_id,
             "image_url": image_url, "summary": summary, "source_id": source_id,
             "captured_at": captured_at or observed_at(), "created_at": observed_at(),
+            "workspace_evidence": workspace_evidence or {},
         }
         self.by_id[key] = entry
         self.entries.append(entry)
@@ -104,12 +105,44 @@ class InterviewHistory:
         return records, images
 
     def transcript_snapshot(self) -> list[dict[str, Any]]:
+        # Empty finals retract earlier ASR partials, including in hosted context.
         return [{key: value for key, value in turn.items() if key != "kind"}
-                for turn in self.turns if turn["text"] or turn.get("status") == "streaming"]
+                for turn in self.turns]
+
+    def question_text(self, question_id: str) -> str:
+        """All observed wording of one question; a correction replaces what preceded it."""
+        parts: list[str] = []
+        for entry in self.entries:
+            if entry.get("question_id") != question_id:
+                continue
+            if entry["kind"] == "screen_question":
+                parts = [entry["text"]]
+            elif entry["kind"] == "transcript" and entry["speaker"] == "interviewer" and entry["text"]:
+                parts = [entry["text"]] if entry.get("corrects_turn_id") else [*parts, entry["text"]]
+        return " ".join(parts)
+
+    def open_interviewer_question(self) -> str:
+        """Question an interviewer segment continues: none once a reply was observed.
+
+        This is a turn-taking anchor, not a semantic classifier. Pauses inside
+        the interviewer's own speech keep one question; candidate speech or a
+        displayed assistant answer starts the next one.
+        """
+        for entry in reversed(self.entries):
+            if entry["kind"] in {"answer", "screen_question"}:
+                return ""
+            if entry["kind"] == "transcript":
+                if entry["speaker"] == "candidate" and entry["text"]:
+                    return ""
+                if entry["speaker"] == "interviewer":
+                    return entry["question_id"]
+        return ""
 
     def questions(self) -> list[dict[str, str]]:
         questions: dict[str, dict[str, str]] = {}
         for entry in self.entries:
             if (entry.get("speaker") == "interviewer" or entry["kind"] == "screen_question") and entry.get("text"):
-                questions[entry["question_id"]] = {key: entry[key] for key in ("question_id", "turn_id", "text", "created_at") if key in entry}
+                questions.setdefault(entry["question_id"], {key: entry[key] for key in ("question_id", "turn_id", "created_at") if key in entry})
+        for question_id, question in questions.items():
+            question["text"] = self.question_text(question_id)
         return list(questions.values())

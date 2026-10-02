@@ -66,11 +66,15 @@ class CaptureAndDeploymentApiTests(unittest.TestCase):
         self.runtime.accept_screen_snapshot.assert_awaited_once_with(self.payload)
         self.assertNotIn("token", response.text)
 
-    def test_screenshot_rejects_inactive_missing_and_stale_requests(self):
+    def test_screenshot_without_transcription_accepts_pending_request_but_not_closed_or_stale(self):
         self.runtime.active = False
+        self.assertEqual(self.client.post(self.url, headers=self.headers, json=self.payload).status_code, 200)
+        self.runtime.accept_screen_snapshot.assert_awaited_once()
+        self.runtime.accept_screen_snapshot.reset_mock()
+        self.runtime.closed = True
         self.assertEqual(self.client.post(self.url, headers=self.headers, json=self.payload).status_code, 409)
         self.runtime.accept_screen_snapshot.assert_not_awaited()
-        self.runtime.active = True
+        self.runtime.closed = False
         self.runtime.accept_screen_snapshot.return_value = False
         self.assertEqual(self.client.post(self.url, headers=self.headers, json=self.payload).status_code, 409)
         self.registry.get.return_value = None
@@ -179,13 +183,13 @@ class DeploymentFixtureTests(unittest.TestCase):
                     began = await client.post("/api/deployment", headers=headers)
                     self.assertEqual(began.json(), {"active": False, "draining": True})
                     self.assertEqual((await client.post("/api/interviews", headers=headers)).status_code, 503)
-                    await runtime.start_interview(ui)
+                    await runtime.start_transcription(ui)
                     self.assertFalse(runtime.active)
                     self.assertFalse(interviewer.messages)
                     self.assertEqual(ui.messages[-1]["type"], "error")
                     ended = await client.delete("/api/deployment", headers=headers)
                     self.assertEqual(ended.json(), {"active": False, "draining": False})
-                    await runtime.start_interview(ui)
+                    await runtime.start_transcription(ui)
                     self.assertTrue(runtime.active)
                     self.assertEqual((await client.post("/api/deployment", headers=headers)).status_code, 409)
                     self.assertEqual((await client.get("/api/deployment", headers=headers)).json(), {"active": True, "draining": False})
@@ -215,7 +219,7 @@ class DeploymentFixtureTests(unittest.TestCase):
             runtime._ready_ui_clients.add("ui")
             runtime._capture_clients.update({"interviewer": BlockedSocket(), "candidate": Socket()})
             runtime._capture_ready.update({"interviewer", "candidate"})
-            starting = asyncio.create_task(runtime.start_interview(ui))
+            starting = asyncio.create_task(runtime.start_transcription(ui))
             await entered.wait()
             draining = asyncio.create_task(registry.begin_deployment())
             await asyncio.sleep(0)
@@ -251,6 +255,17 @@ class DeploymentFixtureTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             validate_health({**EXPECTED_HEALTH, "release_id": "previous-release"}, expected_release)
         self.assertEqual(validate_health(expected_release, expected_release), expected_release)
+
+    def test_release_requires_chat_only_capabilities_and_preserves_rollback(self):
+        for capability in ("pinned_code",):
+            with self.subTest(capability=capability):
+                old_health = {key: value for key, value in EXPECTED_HEALTH.items() if key != capability}
+                self.assertEqual(validate_health(old_health, snapshot_health(old_health)), old_health)
+                for health_payload in (old_health, {**EXPECTED_HEALTH, capability: True},
+                                       {**EXPECTED_HEALTH, capability: "true"}, {**EXPECTED_HEALTH, capability: 1}):
+                    with self.assertRaises(ValueError):
+                        validate_health(health_payload)
+                self.assertIs(snapshot_health(dict(EXPECTED_HEALTH))[capability], False)
 
     def test_rollback_snapshot_can_describe_previous_realtime_release(self):
         previous = {"status": "ok", "realtime_protocol": "realtime-interview-v4",
@@ -308,7 +323,8 @@ class DeploymentFixtureTests(unittest.TestCase):
         self.assertIn("INTERVIEW_ACCESS_TOKEN=synthetic\n", result)
         self.assertIn("# keep\n", result)
         self.assertEqual(result.count("OPENAI_CODE_MODEL="), 1)
-        self.assertIn("OPENAI_CODE_MODEL=gpt-6-astra\n", result)
+        self.assertIn("OPENAI_CODE_MODEL=gpt-6.1-sol\n", result)
+        self.assertIn("OPENAI_RESPONSES_MODEL=gpt-6.1-sol\n", result)
 
     def test_transcription_upgrade_migrates_language_without_overwriting_plural_setting(self):
         result = update_environment("OPENAI_REALTIME_TRANSCRIPTION_MODEL=gpt-realtime-whisper\n"

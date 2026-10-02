@@ -15,7 +15,7 @@ npm install
 npm run dev:desktop
 ```
 
-If `INTERVIEW_API_BASE_URL` is not set, the Electron shell uses `https://interview.reachard.co`.
+If `INTERVIEW_API_BASE_URL` is not set, the Electron shell uses `https://interview.siyidu.com`.
 To use a local FastAPI backend, start with `INTERVIEW_API_BASE_URL=http://127.0.0.1:8000 npm run dev:desktop`.
 
 ## Shortcuts

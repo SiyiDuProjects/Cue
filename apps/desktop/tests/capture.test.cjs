@@ -64,6 +64,20 @@ function audioFixture({ addModule = () => Promise.resolve() } = {}) {
   return { Track, Stream, Context, clock, module, advance: (milliseconds) => { now += milliseconds; } };
 }
 
+test("display capture lowers video overhead while retaining the video track", async () => {
+  let constraints;
+  const track = { stops: 0, stop() { this.stops++; } };
+  const stream = { getAudioTracks: () => [{}], getTracks: () => [track] };
+  const { requestCaptureStream } = compile("src/audioCapture.ts", { navigator: { mediaDevices: {
+    async getDisplayMedia(options) { constraints = options; return stream; },
+  } } });
+  assert.equal(await requestCaptureStream("interviewer"), stream);
+  assert.deepEqual(JSON.parse(JSON.stringify(constraints)), {
+    audio: true, video: { frameRate: { max: 1 }, width: { max: 64 }, height: { max: 64 } },
+  });
+  assert.equal(track.stops, 0);
+});
+
 test("ordinary silence remains healthy; mute/unmute has separate recoverable state", async () => {
   const fixture = audioFixture();
   const track = new fixture.Track();
@@ -194,9 +208,34 @@ test("native worklet converts and clamps PCM across variable render block sizes"
   processor.process([[new Float32Array(2048)]]);
   assert.equal(messages.length, 3);
   assert.notEqual(messages[1].data.pcm, messages[2].data.pcm);
+  processor.process([[new Float32Array(17).fill(0.5)]]);
+  processor.port.onmessage({ data: { type: 'finish' } });
+  assert.equal(messages[3].data.pcm.byteLength, 34);
+  assert.equal(new Int16Array(messages[3].data.pcm)[0], 16383);
+  assert.equal(messages[4].data.type, 'finished');
+  assert.equal(processor.process([[new Float32Array(128)]]), false);
+  assert.equal(messages.length, 5);
 });
 
-function adapterFixture({ fetchImpl, captureImpl } = {}) {
+test('audio finish forwards the final PCM before closing the media', async () => {
+  const f = audioFixture(), track = new f.Track(), chunks = [];
+  const handle = f.module.startLocalAudioCapture({ stream: new f.Stream([track]), onChunk: pcm => chunks.push(pcm) });
+  await Promise.resolve();
+  const context = f.Context.all.at(-1);
+  context.processor.port.postMessage = message => {
+    assert.equal(message.type, 'finish');
+    context.frame();
+    assert.equal(track.stops, 0);
+    context.processor.port.onmessage({ data: { type: 'finished' } });
+  };
+  assert.equal(await handle.finish(), true);
+  assert.equal(chunks.length, 1);
+  assert.equal(track.stops, 1);
+  assert.equal(context.state, 'closed');
+  handle.stop(); assert.equal(track.stops, 1);
+});
+
+function adapterFixture({ fetchImpl, captureImpl, withoutMedia = false } = {}) {
   const media = [], errors = [], states = [], ended = [];
   const clock = timers();
   let sessionEnded = 0;
@@ -218,6 +257,14 @@ function adapterFixture({ fetchImpl, captureImpl } = {}) {
     }
   }
   const client = compile("src/sessionClient.ts", { WebSocket: Socket, window: clock });
+  class MockAudio {
+    static all = [];
+    constructor() { this.chunks = []; this.clears = 0; this.closed = false; this.stream = { clone: () => ({ getTracks: () => [] }) }; MockAudio.all.push(this); }
+    async resume() {}
+    append(data) { this.chunks.push(data); }
+    clear() { this.clears++; }
+    close() { this.closed = true; }
+  }
   const captureModule = compile("src/captureAdapter.ts", {
     WebSocket: Socket,
     window: { ...clock, interviewDesktop: {
@@ -227,22 +274,25 @@ function adapterFixture({ fetchImpl, captureImpl } = {}) {
       })),
     } },
     fetch: fetchImpl ?? (async () => ({ ok: true, status: 200 })),
-    require: (name) => name === "./sessionClient" ? client : {
+    require: (name) => name === "./sessionClient" ? client : name === "./mockAudio" ? { MockAudio } : {
       getCaptureLabel: (speaker) => speaker,
       startLocalAudioCapture: (options) => {
         if (options.stream.fail) throw new Error("synthetic invalid stream");
         const item = { options, stops: 0, health: { phase: "ready", detail: "ready" } };
         media.push(item);
-        return { getHealth: () => item.health, stop: () => item.stops++ };
+        return { getHealth: () => item.health, stop: () => item.stops++,
+          finish: async () => { options.onChunk(new ArrayBuffer(16)); return true; } };
       },
     },
   });
   const streams = { interviewer: { getTracks: () => [] }, candidate: { getTracks: () => [] } };
-  const adapter = new captureModule.CaptureAdapter("https://example.test", streams, {
+  const preparations = [];
+  const adapter = new captureModule.CaptureAdapter("https://example.test", withoutMedia ? {} : streams, {
+    onPrepareCapture: mode => preparations.push(mode),
     onError: (message) => errors.push(message), onChannelChange: (speaker, state) => states.push({ speaker, ...state }),
     onMediaEnded: (speaker) => ended.push(speaker), onSessionEnded: () => sessionEnded++,
   });
-  return { adapter, media, errors, states, ended, Socket, clock, sessionEnded: () => sessionEnded };
+  return { adapter, media, errors, states, ended, Socket, clock, MockAudio, preparations, sessionEnded: () => sessionEnded };
 }
 
 async function connect(fixture, suffix = "a") {
@@ -251,13 +301,28 @@ async function connect(fixture, suffix = "a") {
   const sockets = fixture.Socket.all.slice(oldCount);
   for (const socket of sockets) {
     socket.open();
-    socket.message({ type: "session_ready", realtime_protocol: "realtime-interview-v5" });
+    socket.message({ type: "session_ready", realtime_protocol: "interview-chat-v12" });
     socket.message({ type: "capture_start" });
     socket.bufferedAmount = 0;
   }
   await promise;
   return sockets;
 }
+
+test("desktop connects and captures screenshots without initializing either audio source", async () => {
+  let uploads = 0;
+  const f = adapterFixture({ withoutMedia: true, fetchImpl: async () => { uploads++; return { ok: true }; } });
+  const [socket] = await connect(f);
+  assert.equal(f.media.length, 0);
+  socket.message({ type: "screen_capture_request", request_id: "manual-no-audio" });
+  await new Promise(setImmediate);
+  assert.equal(uploads, 1);
+  assert.equal(f.media.length, 0);
+  socket.message({ type: "prepare_capture", mode: "assist" });
+  assert.deepEqual(f.preparations, ["assist"]);
+  assert.equal(f.media.length, 0, "only the host's explicit preparation callback may initialize media");
+  f.adapter.dispose();
+});
 
 test("capture refuses old or missing protocol before transmitting audio", async () => {
   for (const protocol of [undefined, "realtime-interview-v4"]) {
@@ -307,7 +372,7 @@ test("UI control client refuses mismatched protocol and never sends Start", asyn
   socket.open();
   socket.message({ type: "session_ready", realtime_protocol: "realtime-interview-v4" });
   await rejected;
-  assert.equal(client.send({ type: "start_interview" }), false);
+  assert.equal(client.send({ type: "start_transcription" }), false);
   assert.equal(socket.sent.length, 1); // Authentication is the only allowed frame.
   assert.equal(fixture.clock.tasks.size, 0);
   assert(errors.some((error) => error.includes("不匹配")));
@@ -351,8 +416,31 @@ test("capture health preserves mute and interruption without a later ready overw
   assert.equal(lastState().phase, "listening");
   assert.equal(controls().at(-1).phase, "ready");
   interviewer.message({ type: "capture_stop" });
-  assert.equal(lastState().phase, "ready");
+  assert.equal(lastState().phase, "interrupted");
+  assert.equal(fixture.media[0].stops, 1);
+  assert.equal(fixture.media[1].stops, 1);
   assert(!controls().some((item) => item.type === "capture_ready"));
+  fixture.adapter.dispose();
+});
+
+test("stop flushes each channel's last PCM before acknowledging without ending the session", async () => {
+  const fixture = adapterFixture();
+  const [interviewer, candidate] = await connect(fixture);
+  interviewer.message({ type: "capture_stop", request_id: "drain-interviewer" });
+  await new Promise(setImmediate);
+  const frames = interviewer.sent;
+  const acknowledgement = frames.findIndex(item => typeof item === "string" && JSON.parse(item).type === "capture_stopped");
+  assert(acknowledgement > 0);
+  const tail = frames.findIndex(item => typeof item !== "string" && item.byteLength === 16);
+  assert(tail >= 0 && tail < acknowledgement);
+  assert.equal(JSON.parse(frames[acknowledgement]).request_id, "drain-interviewer");
+  assert.equal(JSON.parse(frames[acknowledgement]).complete, true);
+  assert.equal(fixture.media[0].stops, 1);
+  assert.equal(fixture.media[1].stops, 0);
+  candidate.message({ type: "capture_stop", request_id: "drain-candidate" });
+  await new Promise(setImmediate);
+  assert.equal(fixture.media[1].stops, 1);
+  assert.equal(fixture.sessionEnded(), 0);
   fixture.adapter.dispose();
 });
 
@@ -395,7 +483,30 @@ test("HTTP screenshot failures return a small correlated error without image byt
   fixture.adapter.dispose();
 });
 
-test("backpressure is visible once, preserves the other channel, and recovers even after capture_stop", async () => {
+test("each explicit screenshot remains an independent attachment even if its pixels match", async () => {
+  let uploads = 0;
+  let image = "data:image/jpeg;base64,AAA";
+  const fixture = adapterFixture({
+    fetchImpl: async () => { uploads++; return { ok: true, status: 200 }; },
+    captureImpl: async () => ({ image_data: image, source_id: "selected-code-window", captured_at: "test" }),
+  });
+  const [socket] = await connect(fixture);
+  async function capture(id) {
+    socket.message({ type: "screen_capture_request", request_id: id });
+    await new Promise(setImmediate);
+  }
+  await capture("first");
+  await capture("unchanged");
+  assert.equal(uploads, 2);
+  image = "data:image/jpeg;base64,BBB";
+  await capture("edited");
+  await capture("manual");
+  assert.equal(uploads, 4);
+  assert(!socket.sent.some((item) => typeof item === "string" && item.includes("image_data")));
+  fixture.adapter.dispose();
+});
+
+test("stopping releases both sources; only newly prepared media can resume", async () => {
   const fixture = adapterFixture();
   const [interviewer, candidate] = await connect(fixture);
   interviewer.bufferedAmount = 300000;
@@ -409,9 +520,12 @@ test("backpressure is visible once, preserves the other channel, and recovers ev
   interviewer.bufferedAmount = 0;
   fixture.media[0].options.onChunk(new ArrayBuffer(2048));
   const ready = interviewer.sent.filter((item) => typeof item === "string").map(JSON.parse).filter((item) => item.type === "capture_status").at(-1);
-  assert.equal(ready.phase, "ready");
+  assert.equal(ready.phase, "interrupted");
   interviewer.message({ type: "capture_start" });
   fixture.media[0].options.onChunk(new ArrayBuffer(2048));
+  assert.equal(interviewer.sent.filter((item) => typeof item !== "string").length, 0);
+  fixture.adapter.replaceChannel("interviewer", { getTracks: () => [] });
+  fixture.media[2].options.onChunk(new ArrayBuffer(2048));
   assert.equal(interviewer.sent.filter((item) => typeof item !== "string").length, 1);
   fixture.adapter.dispose();
 });
@@ -451,9 +565,10 @@ test("events from replaced sockets cannot end or mutate a new session", async ()
   const fixture = adapterFixture();
   const [old] = await connect(fixture, "a");
   const [current] = await connect(fixture, "b");
+  fixture.adapter.replaceChannel("interviewer", { getTracks: () => [] });
   old.message({ type: "session_ended" });
   old.message({ type: "capture_stop" });
-  fixture.media[0].options.onChunk(new ArrayBuffer(2048));
+  fixture.media[2].options.onChunk(new ArrayBuffer(2048));
   assert.equal(fixture.sessionEnded(), 0);
   assert.equal(current.sent.filter((item) => typeof item !== "string").length, 1);
   fixture.adapter.dispose();
@@ -490,4 +605,89 @@ test("a stalled native screenshot times out without opening an HTTP upload", asy
   assert.match(fixture.errors[0], /超时/);
   fixture.adapter.dispose();
   assert.equal(fixture.clock.tasks.size, 0);
+});
+
+
+test("mock mode replaces only system capture and requires server acknowledgment before Start", async () => {
+  const f = adapterFixture();
+  const [interviewer, candidate] = await connect(f);
+  interviewer.message({ type: "session_ready", realtime_protocol: "interview-chat-v12", mock_interview: true });
+  let ready = false;
+  const preparation = f.adapter.prepareMode("mock").then(() => { ready = true; });
+  await new Promise(setImmediate);
+  assert.equal(ready, false);
+  assert.equal(f.adapter.mode, "mock");
+  assert.equal(f.media[0].stops, 1);
+  assert.equal(f.media[1].stops, 0);
+  assert.equal(JSON.parse(interviewer.sent.at(-1)).mode, "mock");
+  interviewer.message({ type: "capture_mode_ready", mode: "mock" });
+  await preparation;
+  assert.equal(ready, true);
+  interviewer.message({ type: "mock_audio", delta: "AAAA" });
+  assert.equal(f.MockAudio.all[0].chunks.length, 1);
+  const count = interviewer.sent.length;
+  f.media[0].options.onChunk(new ArrayBuffer(20));
+  assert.equal(interviewer.sent.length, count, "stale loopback cannot feed helper");
+  f.media[2].options.onChunk(new ArrayBuffer(20));
+  assert.equal(interviewer.sent.length, count + 1, "virtual audio feeds original helper channel");
+  candidate.bufferedAmount = 0;
+  f.media[1].options.onChunk(new ArrayBuffer(20));
+  assert.equal(candidate.sent.at(-1).byteLength, 20);
+  f.adapter.disconnectSession();
+  assert.equal(f.MockAudio.all[0].closed, true);
+  f.adapter.dispose();
+  assert.equal(f.MockAudio.all[0].closed, true);
+});
+
+test("old backend cannot silently start a mock interviewer and failed preparation cannot hang", async () => {
+  const f = adapterFixture();
+  const [interviewer] = await connect(f);
+  await assert.rejects(f.adapter.prepareMode("mock"), /服务器/);
+  assert.equal(f.media[0].stops, 0);
+  interviewer.message({ type: "session_ready", realtime_protocol: "interview-chat-v12", mock_interview: true });
+  const prepare = f.adapter.prepareMode("mock");
+  await Promise.resolve();
+  f.adapter.disconnectSession();
+  await assert.rejects(prepare, /连接已关闭/);
+  f.adapter.dispose();
+});
+
+test("mock PCM playback uses matching speaker and virtual destinations, bounds backlog and clears on stop", async () => {
+  let context;
+  const sources = [];
+  class Context {
+    constructor() {
+      context = this; this.state = "running"; this.currentTime = 0;
+      this.destination = {}; this.virtual = { stream: { getTracks: () => [] } };
+    }
+    createMediaStreamDestination() { return this.virtual; }
+    createConstantSource() { return { offset: {}, connect() {}, start() {}, stop() {}, disconnect() {} }; }
+    createBuffer(channels, length) { const data = new Float32Array(length); return { getChannelData: () => data }; }
+    createBufferSource() {
+      const source = { outputs: [], stops: 0, connect(node) { this.outputs.push(node); },
+        start(at) { this.at = at; }, stop() { this.stops++; }, disconnect() {} };
+      sources.push(source); return source;
+    }
+    async resume() {}
+    async close() { this.state = "closed"; }
+  }
+  const { MockAudio } = compile("src/mockAudio.ts", { AudioContext: Context, atob: (value) => Buffer.from(value, "base64").toString("binary") });
+  const audio = new MockAudio();
+  await audio.resume();
+  audio.append(Buffer.from([0, 0, 0xff, 0x7f, 0, 0x80]).toString("base64"));
+  assert.equal(sources.length, 1);
+  assert.equal(sources[0].outputs[0], context.destination);
+  assert.equal(sources[0].outputs[1], context.virtual);
+  assert.deepEqual(Array.from(sources[0].buffer.getChannelData(0)), [0, 32767 / 32768, -1]);
+  assert.throws(() => audio.append(Buffer.alloc(480002).toString("base64")), /格式/);
+  assert.throws(() => audio.append(Buffer.from([0]).toString("base64")), /格式/);
+  audio.clear();
+  assert.equal(sources[0].stops, 1);
+  const chunk = Buffer.alloc(480000).toString("base64"); // Ten seconds per chunk.
+  for (let i = 0; i < 11; i++) audio.append(chunk);
+  assert.throws(() => audio.append(chunk), /积压/);
+  audio.clear();
+  audio.append(chunk); // A barge-in clears the backlog and permits fresh audio.
+  audio.close();
+  assert.throws(() => audio.append("AAAA"), /暂停/);
 });

@@ -1,7 +1,9 @@
 node_modules/
 dist/
+dist-browser-preview/
 dist-codex-check*/
 build/
+/releases/
 .venv/
 __pycache__/
 .pytest_cache/
@@ -25,3 +27,39 @@ apps/server/web/*
 
 # Private candidate resume is local runtime context, never source control.
 /apps/server/context/resume.txt
+/apps/server/data/
+/assistant-workspace/materials/*
+!/assistant-workspace/materials/.gitkeep
+/assistant-workspace/.runtime/
+/assistant-workspace/conversations/
+/artifacts/interview-replay/
+/private-notes/
+/artifacts/codex-protocol/
+/artifacts/workspace-upgrade-2026-09-28/baseline/
+/artifacts/workspace-upgrade-2026-09-28/ui/electron-profile/
+/artifacts/interview-audit-2026-09-26/workspace-history-*/
+
+# Local-only Mac migration inputs and reproducible output
+**/node_modules*/
+**/.next*/
+**/.venv*/
+**/__pycache__/
+**/.qa/
+**/.private/
+**/.runtime/
+.env
+.env.*
+!.env.example
+!.env.sample
+.npmrc
+.dev.vars
+*.pem
+*.key
+*.sqlite
+*.sqlite3
+*.sqlite-*
+*.sqlite3-*
+*.db
+*.tsbuildinfo
+/.codex/
+/apps/server/context/

@@ -13,11 +13,16 @@ from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 EXPECTED_HEALTH = {
     "status": "ok",
-    "realtime_protocol": "realtime-interview-v5",
-    "live_model": "gpt-live-1",
+    "realtime_protocol": "interview-chat-v12",
+    "pinned_code": False,
+    "chat": True,
+    "answer_transport": "codex-app-server",
+    "chatgpt_mcp": True,
+    "responses_model": "gpt-6.1-sol",
+    "mock_live_model": "gpt-live-1",
     "realtime_transcription_model": "gpt-live-transcribe",
-    "code_reasoning_effort": "high",
-    "code_model": "gpt-6-astra",
+    "code_reasoning_effort": "xhigh",
+    "code_model": "gpt-6.1-sol",
 }
 
 
@@ -31,14 +36,14 @@ def urlopen(request: Request, *, timeout: float):
     return build_opener(_NoRedirect()).open(request, timeout=timeout)
 
 
-def validate_health(payload: object, expected: dict[str, str] | None = None) -> dict[str, str]:
+def validate_health(payload: object, expected: dict[str, str | bool] | None = None) -> dict[str, str | bool]:
     if not isinstance(payload, dict):
         raise ValueError("Health response must be a JSON object.")
     fields = EXPECTED_HEALTH if expected is None else expected
     for field, value in fields.items():
-        if payload.get(field) != value:
+        if payload.get(field) != value or type(payload.get(field)) is not type(value):
             raise ValueError(f"Health field did not match the release: {field}.")
-    return {field: str(payload[field]) for field in fields}
+    return {field: payload[field] for field in fields}
 
 
 def validate_drain(payload: object, *, drained: bool) -> dict[str, bool]:
@@ -49,16 +54,17 @@ def validate_drain(payload: object, *, drained: bool) -> dict[str, bool]:
     return {"active": payload["active"], "draining": payload["draining"]}
 
 
-def snapshot_health(payload: object) -> dict[str, str]:
+def snapshot_health(payload: object) -> dict[str, str | bool]:
     # A rollback baseline describes the running release, including the previous
     # Realtime architecture; it must not require fields only in the new release.
     required = {"status", "realtime_protocol", "realtime_transcription_model", "code_model"}
     if not isinstance(payload, dict) or any(not isinstance(payload.get(key), str) or not payload[key] for key in required):
         raise ValueError("Existing health response is incomplete.")
-    if payload["status"] != "ok" or not (payload.get("live_model") or payload.get("realtime_model")):
+    if payload["status"] != "ok" or not (payload.get("answer_transport") in {"responses", "agents", "codex-app-server"} or payload.get("live_model") or payload.get("realtime_model")):
         raise ValueError("Existing service is not healthy or has no primary model.")
-    allowed = set(EXPECTED_HEALTH) | {"realtime_model", "realtime_reasoning_effort", "release_id"}
-    return {key: value for key, value in payload.items() if key in allowed and isinstance(value, str) and value}
+    allowed = set(EXPECTED_HEALTH) | {"live_model", "realtime_model", "realtime_reasoning_effort", "release_id", "stepwise_code", "code_plan", "workspace_updates"}
+    return {key: value for key, value in payload.items() if key in allowed and (
+        isinstance(value, str) and value or type(value) is bool)}
 
 
 def request_json(action: str, url: str | None = None) -> object:

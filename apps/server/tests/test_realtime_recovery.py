@@ -57,8 +57,7 @@ class RecoveryTests(unittest.IsolatedAsyncioTestCase):
             expires_at=datetime.now(timezone.utc) + timedelta(hours=1), context_store=ContextStore(Path(self.directory.name)))
         self.runtime.active = True
         self.upstream = Upstream()
-        from tests.test_realtime import attach_live
-        attach_live(self.runtime, self.upstream)
+        self.runtime.main_upstream = self.upstream
         self.client_events = []
         self.runtime.broadcast_to_clients = AsyncMock(side_effect=self.client_events.append)
         self.reader = asyncio.create_task(rt._forward_main_events(self.runtime, self.upstream))
@@ -104,7 +103,7 @@ class RecoveryTests(unittest.IsolatedAsyncioTestCase):
         self.assertIs(self.runtime._capture_clients["interviewer"], capture)
         self.runtime._capture_clients.clear()
 
-    async def test_slow_audio_provider_does_not_queue_old_speech_or_block_capture_controls(self):
+    async def test_slow_audio_provider_keeps_bounded_recent_speech_and_capture_controls(self):
         from tests.test_realtime import FakeSocket
         class Capture(FakeSocket):
             def __init__(self):
@@ -126,17 +125,20 @@ class RecoveryTests(unittest.IsolatedAsyncioTestCase):
             try:
                 capture.incoming.put_nowait({"type": "websocket.receive", "bytes": b"first"})
                 await asyncio.wait_for(started.wait(), 1)
-                for _ in range(100):
-                    capture.incoming.put_nowait({"type": "websocket.receive", "bytes": b"obsolete"})
+                for index in range(100):
+                    capture.incoming.put_nowait({"type": "websocket.receive", "bytes": bytes([index]) * 2048})
                 capture.incoming.put_nowait({"type": "websocket.receive", "text": json.dumps({"type": "capture_status", "phase": "ready"})})
                 await until(lambda: mark.await_count == 1)
                 self.assertEqual(delivered, [b"first"])
-                self.assertEqual(self.runtime.metrics["audio_gaps"], 100)
+                self.assertEqual(self.runtime.metrics["audio_gaps"], 1)
                 unblock.set()
                 await asyncio.sleep(0)
                 capture.incoming.put_nowait({"type": "websocket.receive", "bytes": b"fresh"})
-                await until(lambda: len(delivered) == 2)
-                self.assertEqual(delivered, [b"first", b"fresh"])
+                await until(lambda: b"fresh" in delivered)
+                self.assertEqual(delivered[0], b"first")
+                self.assertEqual(delivered[-1], b"fresh")
+                self.assertLessEqual(len(delivered), 13)
+                self.assertNotIn(bytes([0]) * 2048, delivered)
                 capture.incoming.put_nowait({"type": "websocket.disconnect"})
                 await receiver
             finally:
@@ -192,35 +194,6 @@ class RecoveryTests(unittest.IsolatedAsyncioTestCase):
                 receiver.cancel()
                 await asyncio.gather(receiver, return_exceptions=True)
 
-    async def test_long_interview_reconnect_preserves_order_all_answers_code_and_screens(self):
-        from tests.test_realtime import PNG_DATA_URL, FakeSocket
-        from app.services.code_workspace import record_code_change
-        from app.services.live_session import LiveSession
-        for index in range(200):
-            question_id = f"q-{index}"
-            await self.runtime.emit_transcript_final("interviewer", f"Question {index}", turn_id=question_id)
-            await self.runtime.update_candidate_transcript(f"c-{index}", f"Answer choice {index}", "completed")
-            await rt._begin_response(self.runtime, f"r-{index}", {"question_id": question_id})
-            await rt._emit_answer_delta(self.runtime, f"r-{index}", f"Explanation {index}. " * 20)
-            await rt._emit_terminal(self.runtime, response_id=f"r-{index}", event_type="answer_completed", text=None, detail="")
-            if index % 20 == 0:
-                self.runtime.history.add_screen(f"s-{index}", PNG_DATA_URL, "Synthetic page", question_id=question_id)
-                self.runtime.code_workspace.commit(f"value = {index}", "python")
-                record_code_change(self.runtime, "automatic", question_id=question_id)
-        before = self.runtime.history.snapshot(self.runtime.response_buffers, self.runtime.response_status)
-        next_socket = Upstream()
-        await LiveSession(self.runtime).start(next_socket)
-        histories = [event["item"]["content"] for event in next_socket.messages if event.get("item", {}).get("type") == "message"
-            and "Complete observed interview history" in event["item"]["content"][0].get("text", "")]
-        self.assertEqual(len(histories), 1)
-        records = json.loads(histories[0][0]["text"].split("\n", 1)[1])["records"]
-        self.assertEqual(records, before[0])
-        self.assertEqual(len(histories[0]) - 1, 10)
-        restored = FakeSocket()
-        await self.runtime._send_answer_snapshots_locked(restored)
-        self.assertEqual([e["response_id"] for e in restored.messages], [f"r-{i}" for i in range(200)])
-        self.assertTrue(all(e["status"] == "completed" for e in restored.messages))
-        self.assertEqual(self.runtime.code_workspace.code, "value = 180")
 
     async def test_transcription_handshake_timeout_closes_only_candidate(self):
         candidate = Upstream()
@@ -300,16 +273,6 @@ class RecoveryTests(unittest.IsolatedAsyncioTestCase):
                     await self.runtime.ensure_candidate()
                 connect.assert_not_awaited()
 
-    async def test_candidate_forwarding_timeout_retains_text_and_recovers_main(self):
-        from app.services import live_session
-        async def stuck_send(data):
-            await asyncio.Future()
-        self.upstream.send = stuck_send
-        with patch.object(live_session, "SEND_TIMEOUT_SECONDS", .01):
-            await asyncio.wait_for(self.runtime.append_candidate_context("RETAINED TEXT"), 1)
-        self.assertEqual(list(self.runtime.pending_candidate_context), ["RETAINED TEXT"])
-        self.assertTrue(self.upstream.closed)
-        self.assertIsNone(self.runtime.main_upstream)
 
     async def test_candidate_connect_does_not_block_healthy_main_audio(self):
         entered, release = asyncio.Event(), asyncio.Event()
@@ -323,8 +286,8 @@ class RecoveryTests(unittest.IsolatedAsyncioTestCase):
             try:
                 await entered.wait()
                 main = await asyncio.wait_for(self.runtime.ensure_main(), .1)
-                await rt._send_audio_append(main, b"audio", live=True)
-                self.assertEqual(main.messages[-1]["type"], "session.input_audio.append")
+                await rt._send_audio_append(main, b"audio")
+                self.assertEqual(main.messages[-1]["type"], "input_audio_buffer.append")
             finally:
                 release.set()
                 await connecting
@@ -355,61 +318,19 @@ class RecoveryTests(unittest.IsolatedAsyncioTestCase):
         attach_ui(self.runtime, stale, "stale")
         attach_ui(self.runtime, healthy, "healthy")
         await self.runtime._broadcast_clients_locked({"type": "test"})
+        async with asyncio.timeout(1):
+            while not stale.closed_codes:
+                await asyncio.sleep(0)
         self.assertEqual(stale.closed_codes, [1013])
         self.assertEqual(healthy.messages[-1], {"type": "test"})
         self.assertIn(healthy, self.runtime._ui_clients.values())
 
 
-    async def test_reconnect_replays_all_recorded_context_and_draft_provenance(self):
-        await self.runtime.emit_transcript_final("interviewer", "EARLY_QUESTION", turn_id="q1")
-        await self.runtime.emit_transcript_final("candidate", "I chose B", turn_id="c1")
-        await rt._begin_response(self.runtime, "a1")
-        await rt._emit_answer_delta(self.runtime, "a1", "SUGGEST_A")
-        await rt._emit_terminal(self.runtime, response_id="a1", event_type="answer_completed", text=None, detail="completed")
-        self.runtime.history.add_analysis("deep1", "q1", "EARLY_QUESTION", "PRIOR_CODE")
-        self.runtime.history.add_screen("screen1", "data:image/png;base64,AAAA", "old frame", question_id="q1", source_id="screen:2")
-        await self.runtime.reset_main("test reconnect")
-        replacement = Upstream()
-        with patch.object(rt, "_connect_openai_realtime", AsyncMock(return_value=replacement)):
-            await self.runtime.ensure_main()
-        wire = json.dumps(replacement.messages)
-        for expected in ["COMPLETE_BACKGROUND", "EARLY_QUESTION", "I chose B", "SUGGEST_A", "PRIOR_CODE", "screen:2", "not evidence", "AAAA"]:
-            self.assertIn(expected, wire)
-        self.assertTrue(self.upstream.closed)
-        self.assertEqual(self.runtime.response_buffers["a1"], "SUGGEST_A")
-
-    async def test_candidate_manual_context_does_not_create_or_cancel_answer(self):
-        await self.runtime.start_operation({"type": "manual_text", "kind": "candidate_context", "text": "Actually I chose B", "operation_id": "context"}, object())
-        await until(lambda: self.runtime.operations["context"]["status"] == "completed")
-        self.assertFalse(any(m["type"] in {"response.create", "response.cancel"} for m in self.upstream.messages))
-        self.assertEqual(self.runtime.history.turns[-1]["speaker"], "candidate")
 
 
-    async def test_candidate_injection_failure_keeps_queue_and_allows_next_transcript(self):
-        self.upstream.send = AsyncMock(side_effect=OSError("network down"))
-        await self.runtime.append_candidate_context("FIRST")
-        await self.runtime.append_candidate_context("SECOND")
-        self.assertEqual(list(self.runtime.pending_candidate_context), ["FIRST", "SECOND"])
-        self.assertIsNone(self.runtime.main_upstream)
-        replacement = Upstream()
-        self.runtime._main_retry_after = 0
-        with patch.object(rt, "_connect_openai_realtime", AsyncMock(return_value=replacement)):
-            await self.runtime.ensure_main()
-        wire = json.dumps(replacement.messages)
-        self.assertIn("FIRST", wire)
-        self.assertIn("SECOND", wire)
-        self.assertEqual(list(self.runtime.pending_candidate_context), [])
 
 
-    async def test_paused_correction_is_preserved_with_explicit_history_relationship(self):
-        await self.runtime.emit_transcript_final("interviewer", "O(n squared)", turn_id="question")
-        self.runtime.hold_answers = True
-        await self.runtime.start_operation({"type": "manual_text", "kind": "correction", "question_id": "question", "text": "O(n log n)", "operation_id": "fix"}, object())
-        await until(lambda: self.runtime.operations["fix"]["status"] in rt.OPERATION_TERMINAL_STATUSES)
-        self.assertEqual(self.runtime.operations["fix"]["status"], "completed")
-        self.assertEqual(self.runtime.history.turns[-1]["corrects_turn_id"], "question")
-        self.assertIn("O(n log n)", json.dumps(self.upstream.messages))
-        self.assertFalse(any(m["type"] == "response.create" for m in self.upstream.messages))
+
 
     async def test_muted_channel_remains_ready_and_preserves_phase_in_public_snapshot(self):
         socket = object()
@@ -422,35 +343,6 @@ class RecoveryTests(unittest.IsolatedAsyncioTestCase):
         self.runtime._capture_clients.clear()
 
 
-    async def test_candidate_correction_during_astra_discards_outdated_analysis(self):
-        requested = asyncio.Event()
-        finish = asyncio.Event()
-        class Response:
-            def raise_for_status(self):
-                pass
-            def json(self):
-                return {"status": "completed", "output_text": "Candidate owned pricing", "usage": {"input_tokens": 10, "output_tokens": 20}}
-        class Client:
-            async def __aenter__(self):
-                return self
-            async def __aexit__(self, *args):
-                pass
-            async def post(self, *args, **kwargs):
-                requested.set()
-                await finish.wait()
-                return Response()
-        await self.runtime.emit_transcript_final("candidate", "I owned pricing", turn_id="c1")
-        with patch.dict(os.environ, {"OPENAI_API_KEY": "fixture-only"}), patch.object(rt.httpx, "AsyncClient", return_value=Client()):
-            analysis = asyncio.create_task(rt._analyze_problem(self.runtime, "Explain ownership"))
-            await requested.wait()
-            await self.runtime.emit_transcript_final("candidate", "I did not own pricing", turn_id="c1", corrects_turn_id="c1")
-            await self.runtime.append_candidate_context("[ASR correction, not a change of decision] I did not own pricing")
-            finish.set()
-            with self.assertRaisesRegex(rt.OpenAIRealtimeError, "outdated analysis was discarded"):
-                await analysis
-        self.assertFalse(any(entry["kind"] == "analysis" for entry in self.runtime.history.entries))
-        self.assertEqual(self.runtime.metrics["analysis_output_tokens"], 20)
-        self.assertFalse(any(message["type"] == "response.create" for message in self.upstream.messages))
 
     async def test_main_recovery_does_not_hide_failed_candidate_connection(self):
         await self.runtime.update_model_status("candidate", "recovering", "Candidate context unavailable")
@@ -460,29 +352,6 @@ class RecoveryTests(unittest.IsolatedAsyncioTestCase):
         await self.runtime.update_model_status("candidate", "ready", "Candidate connected")
         self.assertEqual(self.runtime._model_status["status"], "ready")
 
-    async def test_replacement_waits_for_physical_close_and_rejects_old_code_task(self):
-        entered, release = asyncio.Event(), asyncio.Event()
-        original_close = self.upstream.close
-        async def close():
-            entered.set()
-            await release.wait()
-            await original_close()
-        self.upstream.close = close
-        old_live = self.runtime.live
-        old_task = old_live.snapshot()
-        resetting = asyncio.create_task(self.runtime.reset_main("reconnect"))
-        await entered.wait()
-        replacement = Upstream()
-        with patch.object(rt, "_connect_openai_realtime", AsyncMock(return_value=replacement)) as connect:
-            connecting = asyncio.create_task(self.runtime.ensure_main())
-            await asyncio.sleep(0)
-            connect.assert_not_awaited()
-            release.set()
-            await resetting
-            await connecting
-        self.assertTrue(self.upstream.closed)
-        self.assertFalse(old_live.current(old_task))
-        self.assertIs(self.runtime.main_upstream, replacement)
 
 
 if __name__ == "__main__":

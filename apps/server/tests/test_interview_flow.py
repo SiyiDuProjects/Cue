@@ -44,10 +44,12 @@ class InterviewApiTests(unittest.TestCase):
             response = self.client.get("/health")
         self.assertEqual(response.status_code, 200)
         data = response.json()
-        self.assertEqual(data["live_model"], "gpt-live-1")
+        self.assertEqual(data["mock_live_model"], "gpt-live-1")
+        self.assertEqual(data["answer_transport"], "codex-app-server")
+        self.assertTrue(data["chat"])
         self.assertEqual(data["realtime_transcription_model"], "gpt-live-transcribe")
-        self.assertEqual(data["code_model"], "gpt-6-astra")
-        self.assertEqual(data["realtime_protocol"], "realtime-interview-v5")
+        self.assertEqual(data["code_model"], "gpt-6.1-sol")
+        self.assertEqual(data["realtime_protocol"], "interview-chat-v12")
 
     def test_remote_openai_base_url_requires_https(self) -> None:
         with patch.dict(os.environ, {"OPENAI_BASE_URL": "http://api.example.com/v1"}):
@@ -157,7 +159,7 @@ class InterviewApiTests(unittest.TestCase):
                     token = session["session_token" if channel == "client" else "capture_token"]
                     websocket.send_json({"type": "authenticate", "token": token})
                     ready = websocket.receive_json()
-                    self.assertEqual(ready["realtime_protocol"], "realtime-interview-v5")
+                    self.assertEqual(ready["realtime_protocol"], "interview-chat-v12")
                     websocket.send_json({"type": "ping"})
                     snapshot = []
                     while True:
@@ -171,18 +173,16 @@ class InterviewApiTests(unittest.TestCase):
         ensure_main.assert_not_awaited()
         ensure_candidate.assert_not_awaited()
 
-    def test_end_to_end_dual_capture_captions_and_browser_reconnect_with_fake_providers(self) -> None:
+    def test_end_to_end_dual_transcription_and_browser_reconnect_without_auto_answers(self) -> None:
         from tests.test_realtime import FakeUpstream
         from app.services import openai_realtime as rt
         class Provider(FakeUpstream):
             async def send(self, payload):
                 await super().send(payload)
                 event = json.loads(payload)
-                if event["type"] == "session.input_audio.append":
-                    self.queue.put_nowait(json.dumps({"type": "session.input_transcript.delta", "delta": "Explain a hash map", "end_ms": 100}))
-                    self.queue.put_nowait(json.dumps({"type": "session.output_transcript.delta", "delta": "Use keys for direct lookup.", "end_ms": 200}))
-                elif event["type"] == "input_audio_buffer.append":
-                    self.queue.put_nowait(json.dumps({"type": "conversation.item.input_audio_transcription.completed", "item_id": "candidate-one", "transcript": "I chose Python"}))
+                if event["type"] == "input_audio_buffer.append":
+                    self.queue.put_nowait(json.dumps({"type": "conversation.item.input_audio_transcription.completed", "item_id": "one",
+                        "transcript": "Explain a hash map" if self is main else "I chose Python"}))
         main, candidate = Provider(), Provider()
         async def connect(*, kind):
             return main if kind == "main" else candidate
@@ -207,26 +207,40 @@ class InterviewApiTests(unittest.TestCase):
                     until(socket, "pong")
                 ui.send_json({"type": "authenticate", "token": session["session_token"]})
                 until(ui, "session_metrics")
-                ui.send_json({"type": "start_interview"})
+                ui.send_json({"type": "start_transcription"})
                 until(interviewer, "capture_start")
                 until(microphone, "capture_start")
                 self.assertTrue(until(ui, "interview_state")["active"])
                 interviewer.send_bytes(b"\x01\x00" * 1024)
-                answer = until(ui, "answer_delta")
+                question = until(ui, "transcript_final")
+                self.assertEqual(question["speaker"], "interviewer")
                 microphone.send_bytes(b"\x02\x00" * 1024)
                 while until(ui, "transcript_final").get("speaker") != "candidate":
                     pass
-                self.assertEqual(answer["delta"], "Use keys for direct lookup.")
-                self.assertTrue(any(e["type"] == "session.input_audio.append" for e in main.messages))
-                self.assertFalse(any(e["type"] == "input_audio_buffer.append" for e in main.messages))
+                self.assertEqual(question["text"], "Explain a hash map")
+                self.assertFalse(any(e["type"] == "session.input_audio.append" for e in main.messages))
+                self.assertTrue(any(e["type"] == "input_audio_buffer.append" for e in main.messages))
                 self.assertTrue(any(e["type"] == "input_audio_buffer.append" for e in candidate.messages))
                 with self.client.websocket_connect(path + "/client") as browser:
                     browser.send_json({"type": "authenticate", "token": session["session_token"]})
                     transcript = until(browser, "transcript_snapshot")
-                    restored = until(browser, "answer_snapshot")
+                    restored = until(browser, "chat_snapshot")
                     self.assertTrue(any(t["text"] == "I chose Python" and t["speaker"] == "candidate" for t in transcript["turns"]))
-                    self.assertEqual(restored["response_id"], answer["response_id"])
-                    self.assertEqual(restored["text"], answer["delta"])
+                    self.assertEqual(restored["messages"], [])
+                    # Finish the successful session before TestClient cancels
+                    # its websocket scopes; abrupt capture loss has separate tests.
+                    ended = self.client.delete(
+                        f"/api/interviews/{session['interview_id']}",
+                        headers={"Authorization": f"Bearer {session['session_token']}"},
+                    )
+                    self.assertEqual(ended.status_code, 204)
+                    for socket in (browser, ui, microphone, interviewer):
+                        until(socket, "session_ended")
+                        with self.assertRaises(WebSocketDisconnect) as closed:
+                            socket.receive_json()
+                        self.assertEqual(closed.exception.code, 1000)
+                    self.assertTrue(main.closed)
+                    self.assertTrue(candidate.closed)
 
     def test_electron_file_origin_can_connect_after_token_authentication(self) -> None:
         session = self.create_interview()

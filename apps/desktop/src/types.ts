@@ -17,6 +17,7 @@ export type AnswerStatus = "streaming" | "completed" | "interrupted" | "error";
 export type DeviceStatus = "offline" | "initializing" | "ready" | "error";
 
 export interface InterviewSession {
+  conversation_id?: string;
   interview_id: string;
   session_token: string;
   capture_token?: string;
@@ -50,7 +51,6 @@ export interface QuestionRecord {
 }
 
 export type ManualTextKind = "question" | "correction" | "candidate_context";
-export type QuickAnswerAction = "answer" | "shorten" | "expand" | "rephrase" | "deep";
 export type OperationStatus = "sent" | "accepted" | "running" | "completed" | "failed" | "cancelled";
 
 export interface OperationRecord {
@@ -70,7 +70,15 @@ export interface ChannelHealth {
   detail?: string;
 }
 
+export interface AgentActivity {
+  id: string;
+  kind: "command" | "search" | "image" | "code" | "file" | "context";
+  label: string;
+  status: "running" | "completed" | "failed" | "interrupted";
+}
+
 export interface AnswerRecord {
+  activities?: AgentActivity[];
   responseId: string;
   questionId?: string;
   question?: string;
@@ -78,7 +86,6 @@ export interface AnswerRecord {
   status: AnswerStatus;
   createdAt: string;
   detail?: string;
-  intermediate?: boolean;
 }
 
 export interface AnswerStore {
@@ -86,7 +93,32 @@ export interface AnswerStore {
   byId: Record<string, AnswerRecord>;
 }
 
+export interface ChatRequest {
+  provider?: "codex" | "responses";
+  profile?: "default" | "brief" | "lc" | "ood";
+  message_id: string;
+  response_id: string;
+  text: string;
+  screens: CapturedScreen[];
+  action: string;
+  created_at: string;
+  code_revision: number;
+}
+
 export interface ServerEvent {
+  conversation_id?: string;
+  transcription_id?: string;
+  read_only?: boolean;
+  activities?: AgentActivity[];
+  title?: string;
+  chat?: boolean;
+  messages?: ChatRequest[];
+  chat_message?: ChatRequest;
+  ok?: boolean;
+  mode?: "assist" | "mock";
+  mock_interview?: boolean;
+  pinned_code?: boolean;
+  entry?: WorkspaceHistoryEntry;
   documents_count?: number;
   characters_count?: number;
   realtime_protocol?: string;
@@ -95,7 +127,6 @@ export interface ServerEvent {
   type?: string;
   speaker?: Speaker;
   response_id?: string;
-  intermediate?: boolean;
   request_id?: string;
   question?: string;
   delta?: string;
@@ -106,7 +137,7 @@ export interface ServerEvent {
   message?: string;
   created_at?: string;
   active?: boolean;
-  hold_answers?: boolean;
+  stopping?: boolean;
   current_question_id?: string;
   question_id?: string;
   turn_id?: string;
@@ -122,31 +153,32 @@ export interface ServerEvent {
   turns?: Array<Partial<TranscriptTurn>>;
 }
 
-export interface CodeProposal {
-  proposal_id: string;
-  base_revision: number;
-  base_code: string;
-  code: string;
-  language: string;
-  explanation: string;
-  context_changed: boolean;
-  code_changed: boolean;
+export interface CodeFile {
+  filename: string; language: string; code: string;
+  comparison: { source: "previous" | "screenshot"; screenshot_id: string | null; before: string;
+    label: string; captured_at?: string } | null;
 }
-
+export interface CodeVersion {
+  git_commit?: string;
+  active_file?: string | null;
+  interrupted?: boolean;
+  id: string; revision: number; title: string; created_at: string; files: CodeFile[];
+  complexity: { time: string | null; space: string | null; explanation: string } | null;
+}
 export interface CodeWorkspace {
-  document_id: string;
-  revision: number;
-  context_version: number;
-  code: string;
-  language: string;
-  can_undo: boolean;
-  run_id: string;
-  proposal: CodeProposal | null;
-  reveal_id?: string;
-  last_change?: { base_code: string; code: string; language: string; explanation: string; revision: number } | null;
+  workspace_id: string; revision: number; current: CodeVersion | null;
+  versions: Array<Pick<CodeVersion, "id" | "revision" | "title" | "created_at">>;
+  run_id: string; reveal_id: string; saved_workspaces?: SavedWorkspace[]; history_error?: string;
+}
+export interface SavedWorkspace { interview_id: string; problem_id: string; title: string; updated_at: string }
+export interface WorkspaceHistoryEntry {
+  key: string; version: CodeVersion;
+  versions?: Array<Pick<CodeVersion, "id" | "revision" | "title" | "created_at">>;
+  archive_interview_id?: string; archive_problem_id?: string;
 }
 
 export interface CapturedScreen {
+  image_url?: string;
   request_id: string;
   question_id: string;
   captured_at: string;

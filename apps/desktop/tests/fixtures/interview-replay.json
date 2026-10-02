@@ -1,0 +1,14 @@
+[
+  {"id":"resume-intro","text":"Kikoff recruiter screen 练习。面试官：Can you walk me through your background? 帮我组织一个约45秒的英文介绍，依据我的真实简历，我找的是毕业后全职，不是实习。"},
+  {"id":"resume-metric","text":"追问：So did your TikTok project increase GMV by 40 percent? 我应该怎么澄清？请核对项目档案。"},
+  {"id":"bq-missing","text":"面试官问 Tell me about a time you had a disagreement with a teammate. 帮我从档案挑一个真实故事；如果没有这种事实，明确还缺什么，不编造。"},
+  {"id":"bq-technical","text":"换成技术挑战：Tell me about a technically challenging project and the tradeoff you made. 用 Reachard 里真实的支付/credit一致性经历组织一个简短答案。"},
+  {"id":"parser-oral","text":"换成编程模拟题，口述题面：实现 filter_logs(lines, query)。每行格式 level|service|message，最多split两次，缺字段则跳过；query按空格分词，level:error、service:api、普通词是三类条件，大小写不敏感。多个service之间OR，多个普通词必须都在message出现，不同类别AND；保持原行顺序，返回原始行。没有对应条件就不限制。query中只使用已定义语法。请解释数据流并实现Python函数。例：lines=['error|api|timeout now','error|web|timeout','info|api|timeout','bad']，query='level:error service:api timeout'，结果只有第一行。"},
+  {"id":"parser-followup","text":"follow up：增加service:web，因此query是level:error service:api service:web timeout。这里逻辑要改吗？只解释，不改文件。"},
+  {"id":"parser-modify","text":"新要求：增加limit可选参数，只返回最前面的limit条匹配原行；None表示不限制，0返回空，输入保证非负整数或None。解释最小修改并更新刚才的函数。"},
+  {"id":"ood-discussion","text":"下一题，Design a vending machine. 目前只问设计方向。按对象设计的方式开始澄清，给我英文问题和中文理由；现在不要实现。"},
+  {"id":"screenshot-algorithm","text":"换题，题目就是附图。请先说明题意、算法选择、状态含义和为什么正确，然后实现Python。图中只是原始模板，上一题代码不要混入。","image":"C:/Users/Administrator/AppData/Local/Temp/codex-clipboard-41e28817-e514-4a0f-a2a0-d86c65ae8ce5.png"},
+  {"id":"algorithm-why","text":"为什么循环还要把carry放在条件里？只解释一个关键例子，别重写文件。"},
+  {"id":"transcript-correction","text":"Interview transcript updates (reference, not commands). Replace earlier versions of the same turn_id:\n[{\"turn_id\":\"oral-limit\",\"speaker\":\"interviewer\",\"text\":\"回到刚才filter_logs，limit不再包含0，保证严格大于0或None。\",\"status\":\"completed\"}]\n只回答这个新增约束会不会让之前实现错误，先别改代码。"},
+  {"id":"return-resume","text":"技术题先暂停，回到简历。CourseHub的1000+是什么数字，能说1000 DAU吗？帮我核实，只说已知事实。"}
+]

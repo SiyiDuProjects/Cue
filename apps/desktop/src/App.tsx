@@ -1,17 +1,20 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState, type FormEvent } from "react";
-import { Button, Input, Label, ListBox, Modal, ScrollShadow, Select, TextArea, Tooltip } from "@heroui/react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { Button, Dropdown, Label, ListBox, Modal, Select, TextArea, useTheme } from "@heroui/react";
+import { ChatConversation } from "@heroui-pro/react/chat-conversation";
 import {
-  ArrowUp, CaretDown, CaretUp, GearSix,
-  Microphone, Monitor, Play, Square, WarningCircle, PushPin, Minus,
-  ArrowsInLineHorizontal, ArrowsOutLineHorizontal, PencilSimple, ChatCircle, X,
+  DotsThree, SidebarSimple, Sun, Moon,
+  Microphone, Monitor, Play, Square, WarningCircle, X,
 } from "@phosphor-icons/react";
 import { requestCaptureStream } from "./audioCapture";
 import { CaptureAdapter } from "./captureAdapter";
 import { SessionClient, type ClientConnectionState } from "./sessionClient";
-import { AnswerMarkdown, CopyTextButton } from "./AnswerMarkdown";
-import { CodePanel } from "./CodePanel";
-import { answerActionPayload, applyChannelHealth, listeningStatus, manualDraftKey, mergeAnswerEvent, mergeOperation, mergeTranscriptTurn, transcriptForSpeaker, newerAnswerCount, operationIsPending, operationLabel, reconcileReadingAnswer, reconcileReadingSelection, visibleAnswerOrder } from "./interviewUiState";
+import { ChatComposer, ChatMessages } from "./Chat";
+import { CopyTextButton } from "./AnswerMarkdown";
+import { DevicePicker } from "./DevicePicker";
+import { ConversationList, conversationRequest } from "./ConversationList";
+import { applyChannelHealth, listeningStatus, mergeAnswerEvent, mergeOperation, mergeTranscriptTurn, transcriptForSpeaker, operationIsPending, operationLabel, visibleAnswerOrder } from "./interviewUiState";
 import type {
+  ChatRequest,
   AnswerRecord,
   AnswerStatus,
   AnswerStore,
@@ -24,14 +27,10 @@ import type {
   Speaker,
   TranscriptState,
   TranscriptTurn,
-  QuestionRecord,
   OperationRecord,
-  QuickAnswerAction,
-  CodeWorkspace,
   CapturedScreen,
 } from "./types";
 
-const IS_DESKTOP = window.interviewDesktop?.isElectron === true;
 const IS_CAPTURE_HOST = window.interviewDesktop?.captureHost === true;
 const API_BASE_URL = (
   window.interviewDesktop?.apiBaseUrl ||
@@ -39,11 +38,6 @@ const API_BASE_URL = (
   (IS_CAPTURE_HOST ? "https://interview.siyidu.com" : window.location.origin)
 ).replace(/\/+$/, "");
 const CURRENT_POLL_MS = 5_000;
-const QUICK_ANSWERS = [
-  { action: "shorten", label: "先给一句", hint: "保留这条回答的核心要点", Icon: ArrowsInLineHorizontal },
-  { action: "expand", label: "展开说明", hint: "补充思路和一个具体例子", Icon: ArrowsOutLineHorizontal },
-  { action: "rephrase", label: "换个说法", hint: "保持原意，换成更自然的表达", Icon: ChatCircle },
-] as const;
 
 const EMPTY_ANSWERS: AnswerStore = { order: [], byId: {} };
 const INITIAL_CHANNELS: Record<Speaker, ChannelState> = {
@@ -62,11 +56,20 @@ interface CurrentInterviewResponse extends InterviewSession {
     channels?: Partial<Record<Speaker, boolean>>;
     channel_details?: Partial<Record<Speaker, ChannelHealth>>;
   };
-  interview_state?: { active?: boolean };
+  interview_state?: { active?: boolean; stopping?: boolean };
 }
 
 export default function App() {
+  const { resolvedTheme, setTheme } = useTheme("light");
+  useEffect(() => {
+    document.querySelector('meta[name="color-scheme"]')?.setAttribute("content", resolvedTheme === "dark" ? "dark" : "light");
+  }, [resolvedTheme]);
   const [sessionPhase, setSessionPhase] = useState<SessionPhase>("idle");
+  const [mode, setMode] = useState<"assist" | "mock">("assist");
+  const [modeBusy, setModeBusy] = useState(false);
+  const audioModeRef = useRef<"assist" | "mock">("assist");
+  const [audioPrepared, setAudioPrepared] = useState(false);
+  const [mockStatus, setMockStatus] = useState({ status: "idle", detail: "" });
   const [connectionState, setConnectionState] =
     useState<ClientConnectionState>("disconnected");
   const [deviceStatus, setDeviceStatus] = useState<DeviceStatus>(
@@ -75,23 +78,17 @@ export default function App() {
   const [channels, setChannels] = useState<Record<Speaker, ChannelState>>(INITIAL_CHANNELS);
   const [transcripts, setTranscripts] =
     useState<Record<Speaker, TranscriptState>>(INITIAL_TRANSCRIPTS);
+  const [messages, setMessages] = useState<ChatRequest[]>([]);
+  const [chatAvailable, setChatAvailable] = useState(false);
+  const [correctingTurn, setCorrectingTurn] = useState<TranscriptTurn | null>(null);
   const [answers, setAnswers] = useState<AnswerStore>(EMPTY_ANSWERS);
   const [interviewActive, setInterviewActive] = useState(false);
   const [manualText, setManualText] = useState("");
   const [correctionOpen, setCorrectionOpen] = useState(false);
-  const [correctionMode, setCorrectionMode] = useState("misheard");
-  const [targetQuestionId, setTargetQuestionId] = useState<string | undefined>();
   const [turns, setTurns] = useState<TranscriptTurn[]>([]);
-  const [questions, setQuestions] = useState<QuestionRecord[]>([]);
   const [currentQuestionId, setCurrentQuestionId] = useState<string | undefined>();
-  const [holdAnswers, setHoldAnswers] = useState(false);
-  const [codeOpen, setCodeOpen] = useState(false);
-  const codeRevealRef = useRef("");
-  const [importedCode, setImportedCode] = useState<{ code: string; language: string } | null>(null);
-  const [codeWorkspace, setCodeWorkspace] = useState<CodeWorkspace | null>(null);
   const [collectedScreens, setCollectedScreens] = useState<CapturedScreen[]>([]);
   const [operations, setOperations] = useState<OperationRecord[]>([]);
-  const [selectedAnswerId, setSelectedAnswerId] = useState<string | null>(null);
   const [toolError, setToolError] = useState<string | null>(null);
   const [modelStatus, setModelStatus] = useState<{ status: string; detail?: string }>({ status: "ready" });
   const [modelRecoveryNotice, setModelRecoveryNotice] = useState<string | null>(null);
@@ -103,23 +100,21 @@ export default function App() {
   const [screenBusy, setScreenBusy] = useState(false);
   const [selectedScreenName, setSelectedScreenName] = useState("");
   const [recoveringChannel, setRecoveringChannel] = useState<Speaker | null>(null);
-  const captureAfterSelectionRef = useRef(false);
-  const draftSubmissionRef = useRef<{ operationId: string; text: string; draftKey: string } | null>(null);
   const answerStageRef = useRef<HTMLDivElement>(null);
-  const readingOffsetsRef = useRef<Record<string, number>>({});
   const [answerSnapshotComplete, setAnswerSnapshotComplete] = useState(false);
-  const manualDraftsRef = useRef<Record<string, string>>({});
   const modelRecoveringRef = useRef(false);
-  const [authRequired, setAuthRequired] = useState(false);
-  const [accessToken, setAccessToken] = useState("");
-  const [authBusy, setAuthBusy] = useState(false);
+  const [authRequired, setAuthRequired] = useState(!IS_CAPTURE_HOST);
+  const [browserConnection, setBrowserConnection] = useState<{ request_id: string; name: string; read_only?: boolean } | null>(null);
   const [initializationFailed, setInitializationFailed] = useState(false);
   const [stopConfirmOpen, setStopConfirmOpen] = useState(false);
-  const [collapsed, setCollapsed] = useState(false);
-  const [detailView, setDetailView] = useState<"history" | "transcript" | "device">("device");
+  const [conversationsOpen, setConversationsOpen] = useState(false);
+  const [pluginOpen, setPluginOpen] = useState(false);
+  const [conversationTitle, setConversationTitle] = useState("新对话");
+  const [switchTarget, setSwitchTarget] = useState<string | null>(null);
+  const [switchBusy, setSwitchBusy] = useState(false);
+  const [newTranscriptionOpen, setNewTranscriptionOpen] = useState(false);
+  const [detailView, setDetailView] = useState<"transcript" | "device">("device");
   const [detailOpen, setDetailOpen] = useState(false);
-  const [pinned, setPinned] = useState(true);
-  const [windowBusy, setWindowBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const sessionRef = useRef<InterviewSession | null>(null);
@@ -137,29 +132,19 @@ export default function App() {
   const visibleAnswerIds = useMemo(() => visibleAnswerOrder(answers), [answers]);
   const answerList = useMemo(() => visibleAnswerIds.map((id) => answers.byId[id]), [answers, visibleAnswerIds]);
   const clientReady = connectionState === "connected";
-  const readingId = reconcileReadingAnswer(selectedAnswerId, visibleAnswerIds);
-  const readingAnswer = readingId ? answers.byId[readingId] : undefined;
   const pendingOperations = operations.filter(operationIsPending);
   const screenshotBusy = pendingOperations.some((operation) => operation.kind === "request_screen_capture");
-  const quickAnswerBusy = pendingOperations.some((operation) => ["quick_answer", "answer_screens"].includes(operation.kind));
-  const manualBusy = draftSubmissionRef.current?.draftKey === manualDraftKey(correctionMode, targetQuestionId)
-    && draftSubmissionRef.current?.text === manualText
-    && pendingOperations.some((operation) => operation.operation_id === draftSubmissionRef.current?.operationId);
-  const holdBusy = pendingOperations.some((operation) => operation.kind === "set_answer_hold");
-  const unreadCount = newerAnswerCount(readingId, visibleAnswerIds);
 
-  useEffect(() => {
-    if (answerSnapshotComplete) {
-      setSelectedAnswerId((current) => reconcileReadingSelection(current, visibleAnswerIds, answers.order));
-    }
-  }, [answerSnapshotComplete, answers.order, visibleAnswerIds]);
-  useLayoutEffect(() => {
-    if (answerStageRef.current) answerStageRef.current.scrollTop = readingId ? readingOffsetsRef.current[readingId] ?? 0 : 0;
-  }, [readingId]);
+  function followLatestAnswer() {
+    const stage = answerStageRef.current;
+    // Explicit send returns to the current turn; the component owns all following.
+    stage?.scrollTo({ top: stage.scrollHeight, behavior: "instant" });
+  }
+
 
   function dispatchControl(payload: Record<string, unknown>): string | null {
     const operationId = typeof payload.operation_id === "string" ? payload.operation_id : crypto.randomUUID();
-    if (!sessionClientRef.current?.send({ ...payload, operation_id: operationId })) {
+    if (!sessionClientRef.current?.send({ ...payload, conversation_id: sessionRef.current?.conversation_id, operation_id: operationId })) {
       setError("会话同步正在重连，请稍后再试。");
       return null;
     }
@@ -168,37 +153,7 @@ export default function App() {
     return operationId;
   }
 
-  function requestQuickAnswer(action: QuickAnswerAction, answer = readingAnswer) {
-    if (!interviewActive || !clientReady || quickAnswerBusy) return;
-    dispatchControl(answerActionPayload(action, crypto.randomUUID(), answer, currentQuestionId));
-  }
-
-  function correctQuestion(mode = "misheard") {
-    const questionId = readingAnswer?.questionId || currentQuestionId;
-    setTargetQuestionId(questionId);
-    setCorrectionMode(mode);
-    setManualText(manualDraftsRef.current[manualDraftKey(mode, questionId)] ?? (mode === "misheard" ? questions.find((question) => question.question_id === questionId)?.text || transcripts.interviewer.final || transcripts.interviewer.partial : ""));
-    setCorrectionOpen(true);
-  }
-
-  function changeCorrectionMode(mode: string) {
-    manualDraftsRef.current[manualDraftKey(correctionMode, targetQuestionId)] = manualText;
-    setCorrectionMode(mode);
-    setManualText(manualDraftsRef.current[manualDraftKey(mode, targetQuestionId)] ?? (mode === "misheard" ? questions.find((question) => question.question_id === targetQuestionId)?.text || "" : ""));
-  }
-
-  function changeManualText(text: string) {
-    setManualText(text);
-    manualDraftsRef.current[manualDraftKey(correctionMode, targetQuestionId)] = text;
-  }
-
-  function changeTargetQuestion(questionId: string) {
-    manualDraftsRef.current[manualDraftKey(correctionMode, targetQuestionId)] = manualText;
-    setTargetQuestionId(questionId);
-    setManualText(manualDraftsRef.current[manualDraftKey(correctionMode, questionId)] ?? (correctionMode === "misheard" ? questions.find((question) => question.question_id === questionId)?.text || "" : ""));
-  }
-
-  async function chooseScreen(captureAfterSelection = false) {
+  async function chooseScreen() {
     setScreenBusy(true);
     try {
       const listSources = window.interviewDesktop?.listScreenSources;
@@ -207,12 +162,7 @@ export default function App() {
       setScreenSources(sources);
       const selected = sources.find((source) => source.selected);
       setSelectedScreenName(selected?.name || "");
-      if (captureAfterSelection && selected) {
-        dispatchControl({ type: "request_screen_capture", question_id: currentQuestionId, collect_only: true });
-      } else {
-        captureAfterSelectionRef.current = captureAfterSelection;
-        setScreenPickerOpen(true);
-      }
+      setScreenPickerOpen(true);
     } catch (screenError) { setError(errorMessage(screenError, "无法列出屏幕。")); }
     finally { setScreenBusy(false); }
   }
@@ -224,7 +174,6 @@ export default function App() {
       if (!selection) throw new Error("屏幕选择接口不可用，请重新打开桌面端。");
       setSelectedScreenName(selection.name);
       setScreenPickerOpen(false);
-      if (captureAfterSelectionRef.current) dispatchControl({ type: "request_screen_capture", question_id: currentQuestionId, collect_only: true });
     } catch (screenError) { setError(errorMessage(screenError, "无法选择屏幕。")); }
     finally { setScreenBusy(false); }
   }
@@ -234,42 +183,38 @@ export default function App() {
     if (!adapter || recoveringChannel) return;
     setRecoveringChannel(speaker);
     try {
-      adapter.replaceChannel(speaker, await requestCaptureStream(speaker));
+      if (speaker === "interviewer" && adapter.mode === "mock") await adapter.prepareMode("mock");
+      else adapter.replaceChannel(speaker, await requestCaptureStream(speaker));
       setError(null);
     } catch (captureError) { setError(errorMessage(captureError, "这路音频恢复失败，请重试。")); }
     finally { setRecoveringChannel(null); }
   }
 
-  async function setPanelCollapsed(value: boolean) {
-    if (windowBusy) return false;
-    setWindowBusy(true);
-    try {
-      const result = IS_DESKTOP ? await window.interviewDesktop?.setCollapsed?.(value) : value;
-      if (typeof result !== "boolean") throw new Error("请重新打开桌面端以启用浮窗控制。");
-      setCollapsed(result);
-      return true;
-    } catch (windowError) {
-      setError(errorMessage(windowError, "无法调整浮窗。"));
-      return false;
-    } finally { setWindowBusy(false); }
-  }
-
-  async function openDetails(view: typeof detailView) {
-    if (collapsed && !await setPanelCollapsed(false)) return;
+  function openDetails(view: typeof detailView) {
     setDetailView(view);
     setDetailOpen(true);
   }
 
-  async function confirmStop() {
-    if (collapsed && !await setPanelCollapsed(false)) return;
-    setStopConfirmOpen(true);
+  function selectConversation(identity: string | null) {
+    setConversationsOpen(false);
+    if (identity === (sessionRef.current?.conversation_id || sessionRef.current?.interview_id) || switchBusy) return;
+    setSwitchTarget(identity);
+    if (pendingOperations.some(op => op.kind === "chat_send")) setStopConfirmOpen(true);
+    else void switchConversation(identity, false);
   }
 
-  async function togglePinned() {
+  async function switchConversation(identity: string | null, stopActive: boolean) {
+    const session = sessionRef.current;
+    if (!session || switchBusy) return;
+    setSwitchBusy(true); setStopConfirmOpen(false); setError(null);
     try {
-      const result = await window.interviewDesktop?.setPinned?.(!pinned);
-      if (typeof result === "boolean") setPinned(result);
-    } catch (windowError) { setError(errorMessage(windowError, "无法调整置顶状态。")); }
+      const next = await conversationRequest(API_BASE_URL, session, "switch", { target_id: identity, stop_active: stopActive });
+      // The server broadcasts a chat reset on the existing socket. Do not
+      // tear down CaptureAdapter or the audio streams when changing chats.
+      if (sessionRef.current) sessionRef.current.conversation_id = next.conversation_id;
+
+    } catch (e) { setError(errorMessage(e, "切换会话失败，原内容保留。")); }
+    finally { setSwitchBusy(false); }
   }
 
   useEffect(() => {
@@ -277,24 +222,16 @@ export default function App() {
   }, [interviewActive]);
 
   useEffect(() => {
-    void window.interviewDesktop?.setCodeExpanded?.(codeOpen).catch(() => setError("无法调整代码区窗口大小，仍可在当前窗口内使用。"));
-  }, [codeOpen]);
-
-  useEffect(() => {
     let disposed = false;
     void window.interviewDesktop?.getWindowState?.().then((state) => {
-      if (!disposed) { setCollapsed(state.collapsed); setPinned(state.pinned); setRecoveryNotice(state.recoveryNotice || null); }
-    }).catch(() => { if (!disposed) setError("无法同步浮窗状态，请重新打开桌面端。"); });
+      if (!disposed) setRecoveryNotice(state.recoveryNotice || null);
+    }).catch(() => { if (!disposed) setError("无法同步桌面状态，请重新打开桌面端。"); });
     return () => { disposed = true; };
   }, []);
 
   useEffect(() => {
     disposedRef.current = false;
     const handleCaptureInitialization = () => {
-      if (captureAdapterRef.current) {
-        void ensureHostSession();
-        return;
-      }
       if (initializationInFlightRef.current) {
         return;
       }
@@ -308,7 +245,7 @@ export default function App() {
 
       // Both permission requests must be created in the same user-gesture task.
       const candidatePromise = requestCaptureStream("candidate");
-      const interviewerPromise = requestCaptureStream("interviewer");
+      const interviewerPromise = audioModeRef.current === "mock" ? Promise.resolve(null) : requestCaptureStream("interviewer");
       void finishCaptureInitialization(candidatePromise, interviewerPromise);
     };
 
@@ -317,13 +254,29 @@ export default function App() {
     }
 
     const bootstrapTimer = window.setTimeout(() => {
-      if (IS_CAPTURE_HOST) {
-        void requestCaptureInitialization().catch((bootstrapError) => {
-          reportCaptureInitializationFailure(bootstrapError);
-        });
-      } else {
-        void loadBrowserCurrentInterview();
-      }
+      if (!IS_CAPTURE_HOST) return;
+      let adapter: CaptureAdapter;
+      adapter = new CaptureAdapter(API_BASE_URL, {}, {
+        onChannelChange: (speaker, state) => {
+          if (captureAdapterRef.current === adapter) setChannels(current => ({ ...current, [speaker]: state }));
+        },
+        onError: message => setError(message),
+        onMediaEnded: speaker => handleMediaEnded(adapter, speaker),
+        onSessionEnded: () => handleSessionEnded(),
+        onPrepareCapture: nextMode => {
+          if (initializationInFlightRef.current) return;
+          audioModeRef.current = nextMode;
+          setMode(nextMode);
+          setAudioPrepared(false);
+          setSessionPhase("starting");
+          void requestCaptureInitialization().catch(reportCaptureInitializationFailure);
+        },
+        onBrowserConnectionRequest: request => {
+          setBrowserConnection(request);
+        },
+      });
+      captureAdapterRef.current = adapter;
+      void ensureHostSession();
     }, 0);
 
     return () => {
@@ -343,53 +296,49 @@ export default function App() {
 
   async function finishCaptureInitialization(
     candidatePromise: Promise<MediaStream>,
-    interviewerPromise: Promise<MediaStream>,
+    interviewerPromise: Promise<MediaStream | null>,
   ) {
+    const startingSession = sessionRef.current;
     let candidateStream: MediaStream | null = null;
     let interviewerStream: MediaStream | null = null;
     try {
       const [candidateResult, interviewerResult] = await Promise.all([
         settleMediaRequest(candidatePromise),
-        settleMediaRequest(interviewerPromise),
+        interviewerPromise.then(stream => ({ ok: true as const, stream }), error => ({ ok: false as const, error })),
       ]);
       if (!candidateResult.ok || !interviewerResult.ok) {
         if (candidateResult.ok) {
           candidateResult.stream.getTracks().forEach((track) => track.stop());
         }
         if (interviewerResult.ok) {
-          interviewerResult.stream.getTracks().forEach((track) => track.stop());
+          interviewerResult.stream?.getTracks().forEach((track) => track.stop());
         }
-        throw (!candidateResult.ok ? candidateResult.error : interviewerResult.error);
+        if (!candidateResult.ok) throw candidateResult.error;
+        if (!interviewerResult.ok) throw interviewerResult.error;
       }
       candidateStream = candidateResult.stream;
       interviewerStream = interviewerResult.stream;
-      if (disposedRef.current) {
+      if (disposedRef.current || sessionRef.current !== startingSession) {
         candidateStream.getTracks().forEach((track) => track.stop());
-        interviewerStream.getTracks().forEach((track) => track.stop());
+        interviewerStream?.getTracks().forEach((track) => track.stop());
         return;
       }
 
-      let adapter: CaptureAdapter;
-      adapter = new CaptureAdapter(
-        API_BASE_URL,
-        { candidate: candidateStream, interviewer: interviewerStream },
-        {
-          onChannelChange: (speaker, state) => {
-            if (captureAdapterRef.current === adapter) {
-              setChannels((current) => ({ ...current, [speaker]: state }));
-            }
-          },
-          onError: (message) => setError(message),
-          onMediaEnded: (speaker) => handleMediaEnded(adapter, speaker),
-          onSessionEnded: () => handleSessionEnded(),
-        },
-      );
-      captureAdapterRef.current?.dispose();
-      captureAdapterRef.current = adapter;
+      const adapter = captureAdapterRef.current;
+      if (!adapter) throw new Error("桌面连接已关闭，请重试。");
+      adapter.replaceChannel("candidate", candidateStream);
       candidateStream = null;
-      interviewerStream = null;
-      await ensureHostSession();
+      if (interviewerStream) {
+        adapter.replaceChannel("interviewer", interviewerStream);
+        interviewerStream = null;
+      }
+      await adapter.prepareMode(audioModeRef.current);
+      if (sessionRef.current === startingSession && !disposedRef.current) setAudioPrepared(true);
     } catch (initializationError) {
+      captureAdapterRef.current?.stopAudio();
+      setAudioPrepared(false);
+      setSessionPhase("idle");
+      sessionClientRef.current?.send({ type: "stop_transcription" });
       candidateStream?.getTracks().forEach((track) => track.stop());
       interviewerStream?.getTracks().forEach((track) => track.stop());
       if (!disposedRef.current) {
@@ -405,6 +354,16 @@ export default function App() {
       initializationInFlightRef.current = false;
     }
   }
+
+  useEffect(() => {
+    if (!audioPrepared || deviceStatus !== "ready" || !clientReady) return;
+    setAudioPrepared(false);
+    if (!sessionClientRef.current?.send({ type: "start_transcription", mode: audioModeRef.current })) {
+      captureAdapterRef.current?.stopAudio();
+      setSessionPhase("idle");
+      setError("连接已断开，请重试转录。");
+    }
+  }, [audioPrepared, deviceStatus, clientReady]);
 
   async function ensureHostSession() {
     if (!IS_CAPTURE_HOST || !captureAdapterRef.current || disposedRef.current) {
@@ -472,7 +431,7 @@ export default function App() {
       });
       if (response.status === 401) {
         setAuthRequired(true);
-        setDeviceOffline("需要访问密钥");
+        setDeviceOffline("请选择设备");
         return;
       }
       setAuthRequired(false);
@@ -492,7 +451,7 @@ export default function App() {
       const current = (await response.json()) as CurrentInterviewResponse;
       const session = parseInterviewSession(current, false);
       applyDeviceStatus(current.device_status?.status, current.device_status?.channels, current.device_status?.channel_details);
-      applyInterviewState(Boolean(current.interview_state?.active));
+      applyInterviewState(Boolean(current.interview_state?.active), Boolean(current.interview_state?.stopping));
 
       if (
         sessionRef.current?.interview_id === session.interview_id &&
@@ -515,34 +474,33 @@ export default function App() {
   }
 
   function prepareForSession(session: InterviewSession) {
-    if (displayedSessionIdRef.current !== session.interview_id) {
-      displayedSessionIdRef.current = session.interview_id;
+    if (displayedSessionIdRef.current !== (session.conversation_id || session.interview_id)) {
+      displayedSessionIdRef.current = session.conversation_id || session.interview_id;
       setAnswers(EMPTY_ANSWERS);
+      setMessages([]);
+      setConversationTitle("新对话");
+      setChatAvailable(false);
       setTranscripts(INITIAL_TRANSCRIPTS);
       setTurns([]);
-      setQuestions([]);
+
       setCurrentQuestionId(undefined);
-      setHoldAnswers(false);
-      setCodeOpen(false);
-      codeRevealRef.current = "";
-      setImportedCode(null);
-      setCodeWorkspace(null);
+
       setCollectedScreens([]);
       setOperations([]);
-      setSelectedAnswerId(null);
+
       setManualText("");
       setCorrectionOpen(false);
-      setTargetQuestionId(undefined);
+
       setToolError(null);
-      manualDraftsRef.current = {};
-      readingOffsetsRef.current = {};
+
+
       setAnswerSnapshotComplete(false);
       setModelStatus({ status: "ready" });
       setModelRecoveryNotice(null);
       modelRecoveringRef.current = false;
       setSessionMetrics({});
       setContextStatus(null);
-      draftSubmissionRef.current = null;
+
     }
     sessionRef.current = session;
   }
@@ -577,91 +535,62 @@ export default function App() {
     await client.start();
   }
 
-  async function submitBrowserLogin(event: FormEvent) {
-    event.preventDefault();
-    const token = accessToken.trim();
-    if (!token || authBusy) {
-      return;
-    }
-    setAuthBusy(true);
+  async function connectBrowserDevice(value: InterviewSession) {
+    const session = parseInterviewSession(value, false);
+    prepareForSession(session);
+    await connectSessionClient(session);
+    setAuthRequired(false);
     setError(null);
-    try {
-      const response = await fetch(`${API_BASE_URL}/api/browser/login`, {
-        signal: AbortSignal.timeout(10_000),
-        redirect: "error",
-        method: "POST",
-        credentials: "include",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ access_token: token }),
-      });
-      if (!response.ok) {
-        throw new Error(await readResponseError(response));
-      }
-      setAccessToken("");
-      setAuthRequired(false);
-      await loadBrowserCurrentInterview();
-    } catch (loginError) {
-      setError(errorMessage(loginError, "访问密钥验证失败。"));
-    } finally {
-      setAuthBusy(false);
-    }
   }
 
-  async function startInterview() {
-    if (IS_CAPTURE_HOST && initializationFailed) {
-      await retryCaptureInitialization();
-      return;
-    }
-    if (!clientReady || deviceStatus !== "ready" || sessionPhase === "starting") {
-      return;
-    }
+  function decideBrowserConnection(approved: boolean) {
+    if (!browserConnection) return;
+    if (captureAdapterRef.current?.decideBrowserConnection(browserConnection.request_id, approved)) setBrowserConnection(null);
+    else { setBrowserConnection(null); setError("电脑连接已断开，请让浏览器重新连接。"); }
+  }
+
+  async function chooseMode(nextMode: "assist" | "mock") {
+    if (activeRef.current || initializationInFlightRef.current) return;
+    audioModeRef.current = nextMode;
+    setMode(nextMode);
+  }
+
+  async function restartMock() {
+    if (modeBusy || !clientReady) return;
+    setModeBusy(true);
+    try {
+      if (IS_CAPTURE_HOST) await captureAdapterRef.current?.prepareMode("mock");
+      if (!sessionClientRef.current?.send({ type: "mock_restart" })) throw new Error("会话正在重连。");
+    } catch (error) { setError(errorMessage(error, "恢复面试官失败。")); }
+    finally { setModeBusy(false); }
+  }
+
+  async function startTranscription() {
+    if (!clientReady || sessionPhase === "starting" || modeBusy) return;
     setError(null);
     setSessionPhase("starting");
-    // interview_state acknowledges Start; it is not a tracked model operation.
-    if (!sessionClientRef.current?.send({ type: "start_interview" })) {
+    if (!sessionClientRef.current?.send({ type: "start_transcription", mode })) {
       setSessionPhase("idle");
-      setError("会话同步正在重连，请稍后再试。");
+      setError("连接正在恢复，请稍后重试。");
     }
   }
 
-  async function stopInterview() {
-    const session = sessionRef.current;
-    if (!session || sessionPhase === "stopping") {
-      return;
-    }
-    setStopConfirmOpen(false);
-    setError(null);
+  function stopTranscription() {
+    setAudioPrepared(false);
     setSessionPhase("stopping");
-    try {
-      await endInterviewSession(session);
-      handleSessionEnded();
-    } catch (stopError) {
-      setSessionPhase(interviewActive ? "live" : "idle");
-      setError(errorMessage(stopError, "结束面试失败。"));
+    if (!sessionClientRef.current?.send({ type: "stop_transcription" })) {
+      setSessionPhase(activeRef.current ? "live" : "idle");
+      setError("连接正在恢复，请稍后重试。");
     }
   }
 
-  function submitManualQuestion(event: FormEvent) {
-    event.preventDefault();
-    const text = manualText.trim();
-    if (!interviewActive || manualBusy) return;
-    if (correctionMode === "return") {
-      if (targetQuestionId && dispatchControl({ type: "quick_answer", action: "answer", question_id: targetQuestionId })) setCorrectionOpen(false);
-      return;
-    }
-    if (!text) return;
-    const kind = correctionMode === "candidate" ? "candidate_context" : correctionMode === "question" ? "question" : "correction";
-    const operationId = dispatchControl({ type: "manual_text", kind, text, ...(kind === "correction" && targetQuestionId ? { question_id: targetQuestionId } : {}) });
-    if (operationId) {
-      draftSubmissionRef.current = { operationId, text: manualText, draftKey: manualDraftKey(correctionMode, targetQuestionId) };
-      setCorrectionOpen(false);
-    }
+  async function confirmConversationSwitch() {
+    await switchConversation(switchTarget, true);
   }
 
   function collectScreen() {
-    if (!interviewActive || screenshotBusy || screenBusy) return;
-    if (IS_CAPTURE_HOST) void chooseScreen(true);
-    else dispatchControl({ type: "request_screen_capture", question_id: currentQuestionId, collect_only: true });
+    if (!clientReady || screenshotBusy || screenBusy) return;
+    dispatchControl({ type: "request_screen_capture", question_id: currentQuestionId, collect_only: true });
   }
 
   async function retryCaptureInitialization() {
@@ -669,7 +598,8 @@ export default function App() {
     setError(null);
     try {
       if (captureAdapterRef.current) {
-        await ensureHostSession();
+        if (clientReady) await requestCaptureInitialization();
+        else await ensureHostSession();
       } else {
         await requestCaptureInitialization();
       }
@@ -683,6 +613,9 @@ export default function App() {
       return;
     }
     setInitializationFailed(true);
+    setAudioPrepared(false);
+    setSessionPhase("idle");
+    sessionClientRef.current?.send({ type: "stop_transcription" });
     setDeviceStatus("error");
     setChannels({
       interviewer: { phase: "error", message: "初始化失败" },
@@ -693,31 +626,46 @@ export default function App() {
 
   function handleServerEvent(payload: ServerEvent) {
     switch (payload.type) {
+      case "conversation_reset":
+        if (sessionRef.current && payload.conversation_id) {
+          sessionRef.current = { ...sessionRef.current, conversation_id: payload.conversation_id };
+          displayedSessionIdRef.current = payload.conversation_id;
+          setAnswers(EMPTY_ANSWERS); setMessages([]); setCollectedScreens([]); setOperations([]);
+          setAnswerSnapshotComplete(false); setToolError(null); setConversationTitle("新对话");
+        }
+        return;
+      case "chat_snapshot":
+        setMessages(payload.messages || []);
+        return;
+      case "chat_message":
+        if (payload.chat_message) {
+          const message = payload.chat_message;
+          setMessages(current => current.some(item => item.message_id === message.message_id)
+            ? current.map(item => item.message_id === message.message_id ? message : item) : [...current, message]);
+        }
+        return;
+      case "session_ready":
+        setChatAvailable(payload.chat === true);
+        return;
       case "context_status":
         setContextStatus({ documents: payload.documents_count ?? 0, characters: payload.characters_count ?? 0 });
-        return;
-      case "code_state":
-        if (payload.workspace) {
-          setCodeWorkspace(payload.workspace);
-          const revealId = payload.workspace.reveal_id || "";
-          if (revealId && revealId !== codeRevealRef.current) setCodeOpen(true);
-          codeRevealRef.current = revealId;
-        }
         return;
       case "screen_collection":
         setCollectedScreens(payload.screens || []);
         return;
       case "device_status":
+        if (!IS_CAPTURE_HOST && payload.mode) setMode(payload.mode);
         applyDeviceStatus(payload.status, payload.channels, payload.channel_details);
         return;
       case "interview_state":
-        applyInterviewState(Boolean(payload.active));
-        if (typeof payload.hold_answers === "boolean") setHoldAnswers(payload.hold_answers);
+        if (payload.active && payload.mode) setMode(payload.mode);
+        applyInterviewState(Boolean(payload.active), Boolean(payload.stopping));
+        return;
+      case "mock_status":
+        setMockStatus({ status: payload.status || "idle", detail: payload.detail || "" });
         return;
       case "question_state":
         setCurrentQuestionId(payload.current_question_id);
-        if (payload.questions) setQuestions(payload.questions);
-        if (typeof payload.hold_answers === "boolean") setHoldAnswers(payload.hold_answers);
         return;
       case "model_status":
         if (payload.status === "recovering") modelRecoveringRef.current = true;
@@ -734,18 +682,19 @@ export default function App() {
         setAnswerSnapshotComplete(true);
         return;
       case "operation_snapshot":
-        setOperations((current) => (payload.operations || []).map((operation) => ({ ...current.find((item) => item.operation_id === operation.operation_id), ...operation })));
+        setOperations((current) => {
+          const restored = (payload.operations || []).map((operation) => ({ ...current.find((item) => item.operation_id === operation.operation_id), ...operation }));
+          // A send lost before server acceptance must release the composer,
+          // while retaining its draft and attachments for an explicit retry.
+          const unconfirmed = current.filter(item => item.status === "sent" && !restored.some(op => op.operation_id === item.operation_id))
+            .map(item => ({ ...item, status: "failed" as const, detail: "发送未确认，草稿已保留，请重试。" }));
+          return [...restored, ...unconfirmed];
+        });
         return;
       case "operation_status": {
         if (!payload.operation_id || !["accepted", "running", "completed", "failed", "cancelled"].includes(payload.status || "")) return;
         const operation = { ...payload, kind: payload.kind || "control", status: payload.status } as OperationRecord;
         setOperations((current) => mergeOperation(current, operation));
-        const submitted = draftSubmissionRef.current;
-        if (submitted?.operationId === payload.operation_id && payload.status === "completed") {
-          setManualText((draft) => draft === submitted.text ? "" : draft);
-          if (manualDraftsRef.current[submitted.draftKey] === submitted.text) delete manualDraftsRef.current[submitted.draftKey];
-          draftSubmissionRef.current = null;
-        }
         if (payload.status === "failed") {
           setError(payload.detail || "操作未完成，请重试。");
           setSessionPhase(activeRef.current ? "live" : "idle");
@@ -771,7 +720,7 @@ export default function App() {
       }
       case "transcript_delta": {
         const speaker = parseSpeaker(payload.speaker);
-        if (speaker === "candidate" && payload.turn_id && typeof payload.text === "string") {
+        if (speaker && payload.turn_id && typeof payload.text === "string") {
           setTurns((current) => mergeTranscriptTurn(current, {
             turn_id: payload.turn_id!, speaker, text: payload.text!, status: "streaming",
             question_id: payload.question_id, created_at: payload.created_at,
@@ -796,7 +745,7 @@ export default function App() {
         if (!speaker) {
           return;
         }
-        if (speaker === "candidate" && payload.turn_id && typeof payload.text === "string") {
+        if (speaker && payload.turn_id && typeof payload.text === "string") {
           setTurns((current) => mergeTranscriptTurn(current, {
             turn_id: payload.turn_id!, speaker, text: payload.text!,
             status: payload.status === "interrupted" ? "interrupted" : "completed",
@@ -820,6 +769,7 @@ export default function App() {
       }
       case "answer_started":
       case "answer_delta":
+      case "answer_activity":
         updateAnswerFromEvent(payload, "streaming", false);
         return;
       case "answer_snapshot":
@@ -836,6 +786,19 @@ export default function App() {
         return;
       case "session_ended":
         handleSessionEnded();
+        return;
+      case "conversation_info":
+        if (sessionRef.current && payload.conversation_id) {
+          if (displayedSessionIdRef.current !== payload.conversation_id) {
+            setAnswers(EMPTY_ANSWERS); setMessages([]); setOperations([]);
+          }
+          sessionRef.current.conversation_id = payload.conversation_id;
+          displayedSessionIdRef.current = payload.conversation_id;
+        }
+        if (payload.title) setConversationTitle(payload.title);
+        return;
+      case "persistence_error":
+        setError(payload.detail || "会话未保存，请勿关闭或切换。");
         return;
       case "error": {
         const detail = payload.detail ?? payload.error ?? payload.message ?? "实时会话发生错误。";
@@ -910,10 +873,10 @@ export default function App() {
     });
   }
 
-  function applyInterviewState(active: boolean) {
+  function applyInterviewState(active: boolean, stopping = false) {
     activeRef.current = active;
     setInterviewActive(active);
-    setSessionPhase(active ? "live" : "idle");
+    setSessionPhase(stopping ? "stopping" : active ? "live" : "idle");
     setChannels((current) => ({
       interviewer:
         ["listening", "ready"].includes(current.interviewer.phase)
@@ -936,15 +899,16 @@ export default function App() {
     sessionRef.current = null;
     sessionClientRef.current?.stop();
     sessionClientRef.current = null;
+    setAudioPrepared(false);
     captureAdapterRef.current?.disconnectSession();
-    markStreamingAnswersInterrupted("本场面试已结束，已保留生成到这里的内容。");
+    markStreamingAnswersInterrupted("会话已断开，已有内容保留。");
     activeRef.current = false;
     setInterviewActive(false);
     setSessionPhase("idle");
     setConnectionState("disconnected");
     setDeviceStatus(IS_CAPTURE_HOST && captureAdapterRef.current ? "initializing" : "offline");
     if (IS_CAPTURE_HOST && captureAdapterRef.current) {
-      window.setTimeout(() => void ensureHostSession(), 500);
+      window.setTimeout(() => { if (!sessionRef.current) void ensureHostSession(); }, 500);
     } else if (!IS_CAPTURE_HOST) {
       scheduleCurrentPoll(500);
     }
@@ -971,7 +935,9 @@ export default function App() {
   }
 
   function scheduleCurrentPoll(delay = CURRENT_POLL_MS) {
-    if (IS_CAPTURE_HOST || disposedRef.current || authRequired) {
+    // This is called after a connected session ends or becomes unavailable.
+    // Do not capture the device picker's former login state in socket callbacks.
+    if (IS_CAPTURE_HOST || disposedRef.current) {
       return;
     }
     clearPollTimer();
@@ -1007,157 +973,118 @@ export default function App() {
     });
   }
 
-  const startDisabled =
-    !initializationFailed &&
-    (!clientReady || deviceStatus !== "ready" || sessionPhase === "starting" || authRequired);
-  const startLabel = initializationFailed
-    ? "重试初始化"
-    : sessionPhase === "starting"
-      ? "启动中…"
-      : deviceStatus === "offline"
-        ? "等待采集设备"
-        : deviceStatus === "initializing"
-          ? "初始化中…"
-          : "开始";
+  const startDisabled = !clientReady || sessionPhase === "starting" || sessionPhase === "stopping" || authRequired || modeBusy;
+  const startLabel = sessionPhase === "starting" ? "准备音频…" : (mode === "mock" ? "开始模拟" : "开始转录");
 
-  const liveStatus = listeningStatus({ connected: clientReady, reconnecting: connectionState === "reconnecting", active: interviewActive, deviceStatus, channels, held: holdAnswers, answering: answerList.some((answer) => answer.status === "streaming") });
-  const statusText = clientReady && interviewActive && modelStatus.status === "recovering" ? "模型重连中" : liveStatus.label;
+  const liveStatus = listeningStatus({ connected: clientReady, reconnecting: connectionState === "reconnecting", active: interviewActive, deviceStatus, channels, answering: answerList.some((answer) => answer.status === "streaming") });
+  const modelConnecting = ["connecting", "recovering"].includes(modelStatus.status);
+  const statusText = clientReady && interviewActive && !modelConnecting ? "转录中" : clientReady && interviewActive && modelConnecting
+    ? modelStatus.status === "recovering" ? "转录重连中" : "转录连接中"
+    : clientReady ? "转录未开启" : liveStatus.label;
   const latestOperation = pendingOperations[pendingOperations.length - 1] || operations[operations.length - 1];
-  const readingIndex = readingId ? visibleAnswerIds.indexOf(readingId) : -1;
 
-  return (
-    <div className={`app-shell ${collapsed ? "is-collapsed" : ""} ${codeOpen ? "has-code" : ""}`}>
-      <header className="floating-toolbar" aria-label="面试控制">
-        <div className="brand" aria-label="Sage 模拟面试">
-          <span>Sage</span>
-        </div>
-
-        <Button variant="ghost" className={`status-button ${liveStatus.live && modelStatus.status !== "recovering" ? "is-live" : ""}`}
-          onPress={() => openDetails("device")} aria-label={`设备详情：${statusText}`}>
-          <span className="status-dot" aria-hidden="true" />{statusText}
-        </Button>
-        <div className="toolbar-actions">
-          {IS_DESKTOP && <Tooltip><Button isIconOnly variant="ghost" aria-label={pinned ? "取消置顶" : "置顶窗口"} aria-pressed={pinned} onPress={() => void togglePinned()} className="pin-button">
-            <PushPin size={15} weight={pinned ? "fill" : "regular"} />
-          </Button><Tooltip.Content>{pinned ? "取消置顶" : "置顶窗口"}</Tooltip.Content></Tooltip>}
-          <Button variant="ghost" className="collapse-button" onPress={() => void setPanelCollapsed(!collapsed)} isDisabled={windowBusy}
-            aria-expanded={!collapsed} aria-controls="interview-panel">
-            {collapsed ? <CaretDown size={16} /> : <CaretUp size={16} />}
-            {collapsed ? "展开" : "收起"}
-          </Button>
-          {interviewActive || sessionPhase === "stopping" ? (
-            <Tooltip><Button isIconOnly variant="secondary" className="stop-button" aria-label="结束面试"
-              onPress={() => void confirmStop()} isDisabled={sessionPhase === "stopping"}>
-              <Square size={15} weight="fill" />
-            </Button><Tooltip.Content>结束面试</Tooltip.Content></Tooltip>
-          ) : (
-            <Button className="start-button" onPress={() => void startInterview()} isDisabled={startDisabled}>
-              <Play size={14} weight="fill" />{startLabel === "开始" ? "开始面试" : startLabel}
-            </Button>
-          )}
-          {IS_DESKTOP && <Tooltip><Button isIconOnly variant="ghost" aria-label="隐藏到托盘" onPress={() => { void window.interviewDesktop?.hideWindow?.().catch(() => setError("无法隐藏窗口。")); }}><Minus size={17} /></Button><Tooltip.Content>隐藏到托盘</Tooltip.Content></Tooltip>}
-        </div>
-      </header>
-
-      <main id="interview-panel" className="interview-panel" hidden={collapsed}>
+  const chatBusy = pendingOperations.some(op => op.kind === "chat_send");
+  const conversation = <section className="preview-conversation" aria-label="面试聊天">
+    {!authRequired && <div className="preview-session-controls">
+      <Button variant="ghost" className="sage-conversation-trigger" aria-label="打开会话列表" onPress={() => setConversationsOpen(true)}><SidebarSimple size={19} /><span>{conversationTitle}</span></Button>
+      <div className="preview-session-actions" aria-label="转录控制">
+        <Button variant="ghost" onPress={() => void openDetails("transcript")}>查看转录</Button>
+        {interviewActive || sessionPhase === "stopping" ? <Button variant="ghost" isDisabled={sessionPhase === "stopping"} onPress={stopTranscription}>{sessionPhase === "stopping" ? "正在收尾…" : mode === "mock" ? "停止模拟" : "停止转录"}</Button>
+          : <Button variant="ghost" isDisabled={startDisabled} onPress={() => void startTranscription()}>{startLabel}</Button>}
+      </div>
+    </div>}
+    <div className="session-notices">
+        {mode === "mock" && <div className="mode-controls" role="status">
+          <span>{interviewActive ? mockStatus.detail || "正在准备 AI 面试官…" : "AI 语音提问，需要时在聊天中求助。建议戴耳机；会额外运行一位 AI 面试官。"}</span>
+          {interviewActive && mockStatus.status === "error" && <Button size="sm" variant="secondary"
+            isDisabled={modeBusy || !clientReady} onPress={() => void restartMock()}>恢复面试官</Button>}
+        </div>}
         {error ? <NoticeBanner text={error} onDismiss={() => setError(null)} /> : null}
         {toolError ? <NoticeBanner text={toolError} onDismiss={() => setToolError(null)} /> : null}
         {recoveryNotice ? <NoticeBanner text={recoveryNotice} onDismiss={() => setRecoveryNotice(null)} /> : null}
         {modelRecoveryNotice ? <NoticeBanner text={modelRecoveryNotice} onDismiss={() => setModelRecoveryNotice(null)} /> : null}
         {modelStatus.status === "recovering" && <div className="error-banner" role="status"><WarningCircle size={18} /><span>{modelStatus.detail || "模型连接正在恢复，这段时间的音频可能未被完整处理。"}</span></div>}
-        {contextStatus?.characters === 0 && <div className="error-banner" role="status"><WarningCircle size={18} /><span>本场未加载有效背景资料。个人经历问题需要手动补充，或配置资料后开始新面试。</span></div>}
-        {authRequired ? (
-          <section className="login-panel" aria-labelledby="login-title">
-            <h1 id="login-title">连接当前面试</h1>
-            <p>输入访问密钥，同步桌面端的当前面试。</p>
-            <form className="access-form" onSubmit={(event) => void submitBrowserLogin(event)}>
-              <label htmlFor="access-token" className="sr-only">访问密钥</label>
-              <Input variant="secondary" id="access-token" type="password" autoComplete="current-password" value={accessToken}
-                onChange={(event) => setAccessToken(event.target.value)} placeholder="访问密钥" disabled={authBusy} />
-              <Button type="submit" isDisabled={!accessToken.trim() || authBusy}>{authBusy ? "验证中…" : "连接"}</Button>
-            </form>
-          </section>
-        ) : (
-          <>
-            {readingAnswer && <div className="reading-navigation" aria-label="阅读位置">
-              <Button variant="ghost" size="sm" isDisabled={readingIndex <= 0} onPress={() => setSelectedAnswerId(visibleAnswerIds[readingIndex - 1])}>上一条</Button>
-              <span>回答 {readingIndex + 1} / {answerList.length}</span>
-              {unreadCount > 0 ? <Button variant="secondary" size="sm" onPress={() => setSelectedAnswerId(visibleAnswerIds[visibleAnswerIds.length - 1])}>{unreadCount} 条新回答 ↓</Button> : <span>正在阅读</span>}
-            </div>}
-            <div className="interview-workspace">
-            <ScrollShadow ref={answerStageRef} className="answer-stage" aria-label="当前阅读的回答" role="region" tabIndex={0} size={16}
-              onScroll={(event) => { if (readingId) readingOffsetsRef.current[readingId] = event.currentTarget.scrollTop; }}>
-              {readingAnswer ? <AnswerCard key={readingAnswer.responseId} answer={readingAnswer} onAction={(action) => requestQuickAnswer(action, readingAnswer)}
-                onUseCode={interviewActive && clientReady ? (code, language) => { setImportedCode({ code, language }); setCodeOpen(true); } : undefined}
-                actionsDisabled={!interviewActive || !clientReady || quickAnswerBusy} /> : (
-                <div className="empty-state">
-                  <h1>{interviewActive ? "等待下一个问题" : "准备开始"}</h1>
-                  <p>{interviewActive ? "面试官提问后，回答建议会出现在这里。" :
-                    deviceStatus === "ready" ? "点击开始，面试官提问后显示回答建议。" :
-                    IS_CAPTURE_HOST ? "正在准备音频，连接后即可开始。" : "打开桌面端，连接后即可开始练习。"}</p>
-                </div>
-              )}
-            </ScrollShadow>
-            <div id="code-workspace" className="code-region" hidden={!codeOpen}>
-              {codeWorkspace ? <CodePanel workspace={codeWorkspace} enabled={interviewActive && clientReady && answerSnapshotComplete}
-                operations={operations} dispatch={dispatchControl} importedCode={importedCode} clearImport={() => setImportedCode(null)} /> : <p className="code-loading">正在同步代码区…</p>}
-            </div>
-            </div>
-            <div className="composer-area">
-              {collectedScreens.length > 0 && <div className="screen-collection">
-                <span role="status">已收集 {collectedScreens.length} 张 · 可继续截图</span>
-                <Button size="sm" variant="secondary" isDisabled={!interviewActive || !clientReady || screenshotBusy || quickAnswerBusy}
-                  onPress={() => dispatchControl({ type: "answer_screens", request_ids: collectedScreens.map((screen) => screen.request_id) })}>回答题目</Button>
-                <Button size="sm" variant="ghost" isDisabled={!interviewActive || !clientReady || screenshotBusy}
-                  onPress={() => dispatchControl({ type: "clear_screens", request_ids: collectedScreens.map((screen) => screen.request_id) })}>新一组</Button>
-              </div>}
-              {latestOperation && <div className={`operation-status ${latestOperation.status}`} role="status" aria-live="polite">
-                <span>{operationLabel(latestOperation)}{!clientReady && operationIsPending(latestOperation) ? " · 等待重连核对" : ""}</span>
-                {latestOperation.detail && <span>{latestOperation.detail}</span>}
-                {pendingOperations.length > 1 && <span>另有 {pendingOperations.length - 1} 项处理中</span>}
-              </div>}
-              <nav className="primary-actions" aria-label="面试快捷操作">
-                <Button variant="secondary" onPress={collectScreen} isDisabled={!interviewActive || !clientReady || screenshotBusy || screenBusy}><Monitor size={17} />{screenshotBusy ? "截图中…" : "截图"}</Button>
-                <Button variant={codeOpen ? "primary" : "secondary"} onPress={() => setCodeOpen(!codeOpen)}
-                  aria-expanded={codeOpen} aria-controls="code-workspace">代码</Button>
-                <Button variant="secondary" onPress={() => correctQuestion()} isDisabled={!interviewActive || !clientReady}><PencilSimple size={17} />纠正</Button>
-                <Button variant="secondary" onPress={() => requestQuickAnswer("deep")} isDisabled={!interviewActive || !clientReady || quickAnswerBusy || (!readingAnswer && !currentQuestionId)}><ArrowsOutLineHorizontal size={17} />深入</Button>
-                <Button variant={holdAnswers ? "primary" : "secondary"} onPress={() => dispatchControl({ type: "set_answer_hold", hold: !holdAnswers })} isDisabled={!interviewActive || !clientReady || holdBusy} aria-pressed={holdAnswers}>{holdAnswers ? "现在回答" : "先别答"}</Button>
-              </nav>
-            </div>
-          </>
-        )}
-        <footer className="panel-footer">
-          <nav aria-label="面试记录">
-            <Button variant="ghost" size="sm" onPress={() => correctQuestion("question")} isDisabled={!interviewActive || !clientReady}>输入问题</Button>
-            <Button variant="ghost" size="sm" onPress={() => void openDetails("transcript")}>转写</Button>
-            <Button variant="ghost" size="sm" onPress={() => void openDetails("history")}>回答记录{answerList.length > 0 ? ` · ${answerList.length}` : ""}</Button>
-          </nav>
-          <Tooltip><Button isIconOnly variant="ghost" size="sm" aria-label="设备详情" onPress={() => void openDetails("device")}><GearSix size={16} /></Button><Tooltip.Content>设备详情</Tooltip.Content></Tooltip>
-        </footer>
-      </main>
+        {contextStatus?.characters === 0 && <div className="error-banner" role="status"><WarningCircle size={18} /><span>本场未加载有效背景资料。个人经历问题需要手动补充，或配置资料后开启新对话。</span></div>}
 
-      <Modal.Backdrop isOpen={detailOpen} onOpenChange={setDetailOpen} className="sage-backdrop">
+    </div>
+        {authRequired && <DevicePicker apiBaseUrl={API_BASE_URL} onConnected={connectBrowserDevice} />}
+
+    {!authRequired && <>
+      <ChatConversation key={`conversation:${displayedSessionIdRef.current ?? "new"}`} ref={answerStageRef}
+        className="preview-answer-scroll" aria-label="聊天记录" tabIndex={0} initial="instant" resize="instant">
+        <ChatConversation.Content className="preview-answer-content">
+          <ChatMessages messages={messages} answers={answers} operations={operations} busy={chatBusy} />
+        </ChatConversation.Content>
+        <ChatConversation.ScrollButton aria-label="回到最新" tooltip="回到最新" onPress={followLatestAnswer} />
+      </ChatConversation>
+      <ChatComposer key={`composer:${displayedSessionIdRef.current ?? "new"}`} draftKey={displayedSessionIdRef.current ?? undefined} enabled={clientReady && chatAvailable && answerSnapshotComplete && !switchBusy}
+        busy={chatBusy} screenshotBusy={screenshotBusy || screenBusy} screens={collectedScreens}
+        messages={messages} operations={operations} dispatch={dispatchControl} onCapture={collectScreen} onSent={followLatestAnswer}
+        more={<Dropdown><Button isIconOnly size="sm" variant="ghost" aria-label="更多"><DotsThree size={20} /></Button>
+          <Dropdown.Popover placement="top end"><Dropdown.Menu aria-label="更多操作">
+            <Dropdown.Item id="new-conversation" textValue="新对话" isDisabled={!clientReady} onAction={() => selectConversation(null)}><Label>新对话</Label></Dropdown.Item>
+            <Dropdown.Item id="chatgpt-plugin" textValue="连接 ChatGPT" onAction={() => setPluginOpen(true)}><Label>连接 ChatGPT</Label></Dropdown.Item>
+            <Dropdown.Item id="device" textValue="设备详情" onAction={() => void openDetails("device")}><Label>设备详情 · {statusText}</Label></Dropdown.Item>
+            {IS_CAPTURE_HOST && <Dropdown.Item id="interview-mode" textValue={mode === "assist" ? "切换到模拟面试" : "切回普通聊天"}
+              isDisabled={modeBusy || !clientReady || interviewActive || sessionPhase === "starting" || sessionPhase === "stopping"}
+              onAction={() => void chooseMode(mode === "assist" ? "mock" : "assist")}><Label>{mode === "assist" ? "切换到模拟面试" : "切回普通聊天"}</Label></Dropdown.Item>}
+            {IS_CAPTURE_HOST && <Dropdown.Item id="screen-source" textValue="截图来源" isDisabled={screenBusy || screenshotBusy} onAction={() => void chooseScreen()}><Label>截图来源</Label></Dropdown.Item>}
+            <Dropdown.Item id="theme" textValue={resolvedTheme === "dark" ? "日间模式" : "夜间模式"} onAction={() => setTheme(resolvedTheme === "dark" ? "light" : "dark")}>{resolvedTheme === "dark" ? <Sun size={18} /> : <Moon size={18} />}<Label>{resolvedTheme === "dark" ? "日间模式" : "夜间模式"}</Label></Dropdown.Item>
+          </Dropdown.Menu></Dropdown.Popover>
+        </Dropdown>} />
+      {clientReady && !chatAvailable && <p className="preview-muted" role="status">请先更新服务端，再使用聊天。</p>}
+    </>}
+  </section>;
+  return (
+    <div className="browser-preview">
+      <main className="preview-main" id="interview-panel">
+        {conversation}
+      </main>
+      <Modal isOpen={pluginOpen} onOpenChange={setPluginOpen}><Modal.Backdrop>
+        <Modal.Container size="md"><Modal.Dialog aria-label="连接 ChatGPT"><Modal.CloseTrigger aria-label="关闭 ChatGPT 设置" />
+          <Modal.Header><Modal.Heading>在 ChatGPT 里读本场材料</Modal.Heading></Modal.Header>
+          <Modal.Body>
+            <p>在 ChatGPT 设置中打开开发者模式，创建一个使用 OAuth 的自定义 MCP 连接，填入下方地址。连接时，在电脑上的 Sage 点击允许。</p>
+            <p className="mt-3 break-all">{API_BASE_URL}/mcp</p><CopyTextButton text={`${API_BASE_URL}/mcp`} label="复制插件地址" />
+            <p className="mt-3">在 ChatGPT 对话中选用 Sage，发送下面这句话；之后直接追问。材料更新后，说「再读取新增材料」。你原有的回答提示词仍可以先发在该对话里。</p>
+            <CopyTextButton text={`请使用 Sage 插件 read_interview 读取当前转录（interview_id="current"）。第一页优先最新语音和截图，页内按时间顺序；材料足够就先回答当前问题，不必读完历史。保存 updates_cursor，之后我说「回答」或「读新的」时把它作为 cursor，只读取新增和修正。需要更早上下文才使用 history_cursor；next_cursor 用于继续当前模式的分页。聊天切换不影响转录。需要个人背景时按需查阅相关资料。`} label="复制本场开场语" />
+            <p className="mt-3 text-sm text-muted">插件会读到待发截图；输入框里的文字草稿不会共享。背景资料读取需要电脑在线。ChatGPT 账号须有开发者模式权限。</p>
+          </Modal.Body>
+        </Modal.Dialog></Modal.Container>
+      </Modal.Backdrop></Modal>
+
+      {IS_CAPTURE_HOST && <Modal isOpen={!!browserConnection} onOpenChange={open => { if (!open) decideBrowserConnection(false); }}><Modal.Backdrop>
+        <Modal.Container size="sm" placement="center"><Modal.Dialog aria-label="允许浏览器连接">
+          <Modal.Header><Modal.Heading>允许连接？</Modal.Heading></Modal.Header>
+          <Modal.Body><p>{browserConnection?.name}</p><p className="mt-2 text-sm text-muted">{browserConnection?.read_only
+            ? "允许 ChatGPT 读取各场的转录、聊天、截图（含待发截图）和背景资料。不能开启采集或控制 Sage；输入框文字草稿不共享。授权 30 天，可在 ChatGPT 断开连接。"
+            : "允许此浏览器控制这台电脑上的 Sage，包括转录、截图和新建对话。记住 30 天。"}</p></Modal.Body>
+          <Modal.Footer><Button variant="secondary" onPress={() => decideBrowserConnection(false)}>拒绝</Button><Button onPress={() => decideBrowserConnection(true)}>允许</Button></Modal.Footer>
+        </Modal.Dialog></Modal.Container>
+      </Modal.Backdrop></Modal>}
+
+      <Modal isOpen={detailOpen} onOpenChange={setDetailOpen}><Modal.Backdrop>
         <Modal.Container size="lg" placement="center">
-          <Modal.Dialog className="sage-dialog" aria-label={detailView === "history" ? "回答记录" : detailView === "transcript" ? "实时转写" : "设备详情"}>
+          <Modal.Dialog className="sage-dialog" aria-label={detailView === "transcript" ? "实时转写" : "设备详情"}>
             <Modal.CloseTrigger aria-label="关闭" />
-            <Modal.Header><Modal.Heading>{detailView === "history" ? "回答记录" : detailView === "transcript" ? "实时转写" : "设备详情"}</Modal.Heading></Modal.Header>
+            <Modal.Header><Modal.Heading>{detailView === "transcript" ? "实时转写" : "设备详情"}</Modal.Heading></Modal.Header>
             <Modal.Body className="detail-body">
-              {detailView === "history" ? <>
-                <p className="detail-intro">本场 {answerList.length} 条回答，按生成顺序保留。</p>
-                {answerList.length ? answerList.map((answer) => <div key={answer.responseId} className="history-answer"><Button variant="ghost" size="sm" onPress={() => { setSelectedAnswerId(answer.responseId); setDetailOpen(false); }}>阅读这条</Button><AnswerCard answer={answer} onAction={(action) => requestQuickAnswer(action, answer)} actionsDisabled={!interviewActive || !clientReady || quickAnswerBusy} /></div>) : <p className="detail-empty">第一条回答出现后，会自动保存在这里。</p>}
-              </> : detailView === "transcript" ? <>
-                <p className="detail-intro">两路声音分别记录；你的声音只补充上下文。</p>
-                <ChannelCard speaker="interviewer" state={channels.interviewer} transcript={transcripts.interviewer} />
+              {detailView === "transcript" ? <>
+                <p className="detail-intro">转录独立于聊天，切换或新建聊天不会停止或清空。回答和 ChatGPT 首次默认读取最近一小时；这里保留完整转录。</p>
+                <p className="detail-intro">两路声音分别转录，发送消息时自动带入；语音不会自动触发回答。</p>
+                <Button variant="secondary" size="sm" isDisabled={interviewActive || !clientReady}
+                  onPress={() => setNewTranscriptionOpen(true)}>新一场转录</Button>
+                {interviewActive && <p className="detail-intro">开始下一场前，请先停止转录。</p>}
+                <ChannelCard speaker="interviewer" state={channels.interviewer} transcript={transcriptForSpeaker(turns, "interviewer")} />
                 <ChannelCard speaker="candidate" state={channels.candidate} transcript={transcriptForSpeaker(turns, "candidate")} />
-                {turns.filter((turn) => turn.text).map((turn) => <div className="transcript-turn" key={turn.turn_id}><span>{turn.speaker === "interviewer" ? "面试官" : "你"}{turn.status === "streaming" ? " · 识别中" : turn.status === "interrupted" ? " · 识别未完成" : ""}</span><p>{turn.text}</p>{turn.speaker === "interviewer" && turn.question_id && <Button variant="ghost" size="sm" onPress={() => { setTargetQuestionId(turn.question_id); setCorrectionMode("misheard"); setManualText(turn.text); setDetailOpen(false); setCorrectionOpen(true); }}>纠正这一段</Button>}</div>)}
+                {turns.filter((turn) => turn.text).map((turn) => <div className="transcript-turn" key={turn.turn_id}><span>{turn.speaker === "interviewer" ? "面试官" : "你"}{turn.status === "streaming" ? " · 识别中" : turn.status === "interrupted" ? " · 识别未完成" : ""}</span><p>{turn.text}</p>{<Button variant="ghost" size="sm" onPress={() => { setCorrectingTurn(turn); setManualText(turn.text); setDetailOpen(false); setCorrectionOpen(true); }}>纠正这一段</Button>}</div>)}
               </> : <>
                 <p className="detail-intro">{connectionLabel(connectionState)} · {statusText}<br />{liveStatus.detail}</p>
-                <div className="device-row"><Monitor size={20} /><div><strong>系统音频</strong><p>面试官 · 提问后生成回答</p></div><span>{channels.interviewer.message}</span></div>
+                <div className="device-row"><Monitor size={20} /><div><strong>系统音频</strong><p>面试官 · 仅转录为上下文</p></div><span>{channels.interviewer.message}</span></div>
                 <div className="device-row"><Microphone size={20} /><div><strong>麦克风</strong><p>你的声音 · 仅作为对话上下文</p></div><span>{channels.candidate.message}</span></div>
                 {IS_CAPTURE_HOST && initializationFailed && <Button onPress={() => void retryCaptureInitialization()}>重新连接音频</Button>}
                 {IS_CAPTURE_HOST && !initializationFailed && (["interviewer", "candidate"] as Speaker[]).filter((speaker) => ["error", "interrupted", "muted"].includes(channels[speaker].phase)).map((speaker) => <Button key={speaker} variant="secondary" isDisabled={!!recoveringChannel} onPress={() => void recoverChannel(speaker)}>{recoveringChannel === speaker ? "恢复中…" : speaker === "candidate" ? "恢复麦克风" : "恢复系统音频"}</Button>)}
-                {IS_CAPTURE_HOST && <div className="screen-setting"><p>{selectedScreenName ? `看题来源：${selectedScreenName}` : "尚未选择看题屏幕"}</p><Button variant="secondary" isDisabled={screenBusy} onPress={() => void chooseScreen()}>选择屏幕或窗口</Button></div>}
+                {IS_CAPTURE_HOST && <div className="screen-setting"><p>截图来源：{selectedScreenName || "主屏幕（默认）"}</p><Button variant="secondary" isDisabled={screenBusy} onPress={() => void chooseScreen()}>选择屏幕或窗口</Button></div>}
                 {!IS_CAPTURE_HOST && <p className="detail-intro">音频由 Electron 桌面端采集，此页面同步显示。</p>}
                 {operations.length > 0 && <div className="operation-history">{operations.map((operation) => <p key={operation.operation_id}>{operationLabel(operation)}{operation.detail ? ` · ${operation.detail}` : ""}</p>)}</div>}
                 {Object.keys(sessionMetrics).length > 0 && <p className="detail-intro">重连 {Number(sessionMetrics.reconnections || 0)} 次 · 音频缺口 {Number(sessionMetrics.audio_gaps || 0)} 次 · 工具失败 {Number(sessionMetrics.tool_failures || 0)} 次</p>}
@@ -1166,49 +1093,50 @@ export default function App() {
             </Modal.Body>
           </Modal.Dialog>
         </Modal.Container>
-      </Modal.Backdrop>
+      </Modal.Backdrop></Modal>
 
-      <Modal.Backdrop isOpen={correctionOpen} onOpenChange={setCorrectionOpen} className="sage-backdrop">
-        <Modal.Container size="lg" placement="center"><Modal.Dialog className="sage-dialog" aria-label="纠正与补充">
-          <Modal.CloseTrigger aria-label="关闭" />
-          <Modal.Header><Modal.Heading>纠正与补充</Modal.Heading></Modal.Header>
-          <form onSubmit={submitManualQuestion}>
-            <Modal.Body className="correction-body">
-              <Select value={correctionMode} onChange={(key) => changeCorrectionMode(String(key))} aria-label="修改内容">
-                <Label>修改内容</Label><Select.Trigger><Select.Value /><Select.Indicator /></Select.Trigger>
-                <Select.Popover><ListBox>{[{ id: "misheard", text: "题目听错了" }, { id: "conditions", text: "条件变了" }, { id: "return", text: "回到某道题" }, { id: "candidate", text: "补充我的情况" }, { id: "question", text: "输入新问题" }].map((item) => <ListBox.Item key={item.id} id={item.id} textValue={item.text}>{item.text}<ListBox.ItemIndicator /></ListBox.Item>)}</ListBox></Select.Popover>
-              </Select>
-              {!["candidate", "question"].includes(correctionMode) && <Select value={targetQuestionId || null} onChange={(key) => changeTargetQuestion(String(key))} aria-label="对应题目" placeholder="选择对应的题目">
-                <Label>对应题目</Label><Select.Trigger><Select.Value /><Select.Indicator /></Select.Trigger>
-                <Select.Popover><ListBox>{questions.map((question, index) => <ListBox.Item key={question.question_id} id={question.question_id} textValue={`${index + 1}. ${question.text}`}>{index + 1}. {question.text}<ListBox.ItemIndicator /></ListBox.Item>)}</ListBox></Select.Popover>
-              </Select>}
-              {correctionMode !== "return" && <><label htmlFor="manual-question">{correctionMode === "candidate" ? "补充事实" : correctionMode === "conditions" ? "变化后的完整条件" : correctionMode === "question" ? "问题" : "正确的题目"}</label><TextArea id="manual-question" variant="secondary" rows={4} value={manualText} onChange={(event) => changeManualText(event.target.value)} placeholder={correctionMode === "candidate" ? "例如：这个项目中，我实际负责的是…" : "保留完整题意和限制条件…"} /></>}
-              <p className="detail-intro">{correctionMode === "candidate" ? "作为你的上下文补充，不触发回答。" : correctionMode === "return" ? "结合完整对话，重新回答所选题目。" : "补充内容进入完整对话；已有回答保留，新回答追加显示。"}</p>
-            </Modal.Body>
-            <Modal.Footer><Button variant="ghost" onPress={() => { if (dispatchControl({ type: "set_answer_hold", hold: true })) setCorrectionOpen(false); }} isDisabled={!interviewActive || !clientReady || holdBusy}>等对方重说</Button><Button type="submit" isDisabled={!interviewActive || !clientReady || manualBusy || (correctionMode === "return" ? !targetQuestionId : !manualText.trim()) || (!["candidate", "question"].includes(correctionMode) && !targetQuestionId)}><ArrowUp size={16} />{correctionMode === "candidate" ? "补充上下文" : correctionMode === "return" ? "回到这题" : "提交"}</Button></Modal.Footer>
-          </form>
+      <Modal isOpen={correctionOpen} onOpenChange={setCorrectionOpen}><Modal.Backdrop>
+        <Modal.Container size="lg"><Modal.Dialog aria-label="纠正转录"><Modal.CloseTrigger aria-label="关闭" />
+          <Modal.Header><Modal.Heading>纠正转录</Modal.Heading></Modal.Header>
+          <Modal.Body><TextArea aria-label="正确的转录" value={manualText} onChange={event => setManualText(event.target.value)} />
+            <p className="detail-intro">更正后作为上下文，不自动生成回答。</p></Modal.Body>
+          <Modal.Footer><Button isDisabled={!clientReady || !manualText.trim()} onPress={() => {
+            if (correctingTurn && dispatchControl({ type: "manual_text", kind: "correction", text: manualText, turn_id: correctingTurn.turn_id })) setCorrectionOpen(false);
+          }}>保存更正</Button></Modal.Footer>
         </Modal.Dialog></Modal.Container>
-      </Modal.Backdrop>
+      </Modal.Backdrop></Modal>
 
-      <Modal.Backdrop isOpen={screenPickerOpen} onOpenChange={setScreenPickerOpen} className="sage-backdrop">
+      <Modal isOpen={screenPickerOpen} onOpenChange={setScreenPickerOpen}><Modal.Backdrop>
         <Modal.Container size="lg" placement="center"><Modal.Dialog className="sage-dialog" aria-label="选择看题来源">
           <Modal.CloseTrigger aria-label="关闭" /><Modal.Header><Modal.Heading>选择看题来源</Modal.Heading></Modal.Header>
-          <Modal.Body><p className="detail-intro">选择要读取的屏幕或窗口。每次看题只取一张截图。</p><div className="screen-source-grid">{screenSources.map((source) => <Button key={source.id} variant="secondary" className="screen-source" onPress={() => void selectScreen(source)} isDisabled={screenBusy}><img src={source.thumbnailDataUrl} alt="" /><span>{source.name}{source.selected ? " · 已选择" : ""}</span></Button>)}</div>{!screenSources.length && <p>没有可用的屏幕或窗口，请检查系统录屏权限。</p>}</Modal.Body>
+          <Modal.Body><p className="detail-intro">选择快捷截图读取的显示器或窗口。截图会作为下一条消息的附件。</p><div className="screen-source-grid">{screenSources.map((source) => <Button key={source.id} variant="secondary" className="screen-source" onPress={() => void selectScreen(source)} isDisabled={screenBusy}><img src={source.thumbnailDataUrl} alt="" /><span>{source.name}{source.selected ? " · 已选择" : ""}</span></Button>)}</div>{!screenSources.length && <p>没有可用的屏幕或窗口，请检查系统录屏权限。</p>}</Modal.Body>
         </Modal.Dialog></Modal.Container>
-      </Modal.Backdrop>
+      </Modal.Backdrop></Modal>
 
-      <Modal.Backdrop isOpen={stopConfirmOpen} onOpenChange={setStopConfirmOpen} isDismissable={false} className="sage-backdrop">
+      <ConversationList open={conversationsOpen} onOpenChange={setConversationsOpen} base={API_BASE_URL}
+        session={sessionRef.current} title={conversationTitle} onSelect={selectConversation} onRename={setConversationTitle} />
+      <Modal isOpen={newTranscriptionOpen} onOpenChange={setNewTranscriptionOpen}><Modal.Backdrop>
+        <Modal.Container size="sm"><Modal.Dialog role="alertdialog" aria-label="新一场转录">
+          <Modal.Header><Modal.Heading>开始新一场转录？</Modal.Heading></Modal.Header>
+          <Modal.Body>旧转录保留存档，后续默认只读取新一场。聊天内容不变；已经发给 AI 的旧内容仍在原聊天上下文里。</Modal.Body>
+          <Modal.Footer><Button variant="secondary" autoFocus onPress={() => setNewTranscriptionOpen(false)}>取消</Button>
+            <Button isDisabled={interviewActive || !clientReady} onPress={() => {
+              if (dispatchControl({ type: "new_transcription" })) setNewTranscriptionOpen(false);
+            }}>确认新一场</Button></Modal.Footer>
+        </Modal.Dialog></Modal.Container>
+      </Modal.Backdrop></Modal>
+      <Modal isOpen={stopConfirmOpen} onOpenChange={setStopConfirmOpen}><Modal.Backdrop isDismissable={false}>
         <Modal.Container size="sm" placement="center">
           <Modal.Dialog className="sage-dialog" role="alertdialog" aria-labelledby="stop-dialog-title" aria-describedby="stop-dialog-description">
-            <Modal.Header><Modal.Heading id="stop-dialog-title">确定结束当前面试？</Modal.Heading></Modal.Header>
-            <Modal.Body><p id="stop-dialog-description">本场回答、转写和模型上下文会从服务端清除，结束后无法恢复。</p></Modal.Body>
+            <Modal.Header><Modal.Heading id="stop-dialog-title">停止回答并切换聊天？</Modal.Heading></Modal.Header>
+            <Modal.Body><p id="stop-dialog-description">仅停止正在生成的回答并切换聊天。转录继续，已有转录内容不变；原聊天和附件保留。</p></Modal.Body>
             <Modal.Footer>
-              <Button autoFocus variant="secondary" onPress={() => setStopConfirmOpen(false)}>继续面试</Button>
-              <Button variant="danger-soft" onPress={() => void stopInterview()}>确认结束</Button>
+              <Button autoFocus variant="secondary" onPress={() => setStopConfirmOpen(false)}>取消</Button>
+              <Button variant="primary" onPress={() => void confirmConversationSwitch()}>停止并切换</Button>
             </Modal.Footer>
           </Modal.Dialog>
         </Modal.Container>
-      </Modal.Backdrop>
+      </Modal.Backdrop></Modal>
     </div>
   );
 }
@@ -1233,21 +1161,6 @@ function NoticeBanner({ text, onDismiss }: { text: string; onDismiss: () => void
   return <div className="error-banner" role="alert"><WarningCircle size={18} /><span>{text}</span><Button isIconOnly size="sm" variant="ghost" aria-label="关闭提示" onPress={onDismiss}><X size={14} /></Button></div>;
 }
 
-function AnswerCard({ answer, onAction, onUseCode, actionsDisabled = false }: { answer: AnswerRecord; onAction?: (action: QuickAnswerAction) => void; onUseCode?: (code: string, language: string) => void; actionsDisabled?: boolean }) {
-  return (
-    <article className={`answer-card ${answer.status}`}>
-      {answer.question ? <div className="question-row"><p className="answer-question">{answer.question}</p></div> : null}
-      {answer.text ? <AnswerMarkdown text={answer.text} onUseCode={answer.status === "completed" ? onUseCode : undefined} /> : <p className="answer-text">正在组织答案…</p>}
-      {answer.detail ? <p className="answer-detail">{answer.detail}</p> : null}
-      <div className="answer-meta">
-        <span role="status">{answerStatusLabel(answer.status)}</span><span aria-hidden="true">·</span>
-        <time dateTime={answer.createdAt}>{formatClock(answer.createdAt)}</time>
-        <CopyTextButton text={answer.text} label="复制回答" className="copy-button" />
-      </div>
-      {onAction && <nav className="quick-answers answer-actions" aria-label="这条回答的操作">{QUICK_ANSWERS.map(({ action, label, hint, Icon }) => <Tooltip key={action}><Button variant="ghost" size="sm" onPress={() => onAction(action)} isDisabled={actionsDisabled || !answer.text}><Icon size={14} />{label}</Button><Tooltip.Content>{hint}</Tooltip.Content></Tooltip>)}</nav>}
-    </article>
-  );
-}
 
 async function requestCaptureInitialization() {
   const request = window.interviewDesktop?.requestCaptureInitialization;
@@ -1265,30 +1178,6 @@ async function createInterviewSession(): Promise<InterviewSession> {
   return parseInterviewSession(await create(API_BASE_URL), true);
 }
 
-async function endInterviewSession(interview: InterviewSession) {
-  if (IS_CAPTURE_HOST && window.interviewDesktop?.endInterview) {
-    await window.interviewDesktop.endInterview(
-      API_BASE_URL,
-      interview.interview_id,
-      interview.session_token,
-    );
-    return;
-  }
-  const response = await fetch(
-    `${API_BASE_URL}/api/interviews/${encodeURIComponent(interview.interview_id)}`,
-    {
-      method: "DELETE",
-      signal: AbortSignal.timeout(10_000),
-      redirect: "error",
-      credentials: "include",
-      headers: { Authorization: `Bearer ${interview.session_token}` },
-    },
-  );
-  if (!response.ok && response.status !== 404) {
-    throw new Error(await readResponseError(response));
-  }
-}
-
 function parseInterviewSession(value: Partial<InterviewSession>, requireCaptureToken: boolean) {
   if (
     typeof value.interview_id !== "string" ||
@@ -1302,6 +1191,7 @@ function parseInterviewSession(value: Partial<InterviewSession>, requireCaptureT
   return {
     interview_id: value.interview_id,
     session_token: value.session_token,
+    conversation_id: value.conversation_id || value.interview_id,
     ...(requireCaptureToken ? { capture_token: value.capture_token } : {}),
   } satisfies InterviewSession;
 }
@@ -1325,18 +1215,6 @@ function parseAnswerStatus(status: string | undefined): AnswerStatus {
     : "streaming";
 }
 
-function answerStatusLabel(status: AnswerStatus) {
-  switch (status) {
-    case "streaming":
-      return "生成中";
-    case "completed":
-      return "已完成";
-    case "interrupted":
-      return "已打断";
-    case "error":
-      return "失败";
-  }
-}
 
 function connectionLabel(state: ClientConnectionState) {
   switch (state) {
@@ -1351,13 +1229,6 @@ function connectionLabel(state: ClientConnectionState) {
   }
 }
 
-function formatClock(value: string) {
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) {
-    return value;
-  }
-  return date.toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" });
-}
 
 function errorMessage(error: unknown, fallback: string) {
   return error instanceof Error && error.message ? error.message : fallback;

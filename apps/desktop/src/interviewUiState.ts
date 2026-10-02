@@ -7,7 +7,6 @@ import type {
   DeviceStatus,
   OperationRecord,
   OperationStatus,
-  QuickAnswerAction,
   ServerEvent,
   Speaker,
   TranscriptState,
@@ -34,10 +33,6 @@ export function transcriptForSpeaker(turns: TranscriptTurn[], speaker: Speaker):
   return { final, partial: partial.filter(Boolean).join(" ") };
 }
 
-export function manualDraftKey(mode: string, questionId?: string) {
-  return ["misheard", "conditions", "return"].includes(mode) ? `${mode}:${questionId || "none"}` : mode;
-}
-
 export function operationIsPending(operation: OperationRecord) {
   return !TERMINAL_OPERATIONS.has(operation.status);
 }
@@ -54,47 +49,8 @@ export function mergeOperation(
     : operation);
 }
 
-export function answerActionPayload(
-  action: QuickAnswerAction,
-  operationId: string,
-  answer: AnswerRecord | undefined,
-  questionId: string | undefined,
-) {
-  if (!["answer", "deep"].includes(action) && !answer?.responseId) {
-    throw new Error("请先选择要修改的回答。");
-  }
-  return {
-    type: "quick_answer",
-    action,
-    operation_id: operationId,
-    ...(answer?.responseId ? { response_id: answer.responseId } : {}),
-    ...((answer?.questionId || questionId) ? { question_id: answer?.questionId || questionId } : {}),
-  };
-}
-
-export function reconcileReadingAnswer(selectedId: string | null, answerIds: string[]) {
-  if (selectedId && answerIds.includes(selectedId)) return selectedId;
-  return answerIds[answerIds.length - 1] ?? null;
-}
-
 export function visibleAnswerOrder(answers: AnswerStore) {
-  return answers.order.filter((id) => answers.byId[id] && answers.byId[id].intermediate !== true);
-}
-
-export function reconcileReadingSelection(
-  selectedId: string | null,
-  visibleIds: string[],
-  rawIds: string[],
-) {
-  const anchor = selectedId && rawIds.includes(selectedId) ? selectedId : rawIds[rawIds.length - 1] ?? null;
-  if (!anchor || visibleIds.includes(anchor)) return anchor;
-  // Keep a hidden tool phase as a temporary bookmark until its later answer
-  // arrives. Selecting the older display fallback would pin the reader there.
-  const anchorIndex = rawIds.indexOf(anchor);
-  for (let index = visibleIds.length - 1; index >= 0; index -= 1) {
-    if (rawIds.indexOf(visibleIds[index]) > anchorIndex) return visibleIds[index];
-  }
-  return anchor;
+  return answers.order.filter((id) => answers.byId[id]);
 }
 
 export function mergeAnswerEvent(
@@ -103,13 +59,10 @@ export function mergeAnswerEvent(
   status: AnswerStatus,
   replaceText: boolean,
 ): AnswerRecord {
-  const withMetadata = typeof payload.intermediate === "boolean" && payload.intermediate !== current.intermediate
-    ? { ...current, intermediate: payload.intermediate } : current;
-  // A late classification must still hide a tool preamble whose text has
-  // already reached a terminal state. Completed text itself stays immutable.
-  if (!replaceText && current.status !== "streaming") return withMetadata;
+  if (!replaceText && current.status !== "streaming") return current;
   return {
-    ...withMetadata,
+    ...current,
+    activities: payload.activities ?? current.activities,
     question: payload.question ?? current.question,
     questionId: payload.question_id ?? current.questionId,
     text: payload.type === "answer_delta"
@@ -119,12 +72,6 @@ export function mergeAnswerEvent(
     createdAt: payload.created_at ?? current.createdAt,
     detail: payload.detail ?? payload.error ?? payload.message ?? current.detail,
   };
-}
-
-export function newerAnswerCount(selectedId: string | null, answerIds: string[]) {
-  if (!selectedId) return 0;
-  const index = answerIds.indexOf(selectedId);
-  return index < 0 ? 0 : answerIds.length - index - 1;
 }
 
 export function applyChannelHealth(
@@ -154,7 +101,6 @@ export function listeningStatus({
   active,
   deviceStatus,
   channels,
-  held,
   answering,
 }: {
   connected: boolean;
@@ -162,7 +108,6 @@ export function listeningStatus({
   active: boolean;
   deviceStatus: DeviceStatus;
   channels: Record<Speaker, ChannelState>;
-  held: boolean;
   answering: boolean;
 }) {
   if (!connected) return {
@@ -178,17 +123,14 @@ export function listeningStatus({
   if (deviceStatus !== "ready" || Object.values(channels).some((channel) => channel.phase !== "listening" && channel.phase !== "ready")) {
     return { label: "音频需检查", detail: "至少一路采集尚未就绪，请查看设备详情。", live: false };
   }
-  if (held) return { label: "只听不答", detail: "继续接收和转写音频，自动回答已暂停。", live: true };
-  return { label: answering ? "回答中" : "聆听中", detail: "两路音频已连接。", live: true };
+  return { label: answering ? "回答中" : "转录中", detail: "两路音频只记录上下文，发送消息时才回答。", live: true };
 }
 
 export function operationLabel(operation: OperationRecord) {
-  const name = operation.action === "deep" ? "深入分析"
-    : operation.kind === "code_action" ? "代码"
-    : operation.kind === "answer_screens" ? "截图解题"
-    : operation.kind === "clear_screens" ? "新一组截图"
+  const name = operation.kind === "code_action" ? "代码"
+    : operation.kind === "clear_screens" ? "移除附件"
     : operation.kind === "request_screen_capture" ? "截图"
-    : operation.kind === "set_answer_hold" ? "回答状态"
+    : operation.kind === "chat_stop" ? "停止生成"
     : operation.kind === "manual_text" ? "更新上下文"
     : "回答请求";
   const state: Record<OperationStatus, string> = {

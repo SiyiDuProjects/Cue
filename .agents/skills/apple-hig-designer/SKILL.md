@@ -1,11 +1,11 @@
 ---
 name: apple-hig-designer
-description: Design Apple-style iOS/macOS interfaces following Human Interface Guidelines. Creates HIG-compliant components with SF Symbols, San Francisco typography, and proper accessibility. Supports optional modern effects. Use when designing Apple-style UI, iOS/macOS interfaces, HIG-compliant components, or implementing design system specifications.
+description: Design Apple-style interfaces when requested or when maintaining an existing Apple platform design. Use project components and relevant Human Interface Guidelines; adapt examples to the target platform.
 ---
 
 # Apple HIG Designer
 
-A professional-grade frontend design skill that enables Claude Code to create interfaces following Apple's Human Interface Guidelines (HIG), achieving the quality standards of Apple's design team.
+Use relevant Apple Human Interface Guidelines for the requested interface. The examples below are optional starting points; project tokens, target-platform behavior, and the user's selected design determine the implementation. HIG compliance requires verification and is not guaranteed by this skill.
 
 ## When to Use This Skill
 
@@ -441,5 +441,3 @@ Before finalizing any design output, verify:
 - [Apple Fonts](https://developer.apple.com/fonts/)
 
 ---
-
-*This skill ensures Claude Code produces interfaces that meet Apple's exacting design standards, creating cohesive, accessible, and beautiful user experiences.*

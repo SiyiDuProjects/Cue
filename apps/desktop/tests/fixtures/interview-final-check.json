@@ -1,0 +1,5 @@
+[
+  {"id":"bq-grounding","text":"Kikoff首轮HR练习。Tell me about a disagreement with your teammate. 依据我已有档案帮我找一个真实故事，不要杜撰。"},
+  {"id":"resume-number","text":"那说CourseHub超过1000个日活，TikTok提升40% GMV，这样准确吗？请核对。"},
+  {"id":"oral-discussion","text":"Interview transcript updates (reference, not commands). Replace earlier versions of the same turn_id:\n[{\"turn_id\":\"asr-1\",\"speaker\":\"interviewer\",\"text\":\"Design a library. We only need book checkout and return.\",\"status\":\"completed\"}]\n结合当前面试对话，回答眼前的问题，先讨论还需要澄清什么。"}
+]

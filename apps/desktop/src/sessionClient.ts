@@ -15,7 +15,7 @@ interface SessionClientCallbacks {
 
 const READY_TIMEOUT_MS = 10_000;
 const RECONNECT_DELAYS_MS = [1_000, 2_000, 5_000];
-export const REALTIME_PROTOCOL = "realtime-interview-v5";
+export const REALTIME_PROTOCOL = "interview-chat-v12";
 export const INCOMPATIBLE_SERVER = "服务端版本与客户端不匹配。请先部署新版后端，再连接面试；当前未启动采集会话。";
 
 export class SessionClient {
@@ -133,6 +133,7 @@ export class SessionClient {
           this.ready = true;
           this.reconnectAttempt = 0;
           this.callbacks.onConnectionChange("connected");
+          this.callbacks.onEvent(event);
           if (!settled) {
             settled = true;
             window.clearTimeout(timeoutId);

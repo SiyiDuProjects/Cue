@@ -4,9 +4,21 @@ class InterviewPcmProcessor extends AudioWorkletProcessor {
     super();
     this.pcm = new Int16Array(1024);
     this.used = 0;
+    this.finished = false;
+    this.port.onmessage = ({ data }) => {
+      if (data?.type !== 'finish' || this.finished) return;
+      this.finished = true;
+      if (this.used) {
+        const pcm = this.pcm.slice(0, this.used).buffer;
+        this.port.postMessage({ pcm, endTime: currentTime }, [pcm]);
+        this.used = 0;
+      }
+      this.port.postMessage({ type: 'finished' });
+    };
   }
 
   process(inputs) {
+    if (this.finished) return false;
     const input = inputs[0]?.[0];
     if (!input) return true;
     for (let index = 0; index < input.length; index++) {
