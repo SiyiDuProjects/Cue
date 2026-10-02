@@ -23,8 +23,10 @@ const freePort = () => new Promise(resolve => { const s = net.createServer(); s.
 app.whenReady().then(async () => {
   try {
     const base = 'http://127.0.0.1:' + await freePort();
-    server = spawn(path.join(root, 'apps/server/.venv/Scripts/python.exe'), [path.join(__dirname, 'chat-audit-server.py')], {
+    const python = path.join(root, 'apps/server/.venv', process.platform === 'win32' ? 'Scripts/python.exe' : 'bin/python');
+    server = spawn(python, [path.join(__dirname, 'chat-audit-server.py')], {
       cwd: path.join(root, 'apps/server'), windowsHide: true, env: { ...process.env, AUDIT_PORT: new URL(base).port }, stdio: ['ignore', 'pipe', 'pipe'] });
+    server.on('error', finish);
     server.stdout.on('data', b => log += b); server.stderr.on('data', b => log += b);
     for (let i = 0; i < 180; i++) { try { if ((await fetch(base + '/health')).ok) break; } catch {} await new Promise(r => setTimeout(r, 50)); }
     win = new BrowserWindow({ show: false, width: 1240, height: 820, webPreferences: { sandbox: true, contextIsolation: true, offscreen: true, backgroundThrottling: false } });

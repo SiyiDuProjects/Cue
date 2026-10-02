@@ -5,10 +5,11 @@ const os = require("node:os");
 const path = require("node:path");
 const { CodeFiles } = require("./code-files.cjs");
 async function fixture(t) {
-  const directory = await fs.mkdtemp(path.join(os.tmpdir(), "sage-files-test-"));
+  const temporaryRoot = await fs.realpath(os.tmpdir());
+  const directory = await fs.mkdtemp(path.join(temporaryRoot, "sage-files-test-"));
   t.after(async () => {
     const resolved = await fs.realpath(directory);
-    if (!resolved.startsWith(path.resolve(os.tmpdir()) + path.sep)) throw new Error("Unsafe cleanup target");
+    if (resolved !== directory || path.dirname(resolved) !== temporaryRoot) throw new Error("Unsafe cleanup target");
     await fs.rm(resolved, {recursive:true,force:true});
   });
   return new CodeFiles(directory);
