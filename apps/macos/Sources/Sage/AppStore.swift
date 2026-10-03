@@ -51,6 +51,7 @@ import SageCore
     private var refreshing = false
     private var modeReady = false
     private var supportsAppShot = false
+    private var capabilityEpoch = UUID()
     private var shouldStartAfterPrepare = false
     private var generation = UUID()
     private var conversationEpoch = UUID()
@@ -95,7 +96,7 @@ import SageCore
             guard !state.active && !state.stopping && !busy else { throw SageError("请先停止转录和当前回答，再修改服务器连接。") }
             let address = try ServerAddress(server)
             let health = try await http.request(address, "/health")
-            guard health["realtime_protocol"] as? String == protocolVersion, health["chat"] as? Bool == true, health["pinned_code"] as? Bool == false else { throw SageError("服务器协议不兼容，请先更新服务器。") }
+            try validateHealth(health)
             let token = token.isEmpty ? try Credentials.load(address.url.absoluteString) : token.trimmingCharacters(in: .whitespacesAndNewlines)
             let result = try await http.request(address, "/api/interviews", method: "POST", token: token, body: ["device_name": "Sage · \(Host.current().localizedName ?? "Mac")"])
             let session = try Session(result)
@@ -118,6 +119,11 @@ import SageCore
     func testSession(_ origin: String, _ value: Session) throws { address = try ServerAddress(origin); session = value; connected = true; initialSnapshotPending = false; state.conversationID = value.conversationID }
     func testReceive(_ event: JSON) { receive(event) }
     func testRefresh() async { await refreshSession() }
+    var testSupportsAppShot: Bool { supportsAppShot }
+    func testConnectionState(_ ready: Bool, role: String = "client") -> Task<Void, Never>? {
+        guard let address else { return nil }
+        return connectionStateChanged(ready, message: "fixture", role: role, address: address)
+    }
     func testCaptureLinks(_ value: [String: SocketLink]) { links = value }
     func testCaptureEvent(_ value: JSON, role: String = "interviewer") { captureEvent(value, role: role) }
     #endif
@@ -131,8 +137,7 @@ import SageCore
             let link = SocketLink(url: try address.socket(interview: session.interviewID, role: role), token: role == "client" ? session.token : session.captureToken, role: role)
             link.onState = { [weak self] ready, message in
                 guard let self, generation == epoch else { return }
-                if role == "client" { initialSnapshotPending = true; connected = ready; connection = message }
-                else { channelStatus[role] = ready ? (capture.isPrepared ? "已就绪" : "未开启") : "正在重连" }
+                connectionStateChanged(ready, message: message, role: role, address: address)
             }
             link.onEvent = { [weak self] event in
                 guard let self, generation == epoch else { return }
@@ -150,6 +155,36 @@ import SageCore
             Task { @MainActor in self?.pumpAudio() }
         }
     }
+    private func validateHealth(_ health: JSON) throws {
+        guard health["realtime_protocol"] as? String == protocolVersion,
+              health["chat"] as? Bool == true, health["pinned_code"] as? Bool == false else {
+            throw SageError("服务器协议不兼容，请先更新服务器。")
+        }
+    }
+    private func invalidateCapabilities() {
+        supportsAppShot = false; capabilityEpoch = UUID()
+    }
+    @discardableResult private func connectionStateChanged(_ ready: Bool, message: String, role: String, address: ServerAddress) -> Task<Void, Never>? {
+        if role == "client" { initialSnapshotPending = true; connected = ready; connection = message }
+        else { channelStatus[role] = ready ? (capture.isPrepared ? "已就绪" : "未开启") : "正在重连" }
+        // Even a reconnect with a still-valid token may reach a rolled-back server.
+        invalidateCapabilities()
+        guard ready else { return nil }
+        let epoch = generation, capability = capabilityEpoch
+        return Task { [weak self] in
+            guard let self, generation == epoch, capabilityEpoch == capability else { return }
+            do {
+                let health = try await http.request(address, "/health")
+                guard generation == epoch, capabilityEpoch == capability else { return }
+                try validateHealth(health)
+                supportsAppShot = health["appshot"] as? Bool == true
+            } catch {
+                if generation == epoch, capabilityEpoch == capability {
+                    self.error = "无法确认服务器 App Shot 能力，请重新连接或选择屏幕截图。"
+                }
+            }
+        }
+    }
     private func refreshSession() async {
         guard !refreshing, let address else { return }
         refreshing = true; defer { refreshing = false }
@@ -157,16 +192,20 @@ import SageCore
         let epoch = await disconnect()
         guard generation == epoch else { return }
         do {
+            let health = try await http.request(address, "/health")
+            guard generation == epoch else { return }
+            try validateHealth(health)
             let result = try await http.request(address, "/api/interviews", method: "POST", token: token, body: ["device_name": "Sage · Mac"])
             guard generation == epoch else { return }
             let session = try Session(result); self.session = session
+            supportsAppShot = health["appshot"] as? Bool == true
             state.active = false; state.stopping = false
             try establishLinks(address: address, session: session)
             error = "会话已恢复。转录和未确认的回答没有自动重启。"
         } catch { if generation == epoch { self.error = error.localizedDescription } }
     }
     @discardableResult func disconnect() async -> UUID {
-        let epoch = UUID(); generation = epoch; timer?.invalidate(); timer = nil
+        let epoch = UUID(); generation = epoch; invalidateCapabilities(); timer?.invalidate(); timer = nil
         shouldStartAfterPrepare = false; preparing = false; screenshotBusy = false; screenshotOperation = nil; sending = []
         links.values.forEach { $0.close() }; links = [:]; host.stop()
         connected = false; initialSnapshotPending = true; connection = "未连接"; pendingSend = nil
@@ -359,14 +398,16 @@ import SageCore
         case "screen_capture_request":
             guard let requestID = event["request_id"] as? String, let address, let session else { return }
             let epoch = generation, chatEpoch = conversationEpoch, conversation = event["conversation_id"] as? String ?? state.conversationID
-            let selectedSource = sourceID
+            let selectedSource = sourceID, capability = capabilityEpoch
+            let windowShot = selectedSource == "frontmost" || selectedSource.hasPrefix("window:")
             Task {
                 do {
                     guard generation == epoch, conversationEpoch == chatEpoch, state.conversationID == conversation else { throw SageError("截图所属聊天已切换，请重新截图。") }
-                    if (selectedSource == "frontmost" || selectedSource.hasPrefix("window:")) && !supportsAppShot { throw SageError("服务器尚未支持 App Shot 文字，请更新服务器或选择屏幕截图。") }
+                    if windowShot && (!supportsAppShot || capabilityEpoch != capability) { throw SageError("服务器尚未支持 App Shot 文字，请更新服务器或选择屏幕截图。") }
                     var payload = try await capture.screenshot(source: selectedSource)
                     guard generation == epoch else { return }
                     guard state.conversationID == conversation, conversationEpoch == chatEpoch else { throw SageError("截图所属聊天已切换，原截图未上传。") }
+                    if windowShot && (!supportsAppShot || capabilityEpoch != capability) { throw SageError("截图期间服务器连接已改变，请重新截图。") }
                     payload["request_id"] = requestID
                     _ = try await http.request(address, "/api/interviews/\(session.interviewID)/screenshots", method: "POST", token: session.captureToken, body: payload)
                 } catch {

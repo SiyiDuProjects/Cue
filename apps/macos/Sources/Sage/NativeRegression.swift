@@ -79,6 +79,9 @@ private final class FixtureHTTP: URLProtocol, @unchecked Sendable {
             try await screenshotSnapshotBoundary()
             try await screenshotRace()
             try await screenshotUploadRace()
+            try await appshotRollback()
+            try await capabilityOwnership()
+            try await capabilityCaptureRace()
             try await refreshRace()
             try await audioConversion()
             try await socketContract()
@@ -285,6 +288,115 @@ private final class FixtureHTTP: URLProtocol, @unchecked Sendable {
         store.testCaptureEvent(["type": "screen_capture_request", "request_id": "new", "conversation_id": "b"])
         try await eventually { uploads == 1 }
         try check(uploads == 1, "new chat can upload its own explicit screenshot")
+        await store.disconnect(); FixtureHTTP.handler = nil
+    }
+    static func appshotRollback() async throws {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [FixtureHTTP.self]
+        let capture = CaptureController(factory: { _ in FakeAudio() })
+        let store = AppStore(preview: true, http: HTTPClient(configuration: configuration), capture: capture)
+        var oldServer = false, captures = 0, uploads = 0
+        let health: JSON = ["realtime_protocol": protocolVersion, "chat": true, "pinned_code": false]
+        FixtureHTTP.handler = { request in
+            if request.request.url?.path == "/health" {
+                request.respond(oldServer ? health : health.merging(["appshot": true]) { _, new in new })
+            } else if request.request.url?.path.hasSuffix("screenshots") == true {
+                uploads += 1; request.respond(["ok": true])
+            } else { request.respond(["interview_id": "current", "conversation_id": "a", "session_token": "fixture-ui", "capture_token": "fixture-capture"]) }
+        }
+        store.testEstablish = { _, _ in }
+        await store.connect(server: "https://fixture.invalid", token: "synthetic", codex: "", remember: false)
+        oldServer = true
+        await store.testRefresh()
+        let socket = FixtureSocket()
+        let link = SocketLink(url: URL(string: "wss://fixture.invalid/interviewer")!, token: "fixture", role: "interviewer", connectionFactory: { _ in socket })
+        link.start(); socket.emit(["type": "session_ready", "realtime_protocol": protocolVersion])
+        try await eventually { link.ready }; store.testCaptureLinks(["interviewer": link])
+        capture.testScreenshot = { _ in captures += 1; return ["image_data": "data:image/png;base64,iVBORw0KGgo=", "appshot": ["status": "available", "text": "fixture"]] }
+        for source in ["frontmost", "window:42"] {
+            store.sourceID = source
+            let before = socket.sent.count
+            store.testCaptureEvent(["type": "screen_capture_request", "request_id": source, "conversation_id": "a"])
+            try await eventually { uploads > 0 || socket.sent.count > before }
+            try check(captures == 0 && uploads == 0, "old v12 recovery rejects App Shot before capture: \(source)")
+        }
+        await store.disconnect(); FixtureHTTP.handler = nil
+    }
+    static func capabilityOwnership() async throws {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [FixtureHTTP.self]
+        let store = AppStore(preview: true, http: HTTPClient(configuration: configuration))
+        let health: JSON = ["realtime_protocol": protocolVersion, "chat": true, "pinned_code": false]
+        var holdHealth = false, held: FixtureHTTP?, supported = true
+        FixtureHTTP.handler = { request in
+            if request.request.url?.path == "/health" {
+                if holdHealth { held = request }
+                else { request.respond(supported ? health.merging(["appshot": true]) { _, new in new } : health) }
+            } else { request.respond(["interview_id": "current", "conversation_id": "a", "session_token": "fixture-ui", "capture_token": "fixture-capture"]) }
+        }
+        store.testEstablish = { _, _ in }
+        await store.connect(server: "https://a.invalid", token: "synthetic", codex: "", remember: false)
+        try check(store.testSupportsAppShot, "current health enables App Shot")
+        _ = store.testConnectionState(false)
+        try check(!store.testSupportsAppShot, "socket interruption immediately clears App Shot capability")
+        holdHealth = true
+        let first = store.testConnectionState(true)
+        try await eventually { held != nil }
+        try check(!store.testSupportsAppShot, "pending reconnect health cannot permit window capture")
+        let old = held!; held = nil; holdHealth = false; supported = false
+        _ = store.testConnectionState(false)
+        await store.testConnectionState(true)?.value
+        old.respond(health.merging(["appshot": true]) { _, new in new }); await first?.value
+        try check(!store.testSupportsAppShot, "same-session late health cannot override newer old-v12 reconnect")
+        holdHealth = true
+        let stale = store.testConnectionState(true)
+        try await eventually { held != nil }
+        let priorServer = held!; held = nil; holdHealth = false
+        await store.connect(server: "https://b.invalid", token: "synthetic", codex: "", remember: false)
+        priorServer.respond(health.merging(["appshot": true]) { _, new in new }); await stale?.value
+        try check(!store.testSupportsAppShot && store.serverText == "https://b.invalid", "old-server health cannot grant capability to a new connection")
+        holdHealth = true
+        let staleFailure = store.testConnectionState(true)
+        try await eventually { held != nil }
+        let failed = held!; held = nil; holdHealth = false; supported = true
+        await store.connect(server: "https://c.invalid", token: "synthetic", codex: "", remember: false)
+        store.error = "CURRENT_CONNECTION"
+        failed.respond([:]); await staleFailure?.value
+        try check(store.testSupportsAppShot && store.error == "CURRENT_CONNECTION", "late invalid health cannot clear new capability or overwrite new error")
+        FixtureHTTP.handler = { $0.respond([:]) }
+        await store.testConnectionState(true)?.value
+        try check(!store.testSupportsAppShot, "unknown current health fails closed")
+        await store.disconnect()
+        try check(!store.testSupportsAppShot, "explicit disconnect clears capability")
+        FixtureHTTP.handler = nil
+    }
+    static func capabilityCaptureRace() async throws {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [FixtureHTTP.self]
+        let capture = CaptureController(factory: { _ in FakeAudio() })
+        let store = AppStore(preview: true, http: HTTPClient(configuration: configuration), capture: capture)
+        var uploads = 0
+        FixtureHTTP.handler = { request in
+            if request.request.url?.path == "/health" { request.respond(["realtime_protocol": protocolVersion, "chat": true, "pinned_code": false, "appshot": true]) }
+            else if request.request.url?.path.hasSuffix("screenshots") == true { uploads += 1; request.respond(["ok": true]) }
+            else { request.respond(["interview_id": "current", "conversation_id": "a", "session_token": "fixture-ui", "capture_token": "fixture-capture"]) }
+        }
+        store.testEstablish = { _, _ in }
+        await store.connect(server: "https://fixture.invalid", token: "synthetic", codex: "", remember: false)
+        let socket = FixtureSocket()
+        let link = SocketLink(url: URL(string: "wss://fixture.invalid/interviewer")!, token: "fixture", role: "interviewer", connectionFactory: { _ in socket })
+        link.start(); socket.emit(["type": "session_ready", "realtime_protocol": protocolVersion])
+        try await eventually { link.ready }; store.testCaptureLinks(["interviewer": link])
+        var waiting: CheckedContinuation<JSON, Error>?
+        capture.testScreenshot = { _ in try await withCheckedThrowingContinuation { waiting = $0 } }
+        store.testCaptureEvent(["type": "screen_capture_request", "request_id": "before-reconnect", "conversation_id": "a"])
+        try await eventually { waiting != nil }
+        _ = store.testConnectionState(false, role: "interviewer")
+        await store.testConnectionState(true, role: "interviewer")?.value
+        let before = socket.sent.count
+        waiting?.resume(returning: ["image_data": "data:image/png;base64,iVBORw0KGgo=", "appshot": ["status": "available", "text": "BEFORE_RECONNECT"]])
+        try await eventually { uploads > 0 || socket.sent.count > before }
+        try check(uploads == 0 && store.testSupportsAppShot, "reconfirmed capability cannot upload a window capture started before reconnect")
         await store.disconnect(); FixtureHTTP.handler = nil
     }
     static func refreshRace() async throws {
