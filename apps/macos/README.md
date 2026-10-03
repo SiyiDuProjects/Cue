@@ -33,7 +33,7 @@ open apps/macos/output/Sage.app
 1. 在连接设置填写现有 HTTPS 服务地址和电脑访问凭证。访问凭证可保存在 macOS 钥匙串；这里不填写 OpenAI key。后端 key 仍只在服务器。
 2. 使用 Codex 时安装本机 CLI，必要时填写可执行文件完整路径，点击“登录 Codex”。登录使用 Sage 独立的 `CODEX_HOME`，不会复制开发者 Codex 登录。Responses API 不要求 CLI 登录。
 3. 点击 App Shot 才申请截图/辅助功能权限。开始转录才申请麦克风及屏幕/系统音频权限。截图源消失或窗口文字无法唯一匹配会明确提示，不转用其他窗口。
-4. App Shot 文字需要本次后端代码的 `/health.appshot = true`。旧 v12 后端仍可选择显示器截图；缺少标记时窗口 App Shot 显示升级提示。发布仍须按仓库部署 gate 先更新后端，再发布客户端；此任务未部署生产。
+4. App Shot 文字需要本次后端代码的 `/health.appshot = true`。旧 v12 后端仍可选择显示器截图；缺少标记时窗口 App Shot 显示升级提示。发布仍须按仓库部署 gate 先更新后端，再发布客户端；本次生产发布记录见下文。
 
 本机文件位于 `~/Library/Application Support/SageMac/`：`drafts.json` 为草稿，`assistant-workspace/materials/` 为用户自行提供的资料，`assistant-workspace/.runtime/codex/` 为专用 CLI 状态。读取草稿失败时停止覆盖原文件；不要把这些文件加入产品 Git。
 
@@ -54,7 +54,7 @@ OPENAI_API_KEY='' OPENAI_BASE_URL='http://127.0.0.1:1/v1' \
 
 ## 本次验证记录
 
-- Debug 构建和签名验证通过；31 项协议/AX/状态检查、45 项原生运行时检查通过。发布准备时在获准的本机构建进程中完成 Release 编译与 dSYM 生成，31 项 Release 协议/AX/状态检查通过；已有 Debug 包保持不变；Release 应用作为离线候选单独打包，安装、启用和分发等待后端上线。
+- Debug 构建和签名验证通过；31 项协议/AX/状态检查、45 项原生运行时检查通过。发布准备时在获准的本机构建进程中完成 Release 编译与 dSYM 生成，31 项 Release 协议/AX/状态检查通过；已有 Debug 包保持不变；Release 应用作为离线候选单独打包，安装、启用和分发以对应后端已上线为前提。
 - 打包 Node 桥接的模拟登录、独立运行目录、凭证环境过滤、资料模板白名单检查通过。
 - 后端 58 项相关测试通过，包含新增 App Shot 上传校验、选中附件入模、MCP 读取和原图/文字持久化恢复。
 - 发布准备时在允许 loopback 监听的离线进程执行后端全套 201 项，全部通过（清空真实 key、使用不可达的 loopback provider 地址）；此前受限环境的 11 项监听阻断已解除。桌面 UI 33 项通过，采集 64 项通过、1 项 Windows 专属检查跳过，Web 构建通过。
@@ -74,3 +74,11 @@ OPENAI_API_KEY='' OPENAI_BASE_URL='http://127.0.0.1:1/v1' \
 收尾错误归属补充：`capture_stopped` 发送失败只有在连接代次及对应采集链接仍匹配时，才写入当前界面错误。合成回归确认同连接失败仍显示尾句可能不完整；旧连接迟到失败不会覆盖新连接提示。
 
 回滚能力边界补充：断开或任一采集/界面链接失效时立即清空 App Shot 能力；会话自动恢复和 WebSocket 自动重连均重新读取 health。健康检查按连接代次与独立能力代次归属，迟到的旧成功/失败不能污染新连接；未知能力、旧 v12 或截图过程中发生重连时拒绝窗口 App Shot，保留显式屏幕截图选择。11 项合成检查覆盖旧 v12 恢复、frontmost/window 拒绝、重复重连、旧 health 回包和截图中途重连，不触发真实采集。
+
+## 2026-10-02 生产发布
+
+- 源码候选 `52e43347cba5f57475b5c156bb4ca723f673377b` 已通过官方 `deploy/release.py` 上线，release ID 为 `20261002-native-appshot-52e4334`。本机与公网 health 验证 v12、`chat=true`、`pinned_code=false`、`appshot=true`；发布后认证 gate 为 `active=false, draining=false`。
+- 用户明确确认无人面试后，先通过正常 `stop_transcription` 控制收尾离线设备遗留的转录状态，再取得原子部署门禁。未篡改活动标记、删除历史或绕过门禁。
+- 回滚目录为服务器 `/opt/interview/server.deploy-backups/20261002-native-appshot-52e4334`；保留旧源码、环境、镜像和私有 Compose 配置。回滚仍须取得部署门禁。
+- 配套 arm64 Release ZIP 位于本机 `artifacts/releases/20261002-native-appshot-52e4334/Sage-macOS-arm64-52e4334.zip`，SHA-256 为 `2c2686bfdbd1adfd63cc58e899a0069f3401cfd59cebefb4e5dd005cc0395349`。本机 ad-hoc 签名通过 deep/strict 校验，未公证；现有 Debug 包保留，未自动安装或启动 Release。
+- 本次仅做发布健康检查，没有真实媒体、登录或付费模型验收。`main` 同步提交使用 `[skip ci]` 避免对已验证的手动发布再次触发生产部署；后续正常代码提交仍遵循原有 CI/部署流程。
