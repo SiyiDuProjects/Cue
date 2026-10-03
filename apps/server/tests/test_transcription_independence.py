@@ -103,6 +103,51 @@ class IndependentTranscriptionTests(unittest.IsolatedAsyncioTestCase):
         inputs, _ = rt.chat.input({}, sent_turns=turns)
         self.assertIn('CORRECTION', json.dumps(inputs))
 
+    async def test_appshot_round_trip_keeps_original_and_text_for_mcp(self):
+        rt = await self.registry.create()
+        metadata = {"status": "available", "app_name": "Editor", "window_title": "题目", "text": "UNSENT_APP_TEXT"}
+        image = 'data:image/png;base64,aGVsbG8='
+        rt._screen_metadata['shot'] = {"appshot": metadata, "source_id": "window:42"}
+        await _record_screen(rt, None, 'shot', image, '')
+        rt.collected_screens.append('shot')
+        reader = InterviewMaterials(self.registry)
+        page, images = await reader.read()
+        row = next(r for r in page['records'] if r['kind'] == 'image')
+        self.assertEqual(row['appshot'], metadata)
+        self.assertEqual(rt.history.by_id['screen:shot']['image_url'], image)
+        self.assertNotIn('UNSENT_APP_TEXT', json.dumps(rt.chat.input({})))
+        await self.registry.clear()
+        self.registry = InterviewRegistry()
+        restored = await self.registry.create()
+        self.assertEqual(restored.transcription.history.by_id['screen:shot']['appshot'], metadata)
+        self.assertEqual(restored.transcription.history.by_id['screen:shot']['image_url'], image)
+
+    async def test_late_appshot_after_chat_switch_is_rejected(self):
+        rt = await self.registry.create()
+        previous = rt.conversation_id
+        sent, ready = [], asyncio.Event()
+        async def capture(_speaker, payload):
+            sent.append(payload)
+            ready.set()
+            return True
+        rt.send_to_capture = AsyncMock(side_effect=capture)
+        await rt.start_operation({"type": "request_screen_capture", "collect_only": True,
+            "operation_id": "pending-shot", "conversation_id": previous}, None)
+        await asyncio.wait_for(ready.wait(), 1)
+        request = sent[0]
+        self.assertEqual(request['conversation_id'], previous)
+        await self.registry.switch(previous, None)
+        accepted = await rt.accept_screen_snapshot({"request_id": request['request_id'],
+            "image_data": "data:image/png;base64,iVBORw0KGgo=", "appshot": {"status": "available", "text": "CANCELLED_AX_TEXT"}})
+        self.assertFalse(accepted)
+        self.assertNotIn(request['request_id'], rt.pending_screen_requests)
+        self.assertNotIn(request['request_id'], rt._screen_metadata)
+        self.assertEqual(rt.collected_screens, [])
+        page, images = await InterviewMaterials(self.registry).read()
+        self.assertEqual(images, [])
+        self.assertNotIn('CANCELLED_AX_TEXT', json.dumps(page))
+        self.assertNotIn('CANCELLED_AX_TEXT', json.dumps(rt.chat.input({})))
+
     async def test_removed_attachment_is_not_exposed_from_saved_page(self):
         rt = await self.registry.create()
         for n in range(3):

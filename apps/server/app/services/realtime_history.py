@@ -71,7 +71,7 @@ class InterviewHistory:
 
     def add_screen(
         self, request_id: str, image_url: str, summary: str, *, question_id: str,
-        source_id: str = "", captured_at: str = "", workspace_evidence: dict[str, Any] | None = None,
+        source_id: str = "", captured_at: str = "", workspace_evidence: dict[str, Any] | None = None, appshot: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         key = f"screen:{request_id}"
         if key in self.by_id:
@@ -82,6 +82,8 @@ class InterviewHistory:
             "captured_at": captured_at or observed_at(), "created_at": observed_at(),
             "workspace_evidence": workspace_evidence or {},
         }
+        if appshot is not None:
+            entry["appshot"] = dict(appshot)
         self.by_id[key] = entry
         self.entries.append(entry)
         return entry

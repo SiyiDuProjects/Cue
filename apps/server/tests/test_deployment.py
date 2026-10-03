@@ -81,11 +81,23 @@ class CaptureAndDeploymentApiTests(unittest.TestCase):
         self.assertEqual(self.client.post(self.url, headers=self.headers, json=self.payload).status_code, 404)
 
     def test_screenshot_bounds_chunked_body_and_invalid_metadata(self):
-        response = self.client.post(self.url, headers=self.headers, content=iter([b"x" * 6000, b"y" * 6000]))
+        response = self.client.post(self.url, headers=self.headers, content=iter([b"x" * 700_000, b"y" * 700_000]))
         self.assertEqual(response.status_code, 413)
         for payload in ([], {"request_id": "x"}, {**self.payload, "source_id": []}, {**self.payload, "captured_at": "x" * 81}):
             self.assertEqual(self.client.post(self.url, headers=self.headers, json=payload).status_code, 400)
         self.assertEqual(self.client.post(self.url, headers=self.headers, content=b"not-json").status_code, 400)
+        self.runtime.accept_screen_snapshot.assert_not_awaited()
+
+    def test_appshot_metadata_is_bounded_and_forwarded_with_original_image(self):
+        metadata = {"app_name": "Editor", "window_title": "题目", "text": "窗口文字" * 20_000, "status": "available", "detail": ""}
+        payload = {**self.payload, "appshot": metadata}
+        response = self.client.post(self.url, headers=self.headers, json=payload)
+        self.assertEqual(response.status_code, 200)
+        self.runtime.accept_screen_snapshot.assert_awaited_once_with(payload)
+        self.runtime.accept_screen_snapshot.reset_mock()
+        for invalid in ({**metadata, "text": "x" * 200_001}, {**metadata, "text": []}, {**metadata, "status": "fake"}, {**metadata, "status": []}, {**metadata, "token": "unexpected"}, None):
+            response = self.client.post(self.url, headers=self.headers, json={**self.payload, "appshot": invalid})
+            self.assertEqual(response.status_code, 400)
         self.runtime.accept_screen_snapshot.assert_not_awaited()
 
     def test_screenshot_maps_runtime_validation_errors(self):
@@ -266,6 +278,15 @@ class DeploymentFixtureTests(unittest.TestCase):
                     with self.assertRaises(ValueError):
                         validate_health(health_payload)
                 self.assertIs(snapshot_health(dict(EXPECTED_HEALTH))[capability], False)
+
+    def test_release_requires_appshot_but_rollback_accepts_previous_v12(self):
+        previous = {key: value for key, value in EXPECTED_HEALTH.items() if key != "appshot"}
+        self.assertEqual(validate_health(previous, snapshot_health(previous)), previous)
+        for payload in (previous, {**EXPECTED_HEALTH, "appshot": False},
+                        {**EXPECTED_HEALTH, "appshot": "true"}, {**EXPECTED_HEALTH, "appshot": 1}):
+            with self.subTest(payload=payload), self.assertRaises(ValueError):
+                validate_health(payload)
+        self.assertIs(snapshot_health(dict(EXPECTED_HEALTH))["appshot"], True)
 
     def test_rollback_snapshot_can_describe_previous_realtime_release(self):
         previous = {"status": "ok", "realtime_protocol": "realtime-interview-v4",

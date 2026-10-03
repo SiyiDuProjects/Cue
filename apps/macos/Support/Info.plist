@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>CFBundleExecutable</key><string>Sage</string>
+  <key>CFBundleIdentifier</key><string>com.siyidu.sage.mac</string>
+  <key>CFBundleName</key><string>Sage</string>
+  <key>CFBundleDisplayName</key><string>Sage</string>
+  <key>CFBundlePackageType</key><string>APPL</string>
+  <key>CFBundleShortVersionString</key><string>0.1.0</string>
+  <key>CFBundleVersion</key><string>1</string>
+  <key>LSMinimumSystemVersion</key><string>15.0</string>
+  <key>NSHighResolutionCapable</key><true/>
+  <key>NSPrincipalClass</key><string>NSApplication</string>
+  <key>NSMicrophoneUsageDescription</key><string>开始转录时，单独转录你的麦克风声音。</string>
+  <key>NSScreenCaptureUsageDescription</key><string>手动截取所选屏幕或窗口；开始转录时采集系统音频。</string>
+  <key>NSAudioCaptureUsageDescription</key><string>开始转录时，单独转录电脑播放的对方声音。</string>
+  <key>NSAppTransportSecurity</key><dict><key>NSAllowsLocalNetworking</key><true/></dict>
+</dict></plist>

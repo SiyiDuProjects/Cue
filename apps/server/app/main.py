@@ -77,6 +77,7 @@ def health() -> dict[str, object]:
         "realtime_protocol": REALTIME_PROTOCOL_VERSION,
         "pinned_code": False,
         "chat": True,
+        "appshot": True,
         "answer_transport": "codex-app-server",
         "answer_providers": ["codex", "responses"],
         "responses_model": settings.openai_responses_model,
@@ -318,7 +319,7 @@ async def upload_interview_screenshot(
 
     # Authenticate before reading a potentially large image. Bound streamed/chunked
     # bodies too: Content-Length alone is not a trustworthy size limit.
-    body_limit = ((get_settings().interview_screenshot_max_bytes + 2) // 3) * 4 + 8192
+    body_limit = ((get_settings().interview_screenshot_max_bytes + 2) // 3) * 4 + 1_250_000
     body = bytearray()
     async for chunk in request.stream():
         if len(body) + len(chunk) > body_limit:
@@ -336,9 +337,15 @@ async def upload_interview_screenshot(
     for field, limit in (("request_id", 256), ("source_id", 512), ("captured_at", 80)):
         if field in payload and (not isinstance(payload[field], str) or len(payload[field]) > limit):
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Invalid screenshot {field}.")
+    if "appshot" in payload:
+        from app.services.appshot import validate_appshot
+        try:
+            payload["appshot"] = validate_appshot(payload["appshot"])
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from None
     # HTTP success must mean a real pending request received a valid image, not
     # that a client-supplied error or arbitrary stale frame was accepted.
-    payload = {key: payload[key] for key in ("request_id", "image_data", "source_id", "captured_at") if key in payload}
+    payload = {key: payload[key] for key in ("request_id", "image_data", "source_id", "captured_at", "appshot") if key in payload}
     try:
         accepted = await runtime.accept_screen_snapshot(payload)
     except OpenAIRealtimeError as exc:

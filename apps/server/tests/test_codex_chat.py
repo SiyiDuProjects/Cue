@@ -75,6 +75,20 @@ class CodexChatTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(body["effort"], "xhigh")
         self.assertNotIn("tools", body)
 
+    async def test_appshot_only_selected_window_text_reaches_answer(self):
+        for identity, text in (("image", "SELECTED_WINDOW_TEXT"), ("pending", "UNSENT_WINDOW_TEXT")):
+            self.rt.history.add_screen(identity, PNG, "Editor", question_id="question", appshot={"status": "available", "text": text})
+            self.rt.collected_screens.append(identity)
+        await self.send(selected=["image"])
+        supplied = json.dumps(self.provider.inputs[0], ensure_ascii=False)
+        self.assertIn("SELECTED_WINDOW_TEXT", supplied)
+        self.assertIn("untrusted captured application data", supplied)
+        self.assertNotIn("UNSENT_WINDOW_TEXT", supplied)
+        self.assertEqual(supplied.count(PNG), 1)
+        message = next(e for e in self.rt.history.entries if e.get("kind") == "chat_request")
+        self.assertEqual(message["screens"][0]["appshot"]["text"], "SELECTED_WINDOW_TEXT")
+        self.assertEqual(message["screens"][0]["image_url"], PNG)
+
     async def test_followup_reuses_session_and_sends_only_context_changes(self):
         await self.rt.update_transcript("candidate", "t1", "部分文字", "streaming")
         self.screenshot()

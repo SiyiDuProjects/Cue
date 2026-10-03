@@ -1,6 +1,8 @@
 """One desktop Codex thread per conversation; speech only supplies reference context."""
 from __future__ import annotations
 
+from app.services.appshot import context as appshot_context
+
 import asyncio
 import json
 import time
@@ -82,7 +84,7 @@ class CodexChat:
             content = [{"type": "input_text", "text": entry["text"]}]
             for screen in entry["screens"]:
                 content.extend([
-                    {"type": "input_text", "text": f"Attached screenshot request_id={screen['request_id']}; captured_at={screen['captured_at']}"},
+                    {"type": "input_text", "text": f"Attached screenshot request_id={screen['request_id']}; captured_at={screen['captured_at']}" + appshot_context(screen)},
                     {"type": "input_image", "image_url": screen["image_url"]},
                 ])
             if entry is message and include_preference:
@@ -178,7 +180,7 @@ class CodexChat:
                 entry = rt.history.by_id.get(f"screen:{identity}", {})
                 if identity not in rt.collected_screens or not entry.get("image_url"):
                     raise CodeWorkspaceError("截图附件已改变，请核对后重试。")
-                screens.append({key: entry[key] for key in ("request_id", "image_url", "captured_at")})
+                screens.append({key: entry[key] for key in ("request_id", "image_url", "captured_at", "appshot") if key in entry})
             await rt.invalidate_work(except_operation=operation_id)
             response_id = f"chat:{operation_id}"
             task = {"valid": True, "epoch": rt.context_revision, "code_revision": doc.revision,

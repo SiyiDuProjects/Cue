@@ -834,7 +834,7 @@ class InterviewRuntime:
 
     def screen_collection_state(self) -> dict[str, Any]:
         return {"type": "screen_collection", "screens": [
-            {key: entry.get(key, "") for key in ("request_id", "question_id", "captured_at", "source_id", "image_url")}
+            {key: entry.get(key, "") for key in ("request_id", "question_id", "captured_at", "source_id", "image_url", "appshot")}
             for entry in self.history.entries if entry["kind"] == "screen" and entry["request_id"] in self.collected_screens
         ]}
 
@@ -935,6 +935,9 @@ class InterviewRuntime:
                 "source_id": str(payload.get("source_id") or "")[:256],
                 "captured_at": str(payload.get("captured_at") or observed_at())[:64],
             })
+            if "appshot" in payload:
+                from app.services.appshot import validate_appshot
+                self._screen_metadata[request_id]["appshot"] = validate_appshot(payload["appshot"])
             future.set_result(image_url)
             return True
 
@@ -1760,7 +1763,7 @@ async def _request_current_screen(
     try:
         sent = await runtime.send_to_capture(
             "interviewer",
-            {"type": "screen_capture_request", "request_id": request_id, "reason": reason},
+            {"type": "screen_capture_request", "request_id": request_id, "reason": reason, "conversation_id": runtime.conversation_id},
         )
         if not sent:
             raise OpenAIRealtimeError("Interviewer capture device is not connected.")

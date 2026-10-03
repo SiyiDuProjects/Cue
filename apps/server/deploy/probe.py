@@ -16,6 +16,7 @@ EXPECTED_HEALTH = {
     "realtime_protocol": "interview-chat-v12",
     "pinned_code": False,
     "chat": True,
+    "appshot": True,
     "answer_transport": "codex-app-server",
     "chatgpt_mcp": True,
     "responses_model": "gpt-6.1-sol",

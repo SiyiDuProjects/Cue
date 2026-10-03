@@ -29,7 +29,7 @@ source synchronization; it is not a production archive backup.
 
 The candidate process starts drained. Both local and public `/health` must report
 the exact release ID, `interview-chat-v12` protocol, codex-app-server answer transport,
-chat=true and pinned_code=false capabilities, and configured transcription/code/optional mock models. No paid
+chat=true, appshot=true and pinned_code=false capabilities, and configured transcription/code/optional mock models. No paid
 model or audio probe is performed. The verified image is then started normally,
 so a later ordinary container restart does not leave it in deployment mode.
 The release also persists `INTERVIEW_RELEASE_ID` and `INTERVIEW_START_DRAINED=0` in the production `.env` loaded by the service's `env_file`, so recreation through the original Compose configuration retains its release identity and accepts interviews normally.
