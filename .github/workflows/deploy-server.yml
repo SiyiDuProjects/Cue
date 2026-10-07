@@ -1,11 +1,7 @@
-name: Deploy interview server
+name: Deploy legacy interview server (manual only)
 
+# The production domain now serves Sites. Source cleanup must not deploy the VPS.
 on:
-  push:
-    branches: ["main"]
-    paths:
-      - "apps/server/**"
-      - ".github/workflows/deploy-server.yml"
   workflow_dispatch:
 
 concurrency:
@@ -47,7 +43,7 @@ jobs:
   deploy:
     needs: validate
     runs-on: ubuntu-latest
-    if: github.ref == 'refs/heads/main'
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
     steps:
       - name: Checkout
         uses: actions/checkout@v4
