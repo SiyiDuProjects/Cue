@@ -1,5 +1,31 @@
 # Sage Responses 与 ChatGPT 插件
 
+## ChatGPT Events（2026-10-04）
+
+Sage 的现有 `https://interview.siyidu.com/mcp` 增加 `answer.requested`。服务器继续使用自己的 VPS、OAuth 与私有 SQLite。MCP 2.0 JSON 适配层复用原有 FastMCP 工具注册表，旧客户端仍走固定版本 SDK。Web/Windows 的 Responses 入口不变。
+
+1. 在 ChatGPT 的 Sage 插件页面重新扫描 MCP，确认 Tools 旁出现 `answer.requested`。
+2. 在支持 Events 的 Work 云端对话选择 Sage，发送下面的订阅要求。ChatGPT 自动通过 `events/subscribe` 提供回调和签名秘密，服务器验证并保存。
+3. Mac Sage 的 **更多 → ChatGPT 订阅** 刷新并选择目标订阅。多个订阅用名称与短编号区分，只向选中的一个投递。
+4. 手动截图、转录后，按 **⌃⌥⌘↩** 或点击“请 ChatGPT 回答”。转录未开启也可发送已收集的截图；不会额外截图、开录或发送文字草稿。
+5. 在原 ChatGPT 对话查看答案。Sage 的“ChatGPT 已接收”只表示 webhook 收到；快捷键可在订阅页关闭。
+
+Mac 页面可复制的订阅要求：
+
+> 监听 Sage 的 answer.requested，channel 设为 mac。每次收到事件，使用事件的 request_id 调用 read_interview，读取这次请求固定的转录和截图；按需读取个人资料，然后在本对话用中文回答当前问题。代码题给出 Python 实现、解释和复杂度。连续追问可用上次 request_id 作为 after_request_id 读取新增与修正。
+
+事件只含请求编号、聊天/转录标识、时间和材料数量。`read_interview(request_id=...)` 默认读取按键快照最近一小时；`after_request_id` 比较前次快照并保留修正，`include_older=True` 明确回看快照内更早转录。分页固定请求、基线和范围，同一页可重放，新一场拒绝旧基线。已提交截图不因之后移除附件而改变；新截图留给下次请求。背景资料仍由原工具按需读取。
+
+订阅身份由 OAuth principal、callback URL、事件和规范化 arguments 决定。默认最多授予 24 小时且不超过 OAuth grant 截止时间，ChatGPT 按 `refreshBefore` 续订；事件本身不支持历史重放，cursor 为 null。签名为 Standard Webhooks HMAC-SHA256，challenge 验证后才启用，密钥轮换有 5 分钟双签名窗口。连接时解析并验证 DNS，拒绝非公网地址，连接已验证 IP 同时保留原主机名 TLS 校验；禁止重定向与环境代理。签名秘密和回调地址不进入客户端状态或日志。
+
+一个目标同时最多一个待投递请求。瞬时故障最多六次尝试、指数退避、120 秒内结束，同一 eventId 重试；410/413 不重试。UI 不自动重新 POST 未确认请求，而是查询原编号。停止后续投递不等于停止已在 ChatGPT 开始的回答。重启保留订阅和材料，将未确认请求标为 interrupted，不恢复投递。发布门禁包含待投递请求。
+
+后端验证：`tests/test_plugin_events.py`。Mac 验证：`NativeRegression.chatgptEventRequests`。离线测试使用合成材料与伪回调，不等于真实 ChatGPT 订阅、触发延迟或答案质量验收。官方协议和入口见 [MCP Events](https://developers.openai.com/plugins/build/mcp-events)。下方保留历史交付记录。
+
+本次发布：`20261004-events-130537` 已通过认证部署门禁上线。公网 health 返回 `chatgpt_events=true` 和对应 release ID；未授权 `/mcp` 返回 401，九个部署文件 SHA-256 与候选一致，门禁恢复 `active=false, draining=false`。回滚目录为 `/opt/interview/server.deploy-backups/20261004-events-130537`。本次只覆盖服务器 Events 文件，保留既有线上网页。
+
+验证记录：后端全套 210 项通过，最终门禁修改后的 Events/OAuth/部署回归 44 项通过；Mac 31 项核心检查、62 项原生运行时检查、资料桥接与 3 项采集桥接测试通过。Release 0.1.2（build 3）通过 deep/strict 签名校验，ZIP 与日志在 `artifacts/releases/20261004-events-130537/`，仍为本机 ad-hoc 签名、未公证。此记录确认服务器已部署和安装包已构建；实际安装、插件重新扫描、真实 Work 对话订阅及回答需分别验证，不能由离线测试推断。
+
 ## 最新状态（2026-09-30）
 
 可靠性修复已通过空闲门禁发布为 `20260930-live-readiness-195932`，桌面 **0.1.18** 已安装并重启，加密连接文件保持不变。公开健康、协议 v12、网页资源哈希、私有历史持久化挂载和可写性已验证；安装包与发布网页 366 个资源逐字节相同。以下旧版本记录属于历史验收。

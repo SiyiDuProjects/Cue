@@ -1,8 +1,28 @@
 import Foundation
 
+public struct HTTPFailure: LocalizedError {
+    public let status: Int
+    public let detail: String
+    public init(status: Int, detail: String) { self.status = status; self.detail = detail }
+    public var errorDescription: String? { detail }
+}
+
 /// Never forward host credentials through redirects or store HTTP responses on disk.
 public final class HTTPClient: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
     private let configuration: URLSessionConfiguration
+    private let credentialsLock = NSLock()
+    private var serviceCredentials: (origin: URL, token: String)?
+    public func authorizeSite(_ address: ServerAddress, token: String) {
+        credentialsLock.lock(); defer { credentialsLock.unlock() }
+        serviceCredentials = (address.url, token)
+    }
+    public func clearAuthorization() {
+        credentialsLock.lock(); defer { credentialsLock.unlock() }; serviceCredentials = nil
+    }
+    private func serviceToken(_ address: ServerAddress) -> String? {
+        credentialsLock.lock(); defer { credentialsLock.unlock() }
+        return serviceCredentials?.origin == address.url ? serviceCredentials?.token : nil
+    }
     private lazy var session: URLSession = {
         let config = configuration
         config.urlCache = nil; config.httpCookieStorage = nil
@@ -16,6 +36,7 @@ public final class HTTPClient: NSObject, URLSessionTaskDelegate, @unchecked Send
     public func request(_ address: ServerAddress, _ path: String, method: String = "GET", token: String = "", body: JSON? = nil) async throws -> JSON {
         var request = URLRequest(url: address.endpoint(path))
         request.httpMethod = method
+        if let site = serviceToken(address) { request.setValue("Bearer \(site)", forHTTPHeaderField: "OAI-Sites-Authorization") }
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         if !token.isEmpty { request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization") }
         if let body { request.httpBody = try JSONSerialization.data(withJSONObject: body) }
@@ -23,7 +44,7 @@ public final class HTTPClient: NSObject, URLSessionTaskDelegate, @unchecked Send
         guard let response = response as? HTTPURLResponse else { throw SageError("无效服务器响应。") }
         let json = (try? JSONSerialization.jsonObject(with: data)) as? JSON ?? [:]
         guard (200..<300).contains(response.statusCode) else {
-            throw SageError(json["detail"] as? String ?? "请求失败（\(response.statusCode)）。")
+            throw HTTPFailure(status: response.statusCode, detail: json["detail"] as? String ?? "请求失败（\(response.statusCode)）。")
         }
         return json
     }
@@ -49,6 +70,7 @@ extension URLSessionWebSocketTask: SocketConnection {}
     private let url: URL
     private let token: String
     private let role: String
+    private let siteToken: String
     private let network = URLSession(configuration: .ephemeral)
     private var socket: (any SocketConnection)?
     private let connectionFactory: ((URL) -> any SocketConnection)?
@@ -57,7 +79,7 @@ extension URLSessionWebSocketTask: SocketConnection {}
     private var stopped = false
     private var frames: [(URLSessionWebSocketTask.Message, CheckedContinuation<Void, Error>?)] = []
     private var queuedBytes = 0
-    public init(url: URL, token: String, role: String, connectionFactory: ((URL) -> any SocketConnection)? = nil) { self.url = url; self.token = token; self.role = role; self.connectionFactory = connectionFactory }
+    public init(url: URL, token: String, role: String, siteToken: String = "", connectionFactory: ((URL) -> any SocketConnection)? = nil) { self.url = url; self.token = token; self.role = role; self.siteToken = siteToken; self.connectionFactory = connectionFactory }
     public func start() {
         guard runner == nil else { return }
         runner = Task { [weak self] in await self?.run() }
@@ -70,7 +92,10 @@ extension URLSessionWebSocketTask: SocketConnection {}
     private func run() async {
         var attempt = 0
         while !stopped && !Task.isCancelled {
-            let current: any SocketConnection = connectionFactory?(url) ?? network.webSocketTask(with: url)
+            var request = URLRequest(url: url)
+            request.setValue("Bearer \(siteToken)", forHTTPHeaderField: "OAI-Sites-Authorization")
+            request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+            let current: any SocketConnection = connectionFactory?(url) ?? network.webSocketTask(with: request)
             current.maximumMessageSize = 64 * 1024 * 1024
             socket = current; current.resume()
             let timeout = Task { [weak self] in
@@ -79,7 +104,7 @@ extension URLSessionWebSocketTask: SocketConnection {}
             }
             var heartbeat: Task<Void, Never>?
             do {
-                let auth: JSON = ["type": "authenticate", "token": token, "browser_connections": role == "interviewer"]
+                let auth: JSON = ["type": "authenticate", "token": token]
                 try await current.send(.string(String(data: try JSONSerialization.data(withJSONObject: auth), encoding: .utf8)!))
                 var lastMessage = Date()
                 heartbeat = Task {
@@ -98,10 +123,9 @@ extension URLSessionWebSocketTask: SocketConnection {}
                     switch frame { case .string(let text): data = Data(text.utf8); case .data(let bytes): data = bytes; @unknown default: continue }
                     guard let event = try JSONSerialization.jsonObject(with: data) as? JSON else { throw SageError("无效实时消息。") }
                     if event["type"] as? String == "session_ready" {
-                        guard event["realtime_protocol"] as? String == protocolVersion,
-                              role != "client" || (event["chat"] as? Bool == true && event["pinned_code"] as? Bool == false) else {
-                            onState(false, "服务器协议不兼容，请更新至 interview-chat-v12。")
-                            stopped = true; throw SageError("服务器协议不兼容，请更新至 interview-chat-v12。")
+                        guard event["realtime_protocol"] as? String == protocolVersion else {
+                            onState(false, "服务器协议不兼容，请更新 Cue。")
+                            stopped = true; throw SageError("服务器协议不兼容，请更新 Cue。")
                         }
                         ready = true; attempt = 0; timeout.cancel(); onState(true, "已连接")
                     }

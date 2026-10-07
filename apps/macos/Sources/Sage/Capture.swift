@@ -4,6 +4,15 @@ import ScreenCaptureKit
 import SageCore
 import SageAppShot
 
+struct WindowTextResult: Sendable {
+    var text: String
+    var status: String
+    var detail: String
+    init(text: String = "", status: String, detail: String = "") {
+        self.text = text; self.status = status; self.detail = detail
+    }
+}
+
 struct CaptureSource: Identifiable, Hashable {
     let id: String
     let name: String
@@ -132,18 +141,43 @@ final class AudioSink: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Se
         #if DEBUG
         if let testScreenshot { return try await testScreenshot(source) }
         #endif
+        let requestedApp = previousApp
+        var nativeFailure: Error?
+        if source == "frontmost" {
+            guard let pid = requestedApp, pid != ProcessInfo.processInfo.processIdentifier,
+                  let app = NSRunningApplication(processIdentifier: pid), !app.isTerminated else {
+                throw SageError("请先切换到目标应用，再回到 Cue 获取 App Shot，或在更多中选择窗口。")
+            }
+            do {
+                // Cue remembers the last app; ChatGPT resolves its focused window and
+                // returns the image and text together. No second AX/title matching here.
+                let native = try await NativeAppShot.capture(app: app)
+                try Task.checkCancellation()
+                guard !app.isTerminated, let image = native["image_data"] as? String,
+                      let title = native["window_title"] as? String, let text = native["text"] as? String else {
+                    throw SageError("原生采集期间目标应用已退出或返回内容无效。")
+                }
+                return ["image_data": image, "source_id": "app:\(app.bundleIdentifier ?? String(pid))",
+                        "captured_at": native["captured_at"] as? String ?? ISO8601DateFormatter().string(from: Date()),
+                        "appshot": ["app_name": app.localizedName ?? "应用", "window_title": String(title.unicodeScalars.prefix(2048)),
+                                    "text": text, "status": native["status"] as? String ?? "available",
+                                    "detail": native["detail"] as? String ?? "ChatGPT 原生采集"]]
+            } catch {
+                if Task.isCancelled { throw CancellationError() }
+                nativeFailure = error
+            }
+        }
         var selected = source
         if source == "frontmost" {
-            guard let pid = previousApp, pid != ProcessInfo.processInfo.processIdentifier,
+            guard let pid = requestedApp, pid != ProcessInfo.processInfo.processIdentifier,
                   let windows = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [JSON],
                   let window = windows.first(where: { ($0[kCGWindowOwnerPID as String] as? Int32) == pid && ($0[kCGWindowLayer as String] as? Int) == 0 }),
-                  let id = window[kCGWindowNumber as String] as? UInt32 else { throw SageError("请先切换到目标应用，再回到 Sage 获取 App Shot，或在更多中选择窗口。") }
+                  let id = window[kCGWindowNumber as String] as? UInt32 else { throw SageError("请先切换到目标应用，再回到 Cue 获取 App Shot，或在更多中选择窗口。") }
             selected = "window:\(id)"
         }
         let content = try await SCShareableContent.excludingDesktopWindows(true, onScreenWindowsOnly: true)
         let window = selected.hasPrefix("window:") ? content.windows.first { $0.windowID == UInt32(selected.dropFirst(7)) } : nil
         if selected.hasPrefix("window:") && window == nil { throw SageError("所选窗口已经关闭，请重新选择。") }
-        if window != nil && !WindowText.authorized { WindowText.requestPermission() }
         let filter: SCContentFilter
         if let window { filter = SCContentFilter(desktopIndependentWindow: window) }
         else { filter = try await self.filter(source: selected, excludeSelf: true) }
@@ -162,16 +196,52 @@ final class AudioSink: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Se
                 windows.compactMap { item in item.owningApplication.map { WindowIdentity(id: item.windowID, pid: $0.processID, bounds: item.frame, title: item.title ?? "") } }
             }
             var text = WindowTextResult(status: "unavailable", detail: "窗口身份无法唯一确认，已保留原图。")
-            if WindowMatch.isCurrent(target, windows: identities(content.windows)) {
-                text = await WindowText.read(pid: app.processID, bounds: window.frame, title: window.title ?? "")
-                let latest = try? await SCShareableContent.excludingDesktopWindows(true, onScreenWindowsOnly: true)
-                if !WindowMatch.isCurrent(target, windows: identities(latest?.windows ?? [])) {
-                    text = WindowTextResult(status: "unavailable", detail: "读取期间窗口已关闭、改变或无法唯一确认，已丢弃文字并保留原图。")
+            do {
+                if let nativeFailure { throw nativeFailure }
+                guard WindowMatch.isCurrent(target, windows: identities(content.windows)),
+                      content.windows.filter({ $0.owningApplication?.processID == app.processID && $0.title == window.title }).count == 1,
+                      let runningApp = NSRunningApplication(processIdentifier: app.processID) else {
+                    throw SageError("窗口身份无法唯一确认，已保留原图。")
                 }
+                // ChatGPT's API reads the app's current window, not an arbitrary window ID.
+                // Reject a background selection before asking it to capture another window.
+                guard nativeFrontWindow(pid: app.processID) == window.windowID else {
+                    throw SageError("请先切到所选应用窗口，再使用 ChatGPT 原生采集；本次已保留所选窗口原图。")
+                }
+                let native = try await NativeAppShot.capture(app: runningApp, title: window.title ?? "")
+                try Task.checkCancellation()
+                let latest = try await SCShareableContent.excludingDesktopWindows(true, onScreenWindowsOnly: true)
+                guard WindowMatch.isCurrent(target, windows: identities(latest.windows)),
+                      latest.windows.filter({ $0.owningApplication?.processID == app.processID && $0.title == window.title }).count == 1,
+                      nativeFrontWindow(pid: app.processID) == window.windowID else {
+                    throw SageError("读取期间窗口已改变，已丢弃原生采集结果并保留原图。")
+                }
+                guard let imageData = native["image_data"] as? String,
+                      let encoded = imageData.split(separator: ",", maxSplits: 1).last,
+                      let bytes = Data(base64Encoded: String(encoded)), let bitmap = NSBitmapImageRep(data: bytes),
+                      abs(bitmap.pixelsWide - config.width) <= 2, abs(bitmap.pixelsHigh - config.height) <= 2,
+                      let nativeText = native["text"] as? String, !nativeText.isEmpty else {
+                    throw SageError("原生采集的窗口尺寸或文字不匹配，已保留所选窗口原图。")
+                }
+                // Keep the native image bytes with the text returned by that same capture.
+                result["image_data"] = imageData
+                result["captured_at"] = native["captured_at"] as? String ?? capturedAt
+                text = WindowTextResult(text: nativeText, status: native["status"] as? String ?? "available",
+                                        detail: native["detail"] as? String ?? "ChatGPT 原生采集")
+            } catch {
+                if Task.isCancelled { throw CancellationError() }
+                text = WindowTextResult(status: "unavailable", detail: error.localizedDescription + " 原图已保留。")
             }
             result["appshot"] = ["app_name": String(app.applicationName.unicodeScalars.prefix(512)), "window_title": String((window.title ?? "").unicodeScalars.prefix(2048)), "text": text.text, "status": text.status, "detail": text.detail]
         }
         return result
+    }
+    private func nativeFrontWindow(pid: Int32) -> UInt32? {
+        let windows = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [JSON] ?? []
+        return windows.first { item in
+            (item[kCGWindowOwnerPID as String] as? Int32) == pid && (item[kCGWindowLayer as String] as? Int) == 0 &&
+                !((item[kCGWindowName as String] as? String) ?? "").isEmpty
+        }?[kCGWindowNumber as String] as? UInt32
     }
     func prepare() async throws {
         guard audioSession == nil else { return }
@@ -192,7 +262,7 @@ final class AudioSink: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Se
     private func makeSession(current: @escaping () -> Bool) async throws -> any AudioCaptureSession {
         let authorized = await AVCaptureDevice.requestAccess(for: .audio)
         guard current() else { throw CancellationError() }
-        guard authorized else { throw SageError("请在系统设置中允许 Sage 使用麦克风。") }
+        guard authorized else { throw SageError("请在系统设置中允许 Cue 使用麦克风。") }
         let filter = try await filter(source: "primary", excludeSelf: false)
         guard current() else { throw CancellationError() }
         let config = SCStreamConfiguration()

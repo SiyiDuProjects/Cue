@@ -24,30 +24,23 @@ BIN_DIR="$(swift build --disable-sandbox --cache-path "$MAC_ROOT/.build/cache" -
 mkdir -p "$MAC_ROOT/output"
 STAGE="$(mktemp -d "$MAC_ROOT/output/staging.XXXXXX")"
 trap 'rm -rf "$STAGE"' EXIT
-APP="$STAGE/Sage.app"
-mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources/bridge/electron" "$APP/Contents/Resources/bridge/codex-workspace/guides"
-cp "$BIN_DIR/Sage" "$APP/Contents/MacOS/Sage"
+APP="$STAGE/Cue.app"
+mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources/bridge/electron"
+cp "$BIN_DIR/Sage" "$APP/Contents/MacOS/Cue"
 cp "$NODE_BIN" "$APP/Contents/MacOS/sage-node"
 cp "$NODE_LICENSE" "$APP/Contents/Resources/Node-LICENSE.txt"
 cp "$MAC_ROOT/THIRD_PARTY_NOTICES.md" "$APP/Contents/Resources/THIRD_PARTY_NOTICES.md"
 cp "$MAC_ROOT/Support/Info.plist" "$APP/Contents/Info.plist"
-cp "$MAC_ROOT/Support/host.cjs" "$APP/Contents/Resources/bridge/host.cjs"
-cp "$REPO_ROOT/apps/desktop/package.json" "$APP/Contents/Resources/bridge/package.json"
-for name in codex-host codex-process codex-runtime codex-activity materials; do
-  cp "$REPO_ROOT/apps/desktop/electron/$name.cjs" "$APP/Contents/Resources/bridge/electron/"
-done
-# Explicit public-template whitelist: never copy materials, credentials or runtime state.
-for name in AGENTS.md README.md; do
-  cp "$REPO_ROOT/assistant-workspace/$name" "$APP/Contents/Resources/bridge/codex-workspace/"
-done
-for name in coding algorithms object-design; do
-  cp "$REPO_ROOT/assistant-workspace/guides/$name.md" "$APP/Contents/Resources/bridge/codex-workspace/guides/"
-done
+cp "$MAC_ROOT/Support/materials-host.cjs" "$APP/Contents/Resources/bridge/materials-host.cjs"
+cp "$MAC_ROOT/Support/native-appshot.cjs" "$APP/Contents/Resources/bridge/native-appshot.cjs"
+# Reuse only the bounded read-only materials reader. No CLI, agent templates or runtime state.
+cp "$REPO_ROOT/apps/desktop/electron/materials-host.cjs" "$APP/Contents/Resources/bridge/electron/"
+cp "$REPO_ROOT/apps/desktop/electron/materials.cjs" "$APP/Contents/Resources/bridge/electron/"
 codesign --force --sign - "$APP/Contents/MacOS/sage-node"
 codesign --force --sign - "$APP"
 codesign --verify --deep --strict "$APP"
-if [[ -e "$MAC_ROOT/output/Sage.app" ]]; then
-  mv "$MAC_ROOT/output/Sage.app" "$STAGE/previous.app"
+if [[ -e "$MAC_ROOT/output/Cue.app" ]]; then
+  mv "$MAC_ROOT/output/Cue.app" "$STAGE/previous.app"
 fi
-mv "$APP" "$MAC_ROOT/output/Sage.app"
-echo "Built $MAC_ROOT/output/Sage.app (local ad-hoc signature; not notarized)."
+mv "$APP" "$MAC_ROOT/output/Cue.app"
+echo "Built $MAC_ROOT/output/Cue.app (local ad-hoc signature; not notarized)."

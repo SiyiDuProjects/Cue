@@ -19,6 +19,7 @@ EXPECTED_HEALTH = {
     "appshot": True,
     "answer_transport": "codex-app-server",
     "chatgpt_mcp": True,
+    "chatgpt_events": True,
     "responses_model": "gpt-6.1-sol",
     "mock_live_model": "gpt-live-1",
     "realtime_transcription_model": "gpt-live-transcribe",

@@ -5,7 +5,7 @@ function createRendererRecovery({ maxAttempts = 2, windowMs = 60_000 } = {}) {
     recordCrash(now = Date.now()) {
       attempts = attempts.filter((at) => now - at < windowMs);
       if (attempts.length >= maxAttempts) {
-        notice = "界面多次异常退出，已停止自动恢复。请退出 Sage 后重新打开，并确认采集状态。";
+        notice = "界面多次异常退出，已停止自动恢复。请退出 Cue 后重新打开，并确认采集状态。";
         return { retry: false, notice };
       }
       attempts.push(now);

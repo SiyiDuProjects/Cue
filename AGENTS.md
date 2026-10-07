@@ -1,5 +1,64 @@
 # AGENTS.md
 
+## 项目更名为 Cue（2026-10-06）
+
+用户确定产品名为 **Cue**。Mac、Windows 和网页的可见名称与后续构建产物使用 Cue；本机仓库目录为 `/Users/siyi/Projects/Cue`，Codex 项目沿用原项目 ID 并更名为 Cue。旧 `/Users/siyi/Projects/Interview` 仅作为路径兼容链接，供已有聊天和工具继续访问。
+
+GitHub 仓库于 2026-10-07 更名为 `SiyiDuProjects/Cue`，本机 `origin` 为 `https://github.com/SiyiDuProjects/Cue.git`。
+
+改名保留既有 bundle/app ID、钥匙串 service、`SageMac` / `Sage` 用户资料目录、协议、环境变量与 Swift 模块标识，避免断开登录、权限、订阅或历史。正式域名和平台 MCP 地址保持现有地址；历史交付记录中的旧名称保留事实含义。本次源码改名不代表线上服务或已安装应用已更新。
+
+## 正式域名与 Mac 切换完成（2026-10-04 晚间）
+
+`https://interview.siyidu.com` 已由旧 Cloudflare Tunnel CNAME 切换到 Sites；自定义域名和 HTTPS 证书均为 active。Sites 当前版本 12，`sage-capture-v1`。平台分配的 MCP 地址仍为 `https://sage-capture.dusiyi0916.chatgpt.site/mcp`；不得因产品域名切换就擅自改写该原生插件地址。原 Interview 订阅有效且续期，无需重建。
+
+`/Applications/Sage.app` 已安装 0.3.1 / build 7，验证了正式域名原生认证、双路空闲连接、钥匙串自动恢复与真实 MCP 读取本机五份资料目录。旧 0.2.1 包保存在 `artifacts/releases/20261004-sites-cutover/previous-Sage.app`；旧钥匙串条目保留在同一 service 下的 `legacy-v12:https://interview.siyidu.com` account，不删除。Mac 新凭证仅保存在钥匙串，未写入文件或命令行。
+
+旧 VPS 门锁已释放，服务与私人历史保留；旧历史未导入 Sites。Windows 0.3.1 包已生成但尚未真机安装。物理快捷键、真实媒体和账号断开后的即时停止仍不得宣称通过。详细 DNS 回退及安装记录见 `artifacts/releases/20261004-sites-cutover/receipt.json`。
+
+## 全平台通知读取与 API 备用（2026-10-04，用户最新要求）
+
+用户明确要求全平台统一为按钮通知 ChatGPT 读取，同时保留 Responses API 备用。Mac 保持菜单栏采集与设置，备用入口打开受保护的共用网页；Windows 与网页共用 `apps/cloud/ui/` 的采集设置页，只有明确打开备用面板才显示补充要求与答案。此要求取代早先“Mac 不保留 Responses 入口”的限制。
+
+原生请求先创建 preparation，并在双路 PCM 后发送有序读取标记；服务器 commit 该标记前的音频、等待对应的最终转录，再固定截图和转录引用。后续语音不混入本次请求。webhook 仅含 request_id 等元数据，ChatGPT 用只读 MCP 获取内容。API 备用也读取固定请求，必须手动触发，不在通知失败或回答迟到时自动运行。正常启动和重连不录音、不截图、不发事件、不调用模型。
+
+源码版本统一为 0.3.1。Sites、Mac 打包、Windows 打包、已安装版本、正式域名及真实模型分别验收；不得把候选包编译成功说成已切换。个人资料和 VPS 历史保留。旧 React 聊天和 v12 客户端传输已由共用采集界面替代，专用代码与测试应删除；原服务继续保留历史访问与回滚。
+
+
+## 采集工具方向（2026-10-04，用户最新要求）
+
+用户要求 Interview/Sage 简化为本地采集、快捷键和设置，回答在订阅的 ChatGPT Work 对话中完成。Mac 正常入口改为菜单栏工具，不再展示本地聊天、输入框或 Responses 回答入口；保留旧记录与后台兼容，不删除用户资料。启动和重连不自动录音、截图、生成或重发；`answer.requested` 仍只由明确按钮/快捷键触发。
+
+已安装版本仍是 0.2.1/v12；源码中的 0.3.0 是 `sage-capture-v1` 候选客户端，已完成认证、双路空闲连接和合成资料读取验证，但不能提前安装到正式域名。继续保留 `interview.siyidu.com` 作为正式地址；Sites 自动域名用于迁移验证，DNS 尚未切换。
+
+用户随后明确批准 Sites 原生认证上线：平台校验用户身份，Sage 每次投递检查来源资源权限、订阅存在与有效期，不要求转发或保存 OAuth bearer，仍保留回调挑战、签名和加密存储。Sites 版本 10 已通过真实 Work 订阅及原生请求动作触发的合成图片回答；回调用 `redirect: manual` 并拒绝所有非 2xx，不跟随跳转。真实停用 Work 任务已触发 events/unsubscribe；服务器删除订阅，旧订阅请求返回 409 且未创建投递。同一个原任务已重新启用，服务器再次确认 events/subscribe 成功；取消与恢复实测通过。账号断开是否即时停止仍未验证。正式域名、已安装客户端和 VPS 未切换。
+
+云端以 Sites 承担采集数据、MCP 和事件为迁移方向。旧段落“保留聊天／不迁移 Sites”被这次方向取代；只有原生客户端认证、双路实时转录与停止收尾、原图读取、固定快照和事件投递实际验证后，才能切换正式后端。现阶段菜单栏客户端仍兼容既有 v12 服务，不能把界面简化说成已完成 Sites 迁移，也不能提前关闭 VPS。
+
+用户进一步明确要求删除被替代实现，不接受只隐藏入口后持续增加代码。Mac 产品不保留聊天输入、Responses 调用、答案渲染、草稿读写、旧 AX 遍历及其专用依赖／测试；保留个人文件与服务端历史。旧服务仍被 Windows／网页使用时，不据此直接删除其在线模块。
+
+## ChatGPT Events 与 Mac 手动触发（2026-10-04，用户明确要求）
+
+Interview/Sage 的既有 `/mcp` 增加 MCP 2.0 `2026-07-28` 的发现、订阅与取消接口。事件只有 `answer.requested`，由已认证 Mac 的明确按钮/全局快捷键触发；语音、截图、启动和重连不自动发事件。保留现有 VPS、OAuth 与四个只读工具，不迁移 Sites。订阅由用户在 ChatGPT Work 云端对话中创建，回调 URL/secret 由 ChatGPT 提供。
+
+Mac 的“请 ChatGPT 回答”是独立于 Responses 的明确动作，默认全局快捷键 ⌃⌥⌘↩，可在“更多 → ChatGPT 订阅”关闭。选择一个订阅后，按键绑定当前聊天、选定截图和固定转录快照；文字草稿不共享，不额外截图或开录。答案显示在订阅的 ChatGPT 对话，Sage 只展示投递状态；webhook 2xx 不代表答案已生成。当前没有回答回传工具。
+
+`read_interview(request_id=...)` 读取固定请求，追问可用 `after_request_id` 获取新增及修正；分页重放不改读 current，不混入后来的题目。原图仍按内容存储一次。订阅、快照、投递状态写现有私有 SQLite；复核 OAuth grant，撤销或过期停止投递。失败重试保留事件 ID；重启将未确认请求标中断，不自动重发。真实 ChatGPT 账号内的完整订阅/接收/回答仍须实测后才能声称验收。
+
+## 全平台产品统一（2026-10-04，用户明确要求）
+
+Mac 保留原生 SwiftUI/AppKit；Windows 与网页共用 React。三端新回答（包括继续旧 Codex 聊天）统一使用服务器 Responses，移除 provider 选择器、回答正文上的产品/风格标签，以及 Windows 本机 CLI 登录与打包运行模块。旧消息、后台兼容协议及旧本机登录文件保留，不自动迁移或删除。
+
+Mac 启动自动从钥匙串恢复 Sage 登录，正式服务器地址内置，不再让用户填网站。Windows 继续使用系统加密的已有登录配置并自动连接；临时网络故障自动重连，过期凭证要求重新验证。只恢复连接，不启动音频、截图或模型，也不自动重发未确认消息。浏览器/手机保留一次电脑确认及 30 天安全 Cookie。首次安装仍使用既有 Sage 访问凭证体系，不虚构新的账号服务。
+
+Windows 与 Mac 打包同一 `apps/desktop/electron/materials-host.cjs`，只读既有资料目录。Windows 旧配置中的 codexWorkspace 只迁移为资料位置，codexBin 不再恢复；不创建 CLI 登录或 agent 工作区。普通界面不展示开发服务器和 CLI 设置。Mac 的原生 Markdown/表格/公式渲染与 Web 的 GFM/KaTeX 对齐常用格式；复制保留原始回答，滚动末端渐隐。下述较早 Codex 产品入口说明由本段取代；历史兼容和回滚保留。
+
+## macOS 客户端简化（2026-10-03，用户明确选择）
+
+Mac 版保留 Sage 聊天，回答仅使用服务器 Responses API；不再提供或运行本机 Codex CLI。旧回答的来源标记与历史保留，继续旧聊天时新请求固定使用 Responses。后续 Windows/网页统一方向见上文。
+
+Mac 本地负责手动截图、双路音频采集/格式转换、界面和按需只读资料；语音模型连接、转录与回答在服务器处理。`Support/materials-host.cjs` 仅复用 v12 已有 `/model` 认证传输读取资料，拒绝生成请求，不加载 CLI 或创建 agent 工作区。已有 `assistant-workspace/materials` 路径保留，不删除旧登录状态。Node 仍用于资料与原生截图桥接，不代表保留本地模型宿主。
+
 ## macOS 原生客户端增补（2026-10-02）
 
 用户要求增加原生 SwiftUI Mac 客户端，第一阶段包含聊天、手动 App Shot、系统音频和麦克风独立转录。实现位于 `apps/macos/`，沿用服务器 v12、共享转录与逐聊天回答语义。以下“Electron 是唯一采集宿主”对 Windows/浏览器链路保持不变；Mac 原生客户端是独立采集宿主，同一场仍只有一台采集设备，不同时启动两个桌面采集客户端。
@@ -105,7 +164,8 @@ MCP `/mcp` 复用服务器 HTTPS，OAuth 只读、电脑端确认、PKCE、精�
 - 真实模型、麦克风测试须本次明确授权。授权链路测试统一用独立测试进程 `gpt-6-luna`，不改生产环境；Sol/Astra 付费对比须专门授权。余额耗尽立即停止，不自动重试或换 key。
 - 本地后端：apps/server 的 `.venv/Scripts/python.exe -m uvicorn app.main:app --host 127.0.0.1 --port 8000`。
 - 本地桌面：apps/desktop 的 `npm.cmd run start:local`，仅在开始转录时初始化媒体；普通桌面默认连接生产，不用于离线测试。
-- PowerShell 使用 npm.cmd。HeroUI Pro 复用已安装 CollectUI 包；CI 需要 HEROUI_AUTH_TOKEN，不静默替换组件库。
+- PowerShell 使用 npm.cmd。HeroUI Pro 使用现有 CollectUI 渠道，复用已安装组件；CI 安装遵循 CollectUI 原版教程与项目锁定版本，不要求官方 HeroUI 账号或 `HEROUI_AUTH_TOKEN`，不静默替换组件库。文档更正不代表该项目 CI 已经实测通过。
+- 修改现有 HeroUI 前端时主动使用全局 `heroui-react-pro`、`heroui-pro-design-taste` 和已配置的 `heroui-pro` MCP；先定位实际前端 package.json 并检查组件产物，再判断安装问题。CollectUI MCP/Skills 与组件安装分别验证；教程为 https://docs.collectui.pro/ai-tools/mcp、https://docs.collectui.pro/ai-tools/skills、https://docs.collectui.pro/hpsetup/usage。
 
 ## 发布与编辑
 

@@ -1,7 +1,7 @@
 import Foundation
 
 public typealias JSON = [String: Any]
-public let protocolVersion = "interview-chat-v12"
+public let protocolVersion = "sage-capture-v1"
 
 public struct SageError: LocalizedError {
     public let message: String
@@ -23,10 +23,10 @@ public struct ServerAddress: Equatable {
     public func endpoint(_ path: String) -> URL { URL(string: path, relativeTo: url)!.absoluteURL }
     public func socket(interview: String, role: String) throws -> URL {
         guard !interview.isEmpty, interview.allSatisfy({ $0.isASCII && ($0.isLetter || $0.isNumber || $0 == "_" || $0 == "-") }),
-              ["client", "interviewer", "candidate", "model"].contains(role) else { throw SageError("无效连接标识。") }
+              ["interviewer", "candidate"].contains(role) else { throw SageError("无效连接标识。") }
         var parts = URLComponents(url: url, resolvingAgainstBaseURL: false)!
         parts.scheme = url.scheme == "https" ? "wss" : "ws"
-        parts.path = "/ws/interviews/\(interview)/\(role)"
+        parts.path = "/capture/audio/\(role)"
         return parts.url!
     }
 }
@@ -45,100 +45,35 @@ public struct Session {
     }
 }
 
-public struct ChatMessage: Identifiable {
-    public let id: String
-    public let text: String
-    public let responseID: String
-    public let provider: String
-    public let profile: String
-    public let screens: [JSON]
-    public init(_ json: JSON) {
-        id = json["message_id"] as? String ?? ""
-        text = json["text"] as? String ?? ""
-        responseID = json["response_id"] as? String ?? "chat:\(id)"
-        provider = json["provider"] as? String ?? "codex"
-        profile = json["profile"] as? String ?? "default"
-        screens = json["screens"] as? [JSON] ?? []
+/// Both connection credentials remain in Keychain, never in the app bundle or URL.
+public struct SiteCredentials {
+    public let site: String
+    public let device: String
+    public init(_ text: String) throws {
+        let bytes = text.hasPrefix("{") ? Data(text.utf8) : Data(base64Encoded: text)
+        guard let bytes, let value = try? JSONSerialization.jsonObject(with: bytes) as? JSON,
+              let site = value["site"] as? String, !site.isEmpty,
+              let device = value["device"] as? String, !device.isEmpty,
+              !site.contains(where: { $0.isNewline }), !device.contains(where: { $0.isNewline }) else { throw SageError("登录凭证格式无效，请重新配置 Cue。") }
+        self.site = site; self.device = device
     }
 }
-public struct Answer {
-    public var text = ""
-    public var status = "streaming"
-    public var detail = ""
-    public var activities: [JSON] = []
-    public init() {}
-}
 
-/// The server owns accepted history. Snapshots replace state; deltas never revive terminal answers.
-public struct ChatState {
-    public var messages: [ChatMessage] = []
-    public var answers: [String: Answer] = [:]
-    public var operations: [JSON] = []
+public struct CaptureState {
     public var screens: [JSON] = []
     public var transcripts: [JSON] = []
     public var conversationID = ""
-    public var title = "新对话"
     public var active = false
     public var stopping = false
-    public var error: String?
     public init() {}
-    public var busyID: String? {
-        operations.first { $0["kind"] as? String == "chat_send" && ["accepted", "running"].contains($0["status"] as? String ?? "") }?["operation_id"] as? String
-    }
-    public mutating func apply(_ event: JSON) {
-        let type = event["type"] as? String ?? ""
-        switch type {
-        case "conversation_reset":
-            messages = []; answers = [:]; operations = []; screens = []; title = "新对话"
-            conversationID = event["conversation_id"] as? String ?? conversationID
-        case "conversation_info":
-            conversationID = event["conversation_id"] as? String ?? conversationID
-            title = event["title"] as? String ?? title
-        case "chat_snapshot": messages = (event["messages"] as? [JSON] ?? []).map(ChatMessage.init)
-        case "chat_message":
-            if let json = event["chat_message"] as? JSON {
-                let message = ChatMessage(json)
-                if let index = messages.firstIndex(where: { $0.id == message.id }) { messages[index] = message }
-                else { messages.append(message) }
-            }
-        case "answer_started", "answer_snapshot", "answer_delta", "answer_completed", "answer_interrupted", "answer_error", "answer_activity":
-            guard let id = event["response_id"] as? String else { return }
-            var answer = answers[id] ?? Answer()
-            if type == "answer_delta" {
-                guard answer.status == "streaming" else { return }
-                answer.text += event["delta"] as? String ?? ""
-            } else if type == "answer_activity" {
-                if let items = event["activities"] as? [JSON] { answer.activities = items }
-                if let item = event["activity"] as? JSON {
-                    if let index = answer.activities.firstIndex(where: { $0["id"] as? String == item["id"] as? String }) { answer.activities[index] = item }
-                    else { answer.activities.append(item) }
-                }
-            } else {
-                if type == "answer_started" && answers[id] != nil { return }
-                answer.text = event["text"] as? String ?? answer.text
-                answer.status = event["status"] as? String ?? ["answer_completed": "completed", "answer_interrupted": "interrupted", "answer_error": "error"][type] ?? "streaming"
-                answer.detail = event["detail"] as? String ?? ""
-                answer.activities = event["activities"] as? [JSON] ?? answer.activities
-            }
-            answers[id] = answer
-        case "operation_snapshot": operations = event["operations"] as? [JSON] ?? []
-        case "operation_status":
-            if let id = event["operation_id"] as? String {
-                if let index = operations.firstIndex(where: { $0["operation_id"] as? String == id }) { operations[index].merge(event) { _, new in new } }
-                else { operations.append(event) }
-            }
-            if event["status"] as? String == "failed" { error = event["detail"] as? String }
-        case "screen_collection": screens = event["screens"] as? [JSON] ?? []
-        case "transcript_snapshot": transcripts = event["turns"] as? [JSON] ?? []
-        case "transcript_delta", "transcript_final":
-            if let id = event["turn_id"] as? String {
-                if let index = transcripts.firstIndex(where: { $0["turn_id"] as? String == id }) { transcripts[index].merge(event) { _, new in new } }
-                else { transcripts.append(event) }
-            }
-        case "interview_state": active = event["active"] as? Bool ?? false; stopping = event["stopping"] as? Bool ?? false
-        case "error", "tool_error": error = event["detail"] as? String ?? "操作失败，请重试。"
-        default: break
-        }
+    public mutating func merge(_ turn: JSON) {
+        guard let id = turn["id"] as? String ?? turn["turn_id"] as? String else { return }
+        var value = turn; value["turn_id"] = id
+        if let index = transcripts.firstIndex(where: { $0["turn_id"] as? String == id }) {
+            guard (value["revision"] as? Int ?? 0) >= (transcripts[index]["revision"] as? Int ?? 0) else { return }
+            transcripts[index] = value
+        } else { transcripts.append(value) }
+        transcripts.sort { ($0["created"] as? Double ?? 0) < ($1["created"] as? Double ?? 0) }
     }
 }
 

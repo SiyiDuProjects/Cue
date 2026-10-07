@@ -65,7 +65,14 @@ class AuditChat(codex_chat.CodexChat):
         # UI contract only; test_responses_chat exercises the real SDK against a
         # loopback SSE server. This fixture cannot reach a paid provider.
         answer = await provider(self.input(message)[0])
-        await rt._emit_answer_delta(self.runtime, response_id, answer["text"])
+        from app.services.chat_activity import record_activity
+        for activity in answer["activities"]:
+            await record_activity(self.runtime, response_id, activity)
+        size = answer.get("chunk_size", len(answer["text"]))
+        for start in range(0, len(answer["text"]), size):
+            await rt._emit_answer_delta(self.runtime, response_id, answer["text"][start:start+size])
+            if answer.get("chunk_delay"):
+                await asyncio.sleep(answer["chunk_delay"])
 rt.CodexChat = AuditChat
 
 class Capture:
@@ -109,8 +116,9 @@ navigator.mediaDevices.getDisplayMedia=()=>Promise.reject(Error('No real media i
 </script>"""
     if request.query_params.get("desktop") == "1":
         script += """<script>
+window.auditStartupAttempts=0;
 window.interviewDesktop={isElectron:true,captureHost:true,apiBaseUrl:location.origin,
-  createInterview:async()=>{await new Promise(r=>setTimeout(r,150));return (await fetch('/__audit/desktop/session',{method:'POST'})).json()},
+  createInterview:async()=>{if(++window.auditStartupAttempts===1)throw Error("Synthetic network outage");await new Promise(r=>setTimeout(r,150));return (await fetch('/__audit/desktop/session',{method:'POST'})).json()},
   endInterview:async(base,id,token)=>{await fetch('/api/interviews/'+id,{method:'DELETE',headers:{Authorization:'Bearer '+token}})},
   getWindowState:async()=>({}),
   requestCaptureInitialization:async()=>{throw Error('Media must not be initialized during chat startup')}

@@ -11,8 +11,8 @@ private final class FixtureHTTP: URLProtocol, @unchecked Sendable {
     override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
     override func startLoading() { Task { @MainActor in Self.handler?(self) } }
     override func stopLoading() {}
-    func respond(_ json: JSON) {
-        client?.urlProtocol(self, didReceive: HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: ["Content-Type": "application/json"])!, cacheStoragePolicy: .notAllowed)
+    func respond(_ json: JSON, status: Int = 200) {
+        client?.urlProtocol(self, didReceive: HTTPURLResponse(url: request.url!, statusCode: status, httpVersion: nil, headerFields: ["Content-Type": "application/json"])!, cacheStoragePolicy: .notAllowed)
         client?.urlProtocol(self, didLoad: try! JSONSerialization.data(withJSONObject: json))
         client?.urlProtocolDidFinishLoading(self)
     }
@@ -56,6 +56,71 @@ private final class FixtureHTTP: URLProtocol, @unchecked Sendable {
 }
 @MainActor enum NativeRegression {
     static var count = 0
+    static func run() async {
+        do {
+            try await keychainWaitCancellation(); try await loginRestoration()
+            try await chatgptEventRequests(); try await serverPreparesRequest()
+            try await captureRace(); try await prepareCancellation(); try await screenshotOwnership()
+            try await audioConversion(); try await socketContract()
+            print("\(count) native runtime checks passed"); exit(0)
+        } catch { fputs("\(error.localizedDescription)\n", stderr); exit(1) }
+    }
+    /// Explicit diagnostic: authenticated connection only, no Keychain write, host or media.
+    static func sitesConnection(sendEvent: Bool = false) async {
+        let store = AppStore(preview: true)
+        do {
+            guard let input = readLine(), let value = try JSONSerialization.jsonObject(with: Data(input.utf8)) as? JSON,
+                  let origin = value["origin"] as? String, let keys = value["credential"] as? JSON else { throw SageError("Invalid diagnostic input") }
+            let token = String(data: try JSONSerialization.data(withJSONObject: keys), encoding: .utf8)!
+            await store.connect(server: origin, token: token, remember: false)
+            guard store.connected else { throw SageError(store.error ?? store.connection) }
+            for _ in 0..<200 {
+                if store.testReadyChannels == 2 { break }
+                try await Task.sleep(for: .milliseconds(50))
+            }
+            guard store.testReadyChannels == 2, !store.state.active, !store.preparing else { throw SageError("Audio connection verification failed") }
+            print("PASS native AppStore authenticated HTTP, recording snapshot and two idle WebSockets; no media or model started")
+            if sendEvent {
+                guard let expectedRecording = value["expected_recording"] as? String,
+                      let expectedImage = value["expected_image"] as? String,
+                      let expectedSubscription = value["expected_subscription"] as? String,
+                      store.state.conversationID == expectedRecording,
+                      store.state.screens.count == 1,
+                      store.state.screens.first?["request_id"] as? String == expectedImage,
+                      store.state.transcripts.isEmpty else { throw SageError("Diagnostic fixture changed; no event sent") }
+                await store.chatgpt.refresh()
+                guard store.chatgpt.subscriptions.contains(where: { $0["id"] as? String == expectedSubscription }) else { throw SageError("Expected subscription missing; no event sent") }
+                store.chatgpt.selectedID = expectedSubscription
+                store.requestChatGPT()
+                for _ in 0..<450 {
+                    if store.chatgpt.requestID != nil && !store.chatgpt.waiting { break }
+                    try await Task.sleep(for: .milliseconds(100))
+                }
+                let receipt: JSON = ["request_id":store.chatgpt.requestID ?? "", "status":store.chatgpt.requestStatus,
+                                     "recording":expectedRecording, "image":expectedImage]
+                print(String(data: try JSONSerialization.data(withJSONObject: receipt), encoding: .utf8)!)
+                guard store.chatgpt.requestStatus == "delivered" else { throw SageError(store.chatgpt.status) }
+                print("PASS explicit native request accepted by ChatGPT; answer completion must be verified in the subscribed chat")
+            }
+            await store.disconnect(); exit(0)
+        } catch { await store.disconnect(); fputs("Sites connection check failed: \(error.localizedDescription)\n", stderr); exit(1) }
+    }
+    static func captureApplication(_ delegate: AppDelegate) async {
+        do {
+            try await eventually { delegate.store != nil }
+            guard let store = delegate.store else { throw SageError("Capture store did not start") }
+            try check(store.preview, "application fixture never opens production connections")
+            try check(NSApp.activationPolicy() == .accessory, "normal capture launch has no Dock application")
+            try await Task.sleep(for: .milliseconds(300))
+            try check(!NSApp.windows.contains { $0.isVisible && $0.canBecomeMain }, "capture launch opens no chat or settings window")
+            store.openCaptureSettings()
+            try await eventually { NSApp.windows.contains { $0.isVisible && $0.title == "Cue 设置" } }
+            try check(!store.state.active && !store.preparing, "opening capture settings starts no audio")
+            try check(store.state.transcripts.count > 0, "capture settings retain the saved transcript")
+            print("5 capture application lifecycle checks passed")
+            exit(0)
+        } catch { fputs("\(error.localizedDescription)\n", stderr); exit(1) }
+    }
     static func check(_ condition: @autoclosure () -> Bool, _ name: String) throws {
         guard condition() else { throw SageError("FAIL \(name)") }
         count += 1; print("PASS \(name)")
@@ -70,23 +135,78 @@ private final class FixtureHTTP: URLProtocol, @unchecked Sendable {
     static func session(_ id: String) throws -> Session {
         try Session(["interview_id": "current", "conversation_id": id, "session_token": "fixture-ui", "capture_token": "fixture-capture"])
     }
-    static func run() async {
-        do {
-            try await captureRace()
-            try await prepareStopBoundary()
-            try await stopErrorOwnership()
-            try await chatRace()
-            try await screenshotSnapshotBoundary()
-            try await screenshotRace()
-            try await screenshotUploadRace()
-            try await appshotRollback()
-            try await capabilityOwnership()
-            try await capabilityCaptureRace()
-            try await refreshRace()
-            try await audioConversion()
-            try await socketContract()
-            print("\(count) native runtime checks passed"); exit(0)
-        } catch { fputs("\(error.localizedDescription)\n", stderr); exit(1) }
+    static func chatgptEventRequests() async throws {
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [FixtureHTTP.self]
+        let http = HTTPClient(configuration: config)
+        let events = ChatGPTRequests(http: http, preview: true)
+        let address = try ServerAddress("https://events.invalid")
+        events.configure(address: address, session: try session("a"), supported: true)
+        var posts = 0, reads = 0
+        var pending: FixtureHTTP?
+        var sent: JSON = [:]
+        FixtureHTTP.handler = { request in
+            if request.request.httpMethod == "POST" {
+                posts += 1; pending = request
+                var body = request.request.httpBody ?? Data()
+                if body.isEmpty, let stream = request.request.httpBodyStream {
+                    stream.open(); defer { stream.close() }
+                    var buffer = [UInt8](repeating: 0, count: 1024)
+                    while stream.hasBytesAvailable { let n = stream.read(&buffer, maxLength: buffer.count); if n <= 0 { break }; body.append(buffer, count: n) }
+                }
+                sent = (try? JSONSerialization.jsonObject(with: body)) as? JSON ?? [:]
+            } else {
+                reads += 1
+                request.respond(["subscriptions": [["id": "fixture-sub", "channel": "mac"]], "requests": []])
+            }
+        }
+        await events.refresh()
+        try check(events.canRequest && events.selectedID == "fixture-sub", "one valid subscription is selected without model work")
+        events.submit(conversation: "a", imageIDs: ["screen-a"])
+        events.submit(conversation: "b", imageIDs: [])
+        try await eventually { pending != nil }
+        try check(posts == 1 && sent["conversation_id"] as? String == "a" && sent["image_ids"] as? [String] == ["screen-a"], "repeated hotkey sends one request with original chat and selected screenshots")
+        try check(sent["text"] == nil && sent["draft"] == nil, "event request never exports composer draft")
+        let id = events.requestID!
+        pending?.respond(["id": id, "status": "queued", "detail": "fixture queued"], status: 202)
+        try await eventually { !events.posting }
+        events.disconnect()
+        events.configure(address: address, session: try session("b"), supported: true)
+        try check(posts == 1, "reconnect never resends an uncertain ChatGPT request")
+        FixtureHTTP.handler = { request in
+            reads += 1
+            request.respond(["id": id, "status": "delivered", "detail": "ChatGPT 已接收，请到订阅对话查看回答。"])
+        }
+        await events.refreshReceipt()
+        try check(events.requestStatus == "delivered" && posts == 1, "receipt query resolves delivery without claiming answer completion")
+        events.disconnect()
+
+        let late = ChatGPTRequests(http: http, preview: true)
+        late.configure(address: address, session: try session("a"), supported: true)
+        var waiting: FixtureHTTP?
+        FixtureHTTP.handler = { waiting = $0 }
+        let refresh = Task { await late.refresh() }
+        try await eventually { waiting != nil }
+        late.disconnect()
+        waiting?.respond(["subscriptions": [["id": "stale", "channel": "mac"]]])
+        await refresh.value
+        try check(late.subscriptions.isEmpty && !late.canRequest, "late subscription response cannot re-enable a disconnected client")
+
+        FixtureHTTP.handler = nil
+    }
+    static func keychainWaitCancellation() async throws {
+        var credential: CheckedContinuation<String, Error>?
+        let store = AppStore(preview: true, loadCredential: { _ in
+            try await withCheckedThrowingContinuation { credential = $0 }
+        })
+        let restore = Task { await store.testRestoreConnection() }
+        try await eventually { credential != nil }
+        try check(store.connecting, "keychain confirmation waits without blocking main actor")
+        await store.disconnect()
+        try check(!store.connecting, "disconnect remains available during keychain confirmation")
+        credential?.resume(returning: "fixture-token")
+        await restore.value
+        try check(!store.connected && store.testServer == nil, "late keychain result cannot reconnect or open a network session")
     }
     static func captureRace() async throws {
         var waiting: CheckedContinuation<any AudioCaptureSession, Error>?
@@ -125,305 +245,9 @@ private final class FixtureHTTP: URLProtocol, @unchecked Sendable {
         try check(replacement.isPrepared && old.stops == 1 && new.stops == 0, "late previous capture cannot close replacement capture")
         _ = await replacement.finish()
     }
-    static func prepareStopBoundary() async throws {
-        let capture = CaptureController(factory: { _ in FakeAudio() })
-        let store = AppStore(preview: true, capture: capture)
-        try store.testSession("https://fixture.invalid", session("a"))
-        let system = FixtureSocket(), microphone = FixtureSocket()
-        let first = SocketLink(url: URL(string: "wss://fixture.invalid/interviewer")!, token: "fixture", role: "interviewer", connectionFactory: { _ in system })
-        let second = SocketLink(url: URL(string: "wss://fixture.invalid/candidate")!, token: "fixture", role: "candidate", connectionFactory: { _ in microphone })
-        first.start(); second.start()
-        system.emit(["type": "session_ready", "realtime_protocol": protocolVersion])
-        microphone.emit(["type": "session_ready", "realtime_protocol": protocolVersion])
-        try await eventually { first.ready && second.ready }
-        store.testCaptureLinks(["interviewer": first, "candidate": second])
-        var starts = 0
-        store.testControl = { if $0["type"] as? String == "start_transcription" { starts += 1 } }
-        store.testCaptureEvent(["type": "prepare_capture", "mode": "assist"])
-        // Wait until both ready messages have been sent; do not emit mode_ready yet.
-        try await eventually { system.sent.count == 2 && microphone.sent.count == 2 }
-        store.testCaptureEvent(["type": "capture_stop", "request_id": "stop-before-mode-ready"])
-        try await eventually { !store.preparing }
-        try check(!capture.isPrepared && starts == 0, "stop before mode confirmation releases prepare UI without starting")
-        store.testCaptureEvent(["type": "prepare_capture", "mode": "assist"])
-        try await eventually { capture.isPrepared }
-        store.testCaptureEvent(["type": "capture_mode_ready", "mode": "assist"])
-        try await eventually { !store.preparing && starts == 1 }
-        try check(capture.isPrepared, "same connection can prepare again after early stop")
-        await store.disconnect()
-    }
-    static func stopErrorOwnership() async throws {
-        for reconnect in [false, true] {
-            let capture = CaptureController(factory: { _ in FakeAudio() })
-            let store = AppStore(preview: true, capture: capture)
-            try store.testSession("https://fixture.invalid", session("a"))
-            let transport = FixtureSocket()
-            transport.holdStop = true; transport.delaySendCancellation = true
-            let link = SocketLink(url: URL(string: "wss://fixture.invalid/interviewer")!, token: "fixture", role: "interviewer", connectionFactory: { _ in transport })
-            link.start(); transport.emit(["type": "session_ready", "realtime_protocol": protocolVersion])
-            try await eventually { link.ready }
-            store.testCaptureLinks(["interviewer": link])
-            store.testCaptureEvent(["type": "capture_stop", "request_id": "tail"])
-            try await eventually { transport.heldSend != nil }
-            if reconnect {
-                await store.disconnect()
-                try store.testSession("https://replacement.invalid", session("b"))
-                store.error = "NEW_CONNECTION_NOTICE"
-            }
-            transport.heldSend?.resume(throwing: SageError("synthetic send failure")); transport.heldSend = nil
-            if reconnect {
-                try await Task.sleep(nanoseconds: 20_000_000)
-                try check(store.error == "NEW_CONNECTION_NOTICE", "late old stop failure cannot overwrite replacement connection notice")
-            } else {
-                try await eventually { store.error != nil }
-                try check(store.error == "音频收尾确认失败，尾句可能不完整。", "current connection stop failure still warns about incomplete tail")
-            }
-            await store.disconnect()
-        }
-    }
-    static func chatRace() async throws {
-        let store = AppStore(preview: true)
-        try store.testSession("https://a.invalid", session("a"))
-        var sent: [JSON] = []
-        store.testControl = { sent.append($0) }
-        store.draft = "OLD_DRAFT"; store.send()
-        store.testReceive(["type": "conversation_reset", "conversation_id": "b"])
-        try await eventually { store.error != nil }
-        try check(sent.isEmpty, "conversation reset before scheduled send cannot retarget old draft")
-        store.error = nil; store.draft = "NEW_DRAFT"; store.send()
-        try await eventually { sent.count == 1 }
-        try check(sent[0]["conversation_id"] as? String == "b" && sent[0]["text"] as? String == "NEW_DRAFT", "send snapshots current text and conversation together")
-        store.testReceive(["type": "chat_message", "chat_message": ["message_id": store.pendingSend!, "text": "NEW_DRAFT"]])
-        store.draft = "NEXT_DRAFT"; store.send()
-        await store.disconnect()
-        try await eventually { store.pendingSend == nil }
-        try await Task.sleep(nanoseconds: 10_000_000)
-        try check(sent.count == 1, "disconnect invalidates queued send")
-    }
-    static func screenshotSnapshotBoundary() async throws {
-        let store = AppStore(preview: true)
-        try store.testSession("https://fixture.invalid", session("a"))
-        var sent: [JSON] = []
-        store.testControl = { sent.append($0) }
-        store.testReceive(["type": "session_ready", "realtime_protocol": protocolVersion, "chat": true, "pinned_code": false])
-        store.screenshot()
-        try await Task.sleep(nanoseconds: 20_000_000)
-        try check(sent.isEmpty && !store.screenshotBusy, "initial snapshot must finish before creating screenshot operation")
-        store.testReceive(["type": "operation_snapshot", "operations": []])
-        store.screenshot(); store.screenshot()
-        try await eventually { sent.count == 1 }
-        try check(store.screenshotBusy && sent.count == 1, "snapshot completion allows exactly one pending screenshot")
-        store.testReceive(["type": "session_ready", "realtime_protocol": protocolVersion, "chat": true, "pinned_code": false])
-        store.testReceive(["type": "operation_snapshot", "operations": []])
-        try check(!store.screenshotBusy, "reconnect snapshot still reconciles an older unconfirmed screenshot")
-        store.screenshot()
-        store.testReceive(["type": "session_ready", "realtime_protocol": protocolVersion, "chat": true, "pinned_code": false])
-        try await Task.sleep(nanoseconds: 20_000_000)
-        try check(sent.count == 1 && !store.screenshotBusy, "queued screenshot cannot execute after snapshot recovery starts")
-        store.testReceive(["type": "operation_snapshot", "operations": []])
-        store.screenshot()
-        store.testReceive(["type": "session_ready", "realtime_protocol": protocolVersion, "chat": true, "pinned_code": false])
-        store.testReceive(["type": "operation_snapshot", "operations": []])
-        try await Task.sleep(nanoseconds: 20_000_000)
-        try check(sent.count == 1 && !store.screenshotBusy, "reconciled screenshot cannot execute after entire snapshot overtakes queued task")
-        store.testReceive(["type": "conversation_reset", "conversation_id": "b"])
-        store.screenshot()
-        try await Task.sleep(nanoseconds: 20_000_000)
-        try check(sent.count == 1, "conversation reset also blocks screenshots before new snapshot boundary")
-        await store.disconnect()
-    }
-    static func screenshotRace() async throws {
-        let store = AppStore(preview: true)
-        try store.testSession("https://a.invalid", session("a"))
-        var sent: [JSON] = []
-        store.testControl = { sent.append($0) }
-        store.screenshot()
-        store.testReceive(["type": "conversation_reset", "conversation_id": "b"])
-        try await Task.sleep(nanoseconds: 20_000_000)
-        try check(sent.isEmpty && !store.screenshotBusy, "queued screenshot cannot move from old chat into new chat")
-        store.testReceive(["type": "operation_snapshot", "operations": []])
-        store.screenshot()
-        store.testReceive(["type": "conversation_reset", "conversation_id": "a"])
-        store.testReceive(["type": "conversation_reset", "conversation_id": "b"])
-        try await Task.sleep(nanoseconds: 20_000_000)
-        try check(sent.isEmpty && !store.screenshotBusy, "switching away and back still invalidates queued screenshot")
-        store.testReceive(["type": "operation_snapshot", "operations": []])
-        store.screenshot(); try await eventually { sent.count == 1 }
-        let oldOperation = sent[0]["operation_id"] as! String
-        store.testReceive(["type": "operation_status", "kind": "request_screen_capture", "operation_id": oldOperation, "status": "completed"])
-        store.screenshot(); try await eventually { sent.count == 2 }
-        store.testReceive(["type": "operation_status", "kind": "request_screen_capture", "operation_id": oldOperation, "status": "completed"])
-        try check(store.screenshotBusy, "late old screenshot completion cannot release newer screenshot state")
-        let currentOperation = sent[1]["operation_id"] as! String
-        store.testReceive(["type": "operation_status", "kind": "request_screen_capture", "operation_id": currentOperation, "status": "completed"])
-        try check(!store.screenshotBusy, "current screenshot completion releases its own state")
-        await store.disconnect()
-    }
-    static func screenshotUploadRace() async throws {
-        let configuration = URLSessionConfiguration.ephemeral
-        configuration.protocolClasses = [FixtureHTTP.self]
-        let capture = CaptureController(factory: { _ in FakeAudio() })
-        let store = AppStore(preview: true, http: HTTPClient(configuration: configuration), capture: capture)
-        try store.testSession("https://fixture.invalid", session("a")); store.sourceID = "primary"
-        let socket = FixtureSocket()
-        let link = SocketLink(url: URL(string: "wss://fixture.invalid/interviewer")!, token: "fixture", role: "interviewer", connectionFactory: { _ in socket })
-        link.start(); socket.emit(["type": "session_ready", "realtime_protocol": protocolVersion])
-        try await eventually { link.ready }; store.testCaptureLinks(["interviewer": link])
-        var captures = 0, uploads = 0
-        var waiting: CheckedContinuation<JSON, Error>?
-        FixtureHTTP.handler = { request in uploads += 1; request.respond(["ok": true]) }
-        capture.testScreenshot = { _ in captures += 1; return try await withCheckedThrowingContinuation { waiting = $0 } }
-        store.testCaptureEvent(["type": "screen_capture_request", "request_id": "old-before-start", "conversation_id": "a"])
-        store.testReceive(["type": "conversation_reset", "conversation_id": "b"])
-        store.testReceive(["type": "conversation_reset", "conversation_id": "a"])
-        try await eventually { socket.sent.count >= 2 }
-        try check(captures == 0 && uploads == 0, "stale screenshot event never invokes capture after a chat round trip")
-        store.testCaptureEvent(["type": "screen_capture_request", "request_id": "old-during-capture", "conversation_id": "a"])
-        try await eventually { waiting != nil }
-        store.testReceive(["type": "conversation_reset", "conversation_id": "b"])
-        waiting?.resume(returning: ["image_data": "data:image/png;base64,iVBORw0KGgo=", "appshot": ["status": "available", "text": "ONLY_A"]])
-        try await eventually { socket.sent.count >= 3 }
-        try check(captures == 1 && uploads == 0, "App Shot finishing after chat switch is discarded before HTTP upload")
-        capture.testScreenshot = { _ in ["image_data": "data:image/png;base64,iVBORw0KGgo=", "appshot": ["status": "available", "text": "ONLY_B"]] }
-        store.testCaptureEvent(["type": "screen_capture_request", "request_id": "new", "conversation_id": "b"])
-        try await eventually { uploads == 1 }
-        try check(uploads == 1, "new chat can upload its own explicit screenshot")
-        await store.disconnect(); FixtureHTTP.handler = nil
-    }
-    static func appshotRollback() async throws {
-        let configuration = URLSessionConfiguration.ephemeral
-        configuration.protocolClasses = [FixtureHTTP.self]
-        let capture = CaptureController(factory: { _ in FakeAudio() })
-        let store = AppStore(preview: true, http: HTTPClient(configuration: configuration), capture: capture)
-        var oldServer = false, captures = 0, uploads = 0
-        let health: JSON = ["realtime_protocol": protocolVersion, "chat": true, "pinned_code": false]
-        FixtureHTTP.handler = { request in
-            if request.request.url?.path == "/health" {
-                request.respond(oldServer ? health : health.merging(["appshot": true]) { _, new in new })
-            } else if request.request.url?.path.hasSuffix("screenshots") == true {
-                uploads += 1; request.respond(["ok": true])
-            } else { request.respond(["interview_id": "current", "conversation_id": "a", "session_token": "fixture-ui", "capture_token": "fixture-capture"]) }
-        }
-        store.testEstablish = { _, _ in }
-        await store.connect(server: "https://fixture.invalid", token: "synthetic", codex: "", remember: false)
-        oldServer = true
-        await store.testRefresh()
-        let socket = FixtureSocket()
-        let link = SocketLink(url: URL(string: "wss://fixture.invalid/interviewer")!, token: "fixture", role: "interviewer", connectionFactory: { _ in socket })
-        link.start(); socket.emit(["type": "session_ready", "realtime_protocol": protocolVersion])
-        try await eventually { link.ready }; store.testCaptureLinks(["interviewer": link])
-        capture.testScreenshot = { _ in captures += 1; return ["image_data": "data:image/png;base64,iVBORw0KGgo=", "appshot": ["status": "available", "text": "fixture"]] }
-        for source in ["frontmost", "window:42"] {
-            store.sourceID = source
-            let before = socket.sent.count
-            store.testCaptureEvent(["type": "screen_capture_request", "request_id": source, "conversation_id": "a"])
-            try await eventually { uploads > 0 || socket.sent.count > before }
-            try check(captures == 0 && uploads == 0, "old v12 recovery rejects App Shot before capture: \(source)")
-        }
-        await store.disconnect(); FixtureHTTP.handler = nil
-    }
-    static func capabilityOwnership() async throws {
-        let configuration = URLSessionConfiguration.ephemeral
-        configuration.protocolClasses = [FixtureHTTP.self]
-        let store = AppStore(preview: true, http: HTTPClient(configuration: configuration))
-        let health: JSON = ["realtime_protocol": protocolVersion, "chat": true, "pinned_code": false]
-        var holdHealth = false, held: FixtureHTTP?, supported = true
-        FixtureHTTP.handler = { request in
-            if request.request.url?.path == "/health" {
-                if holdHealth { held = request }
-                else { request.respond(supported ? health.merging(["appshot": true]) { _, new in new } : health) }
-            } else { request.respond(["interview_id": "current", "conversation_id": "a", "session_token": "fixture-ui", "capture_token": "fixture-capture"]) }
-        }
-        store.testEstablish = { _, _ in }
-        await store.connect(server: "https://a.invalid", token: "synthetic", codex: "", remember: false)
-        try check(store.testSupportsAppShot, "current health enables App Shot")
-        _ = store.testConnectionState(false)
-        try check(!store.testSupportsAppShot, "socket interruption immediately clears App Shot capability")
-        holdHealth = true
-        let first = store.testConnectionState(true)
-        try await eventually { held != nil }
-        try check(!store.testSupportsAppShot, "pending reconnect health cannot permit window capture")
-        let old = held!; held = nil; holdHealth = false; supported = false
-        _ = store.testConnectionState(false)
-        await store.testConnectionState(true)?.value
-        old.respond(health.merging(["appshot": true]) { _, new in new }); await first?.value
-        try check(!store.testSupportsAppShot, "same-session late health cannot override newer old-v12 reconnect")
-        holdHealth = true
-        let stale = store.testConnectionState(true)
-        try await eventually { held != nil }
-        let priorServer = held!; held = nil; holdHealth = false
-        await store.connect(server: "https://b.invalid", token: "synthetic", codex: "", remember: false)
-        priorServer.respond(health.merging(["appshot": true]) { _, new in new }); await stale?.value
-        try check(!store.testSupportsAppShot && store.serverText == "https://b.invalid", "old-server health cannot grant capability to a new connection")
-        holdHealth = true
-        let staleFailure = store.testConnectionState(true)
-        try await eventually { held != nil }
-        let failed = held!; held = nil; holdHealth = false; supported = true
-        await store.connect(server: "https://c.invalid", token: "synthetic", codex: "", remember: false)
-        store.error = "CURRENT_CONNECTION"
-        failed.respond([:]); await staleFailure?.value
-        try check(store.testSupportsAppShot && store.error == "CURRENT_CONNECTION", "late invalid health cannot clear new capability or overwrite new error")
-        FixtureHTTP.handler = { $0.respond([:]) }
-        await store.testConnectionState(true)?.value
-        try check(!store.testSupportsAppShot, "unknown current health fails closed")
-        await store.disconnect()
-        try check(!store.testSupportsAppShot, "explicit disconnect clears capability")
-        FixtureHTTP.handler = nil
-    }
-    static func capabilityCaptureRace() async throws {
-        let configuration = URLSessionConfiguration.ephemeral
-        configuration.protocolClasses = [FixtureHTTP.self]
-        let capture = CaptureController(factory: { _ in FakeAudio() })
-        let store = AppStore(preview: true, http: HTTPClient(configuration: configuration), capture: capture)
-        var uploads = 0
-        FixtureHTTP.handler = { request in
-            if request.request.url?.path == "/health" { request.respond(["realtime_protocol": protocolVersion, "chat": true, "pinned_code": false, "appshot": true]) }
-            else if request.request.url?.path.hasSuffix("screenshots") == true { uploads += 1; request.respond(["ok": true]) }
-            else { request.respond(["interview_id": "current", "conversation_id": "a", "session_token": "fixture-ui", "capture_token": "fixture-capture"]) }
-        }
-        store.testEstablish = { _, _ in }
-        await store.connect(server: "https://fixture.invalid", token: "synthetic", codex: "", remember: false)
-        let socket = FixtureSocket()
-        let link = SocketLink(url: URL(string: "wss://fixture.invalid/interviewer")!, token: "fixture", role: "interviewer", connectionFactory: { _ in socket })
-        link.start(); socket.emit(["type": "session_ready", "realtime_protocol": protocolVersion])
-        try await eventually { link.ready }; store.testCaptureLinks(["interviewer": link])
-        var waiting: CheckedContinuation<JSON, Error>?
-        capture.testScreenshot = { _ in try await withCheckedThrowingContinuation { waiting = $0 } }
-        store.testCaptureEvent(["type": "screen_capture_request", "request_id": "before-reconnect", "conversation_id": "a"])
-        try await eventually { waiting != nil }
-        _ = store.testConnectionState(false, role: "interviewer")
-        await store.testConnectionState(true, role: "interviewer")?.value
-        let before = socket.sent.count
-        waiting?.resume(returning: ["image_data": "data:image/png;base64,iVBORw0KGgo=", "appshot": ["status": "available", "text": "BEFORE_RECONNECT"]])
-        try await eventually { uploads > 0 || socket.sent.count > before }
-        try check(uploads == 0 && store.testSupportsAppShot, "reconfirmed capability cannot upload a window capture started before reconnect")
-        await store.disconnect(); FixtureHTTP.handler = nil
-    }
-    static func refreshRace() async throws {
-        let configuration = URLSessionConfiguration.ephemeral
-        configuration.protocolClasses = [FixtureHTTP.self]
-        let store = AppStore(preview: true, http: HTTPClient(configuration: configuration))
-        try store.testSession("https://a.invalid", session("a"))
-        var waiting: FixtureHTTP?
-        var established: [String] = []
-        store.testEstablish = { address, _ in established.append(address.url.host!) }
-        FixtureHTTP.handler = { request in
-            if request.request.url?.host == "a.invalid" { waiting = request }
-            else if request.request.url?.path == "/health" { request.respond(["realtime_protocol": protocolVersion, "chat": true, "pinned_code": false, "appshot": true]) }
-            else { request.respond(["interview_id": "current", "conversation_id": "b", "session_token": "fixture-ui", "capture_token": "fixture-capture"]) }
-        }
-        let refreshing = Task { await store.testRefresh() }
-        try await eventually { waiting != nil }
-        await store.connect(server: "https://b.invalid", token: "synthetic", codex: "", remember: false)
-        try check(established == ["b.invalid"], "new connection B establishes while old recovery A waits")
-        waiting?.respond(["interview_id": "current", "conversation_id": "a", "session_token": "fixture-ui", "capture_token": "fixture-capture"])
-        await refreshing.value
-        try check(established == ["b.invalid"] && store.state.conversationID == "b", "late recovery A cannot replace B or leak old links")
-        await store.disconnect(); FixtureHTTP.handler = nil
-    }
     static func socketContract() async throws {
         let transport = FixtureSocket()
-        let link = SocketLink(url: URL(string: "wss://fixture.invalid/ws")!, token: "PRIVATE_TEST_TOKEN", role: "client", connectionFactory: { _ in transport })
+        let link = SocketLink(url: URL(string: "wss://fixture.invalid/ws")!, token: "PRIVATE_TEST_TOKEN", role: "interviewer", connectionFactory: { _ in transport })
         var gaps = 0; link.onGap = { gaps += 1 }
         link.start()
         try await eventually { transport.sent.count == 1 }
@@ -435,22 +259,22 @@ private final class FixtureHTTP: URLProtocol, @unchecked Sendable {
         link.audio(Data(repeating: 1, count: 100))
         try await eventually { transport.heldSend != nil }
         for value in UInt8(2)...UInt8(4) { link.audio(Data(repeating: value, count: 12_000)) }
-        let stopped = Task { try await link.send(["type": "capture_stopped", "request_id": "tail", "complete": false]) }
+        let stopped = Task { try await link.send(["type": "stop", "request_id": "tail", "complete": false]) }
         transport.heldSend?.resume(); transport.heldSend = nil
         try await stopped.value
         let bytes = transport.sent.compactMap { message -> UInt8? in if case .data(let data) = message { return data.first }; return nil }
         try check(gaps == 1 && bytes == [1, 3, 4], "network queue drops oldest PCM within half-second bound")
         guard case .string(let last) = transport.sent.last! else { throw SageError("Tail acknowledgement preceded PCM") }
-        try check(last.contains("capture_stopped"), "stop acknowledgement follows all retained tail frames")
+        try check(last.contains("stop"), "stop acknowledgement follows all retained tail frames")
         transport.holdData = true; link.audio(Data([5, 5]))
         try await eventually { transport.heldSend != nil }
-        let uncertain = Task { try await link.send(["type": "chat_send", "text": "never replay"]) }
+        let uncertain = Task { try await link.send(["type": "flush", "id": "never-replay"]) }
         await Task.yield(); link.close()
         var failed = false
         do { try await uncertain.value } catch { failed = true }
         try check(failed && !link.ready, "closing fails pending control without automatic replay")
         let incompatible = FixtureSocket()
-        let rejected = SocketLink(url: URL(string: "wss://fixture.invalid/ws")!, token: "test", role: "client", connectionFactory: { _ in incompatible })
+        let rejected = SocketLink(url: URL(string: "wss://fixture.invalid/ws")!, token: "test", role: "interviewer", connectionFactory: { _ in incompatible })
         var message = ""; rejected.onState = { _, text in message = text }
         rejected.start(); incompatible.emit(["type": "session_ready", "realtime_protocol": "interview-chat-v11", "chat": true, "pinned_code": false])
         try await eventually { !message.isEmpty }
@@ -479,6 +303,102 @@ private final class FixtureHTTP: URLProtocol, @unchecked Sendable {
         try check(a.count == 480 && b.count == 480, "48 kHz stereo converts and drains to exact 24 kHz mono PCM")
         try check(a.contains { $0 > 1000 } && !a.contains { $0 < -1000 } && b.contains { $0 < -1000 } && !b.contains { $0 > 1000 }, "system audio and microphone never mix")
         try check(!system.gap && !microphone.gap && sink.error() == nil, "converter tail flush preserves both bounded queues")
+    }
+    static let credential = #"{"site":"synthetic-site","device":"synthetic-device"}"#
+    static func loginRestoration() async throws {
+        let config = URLSessionConfiguration.ephemeral; config.protocolClasses = [FixtureHTTP.self]
+        let http = HTTPClient(configuration: config)
+        var requests = 0, loads = 0, links = 0
+        let store = AppStore(preview: true, http: http, loadCredential: { _ in loads += 1; return credential })
+        store.testEstablish = { _, _ in links += 1 }
+        FixtureHTTP.handler = { request in
+            requests += 1
+            guard request.request.value(forHTTPHeaderField: "OAI-Sites-Authorization") == "Bearer synthetic-site", request.request.value(forHTTPHeaderField: "Authorization") == "Bearer synthetic-device" else { request.respond([:], status: 401); return }
+            switch request.request.url?.path {
+            case "/health": request.respond(["capture_protocol": protocolVersion, "appshot": true])
+            case "/capture/session": request.respond(["interview_id": "current", "conversation_id": "restored", "session_token": "synthetic-device", "capture_token": "synthetic-device"])
+            default: request.respond(["recording": "restored", "turns": [], "images": []])
+            }
+        }
+        await store.testRestoreConnection(); await store.testRestoreConnection()
+        try check(loads == 1 && requests == 3 && links == 1 && store.connected, "saved Sites login restores once through authenticated HTTP and snapshot")
+        try check(!store.state.active && !store.preparing, "restoration never starts capture or transcription")
+        var leaked = true
+        FixtureHTTP.handler = { request in leaked = request.request.value(forHTTPHeaderField: "OAI-Sites-Authorization") != nil; request.respond([:]) }
+        _ = try await http.request(ServerAddress("https://other.invalid"), "/health")
+        try check(!leaked, "Sites service credential cannot leak to another origin")
+        await store.disconnect()
+        requests = 0
+        let missing = AppStore(preview: true, http: http, loadCredential: { _ in "" })
+        FixtureHTTP.handler = { request in requests += 1; request.respond([:]) }
+        await missing.testRestoreConnection()
+        try check(missing.needsSignIn && requests == 0, "missing credential opens no network connection")
+        let expired = AppStore(preview: true, http: http, loadCredential: { _ in credential })
+        FixtureHTTP.handler = { $0.respond([:], status: 401) }
+        await expired.testRestoreConnection()
+        try check(expired.needsSignIn && !expired.connected, "expired Sites access requires authentication without model work")
+        await expired.disconnect(); FixtureHTTP.handler = nil
+    }
+    static func prepareCancellation() async throws {
+        var pending: CheckedContinuation<any AudioCaptureSession, Error>?
+        let audio = FakeAudio(), capture = CaptureController(factory: { _ in try await withCheckedThrowingContinuation { pending = $0 } })
+        let config = URLSessionConfiguration.ephemeral; config.protocolClasses = [FixtureHTTP.self]
+        FixtureHTTP.handler = { $0.respond(["recording":"recording", "turns":[], "images":[]]) }
+        let store = AppStore(preview: true, http: HTTPClient(configuration: config), capture: capture)
+        try store.testSession("https://fixture.invalid", session("recording"))
+        let sockets = ["interviewer": FixtureSocket(), "candidate": FixtureSocket()]
+        var links: [String: SocketLink] = [:]
+        for (role,socket) in sockets {
+            let link = SocketLink(url: URL(string: "wss://fixture.invalid/"+role)!, token: "synthetic", role: role, connectionFactory: { _ in socket })
+            links[role] = link; link.start(); socket.emit(["type":"session_ready", "realtime_protocol":protocolVersion])
+        }
+        try await eventually { links.values.allSatisfy { $0.ready } }; store.testCaptureLinks(links)
+        let prepare = Task { try await store.testStartAudio() }
+        try await eventually { pending != nil }
+        try await store.control(["type":"stop_transcription"])
+        pending?.resume(returning: audio)
+        do { try await prepare.value } catch is CancellationError {}
+        let started = sockets.values.flatMap { $0.sent }.contains { if case .string(let s) = $0 { return s.contains("\"start\"") }; return false }
+        try check(!started && !capture.isPrepared && audio.stops == 1, "stop during capture preparation prevents late upstream start")
+        await store.disconnect()
+    }
+    static func screenshotOwnership() async throws {
+        var pending: CheckedContinuation<JSON, Error>?
+        let capture = CaptureController(), config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [FixtureHTTP.self]
+        let store = AppStore(preview: true, http: HTTPClient(configuration: config), capture: capture)
+        try store.testSession("https://fixture.invalid", session("first")); store.sourceID = "primary"
+        var uploads = 0
+        FixtureHTTP.handler = { request in uploads += 1; request.respond([:]) }
+        capture.testScreenshot = { _ in try await withCheckedThrowingContinuation { pending = $0 } }
+        store.screenshot(); try await eventually { pending != nil }
+        await store.disconnect(); try store.testSession("https://fixture.invalid", session("second"))
+        store.error = "new recording"
+        pending?.resume(returning: ["image_data":"data:image/png;base64,eA=="])
+        try await Task.sleep(for: .milliseconds(20))
+        try check(uploads == 0 && store.error == "new recording", "late screenshot cannot upload to replacement session or overwrite its status")
+        await store.disconnect(); FixtureHTTP.handler = nil
+    }
+    static func serverPreparesRequest() async throws {
+        let config = URLSessionConfiguration.ephemeral; config.protocolClasses = [FixtureHTTP.self]
+        let store = AppStore(preview: true, http: HTTPClient(configuration: config))
+        try store.testSession("https://fixture.invalid", session("recording"))
+        store.chatgpt.configure(address: try ServerAddress("https://fixture.invalid"), session: try session("recording"), supported: true)
+        var posts = 0
+        FixtureHTTP.handler = { request in
+            if request.request.url?.path == "/api/prepare" { request.respond(["status":"preparing"]) }
+            else if request.request.httpMethod == "POST" { posts += 1; request.respond(["id":store.chatgpt.requestID!, "status":"delivered"]) }
+            else { request.respond(["subscriptions":[["id":"subscription","channel":"mac"]]]) }
+        }
+        await store.chatgpt.refresh()
+        let socket = FixtureSocket(), link = SocketLink(url: URL(string:"wss://fixture.invalid/audio")!, token:"synthetic", role:"candidate", connectionFactory:{ _ in socket })
+        link.start(); socket.emit(["type":"session_ready","realtime_protocol":protocolVersion]); try await eventually { link.ready }
+        store.testCaptureLinks(["candidate":link]); store.preparing = true; store.testCaptureEvent(["type":"started"], role:"candidate"); store.preparing = false
+        store.requestChatGPT()
+        try await eventually { posts == 1 }
+        try check(socket.sent.count == 2, "manual request sends an ordered read marker, without transcript content")
+        try check(posts == 1, "one explicit request delegates tail preparation to the server")
+        await store.disconnect(); FixtureHTTP.handler = nil
     }
 }
 #endif

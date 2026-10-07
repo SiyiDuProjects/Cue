@@ -1,22 +1,15 @@
 const { contextBridge, ipcRenderer } = require("electron");
-
-const apiBaseArgument = process.argv.find((value) =>
-  value.startsWith("--interview-api-base-url="),
-);
-const apiBaseUrl = apiBaseArgument?.slice("--interview-api-base-url=".length) || "";
-
-contextBridge.exposeInMainWorld("interviewDesktop", {
-  isElectron: true,
-  captureHost: true,
-  platform: process.platform,
-  apiBaseUrl,
-  getWindowState: () => ipcRenderer.invoke("window:state"),
-  listScreenSources: () => ipcRenderer.invoke("screen:list-sources"),
-  selectScreenSource: (sourceId) => ipcRenderer.invoke("screen:select-source", sourceId),
-  captureScreenSnapshot: () => ipcRenderer.invoke("screen:capture"),
-  createInterview: (apiBaseUrl) => ipcRenderer.invoke("interview:create", apiBaseUrl),
-  conversationRequest: (apiBaseUrl, payload) => ipcRenderer.invoke("conversation:request", apiBaseUrl, payload),
-  endInterview: (apiBaseUrl, interviewId, sessionToken) =>
-    ipcRenderer.invoke("interview:end", apiBaseUrl, interviewId, sessionToken),
-  requestCaptureInitialization: () => ipcRenderer.invoke("capture:initialize"),
+contextBridge.exposeInMainWorld("sageCaptureHost", {
+  origin: process.argv.find((x) => x.startsWith("--sage-origin="))?.slice(14),
+  connect: () => ipcRenderer.invoke("sage:connect"),
+  importConnection: () => ipcRenderer.invoke("sage:import"),
+  request: (path, method, body) =>
+    ipcRenderer.invoke("sage:request", path, method, body),
+  sources: () => ipcRenderer.invoke("sage:sources"),
+  selectSource: (id) => ipcRenderer.invoke("sage:select", id),
+  screenshot: () => ipcRenderer.invoke("sage:screenshot"),
+  startAnswer: (body) => ipcRenderer.invoke("sage:answer", body),
 });
+ipcRenderer.on("sage:answer-requested", () =>
+  window.dispatchEvent(new Event("sage:answer-requested")),
+);

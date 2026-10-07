@@ -1,56 +1,68 @@
-// Offline test of the packaged helper's login/runtime isolation; no real CLI or login.
+// Exercises the packaged read-only Sites bridge with an in-memory HTTP service.
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { spawn } = require('node:child_process');
-const root = fs.mkdtempSync(path.join(os.tmpdir(), 'sage-mac-bridge-'));
-(async () => {
-  try {
-    const app = path.resolve(__dirname, '../output/Sage.app/Contents');
-    const fake = path.join(root, 'fake-codex');
-    const marker = path.join(root, 'verified.json');
-    fs.writeFileSync(fake, `#!${process.execPath}\nconst fs = require('node:fs');
-const assert = require('node:assert/strict');
-assert.equal(process.argv.at(-1), 'login');
-assert.equal(process.env.OPENAI_API_KEY, undefined);
-assert.equal(process.env.CODEX_HOME, ${JSON.stringify(path.join(root, 'data/assistant-workspace/.runtime/codex'))});
-assert(process.argv.includes('features.multi_agent=false'));
-assert(process.argv.includes('features.plugins=false'));
-fs.appendFileSync(${JSON.stringify(marker)}, JSON.stringify({ok:true}) + "\\n");
-`, { mode: 0o700 });
-    const child = spawn(path.join(app, 'MacOS/sage-node'), [path.join(app, 'Resources/bridge/host.cjs')], {
-      stdio: ['pipe', 'ignore', 'pipe'], env: { ...process.env, OPENAI_API_KEY: 'synthetic-must-not-inherit' },
-    });
-    child.stderr.resume();
-    const deadline = setTimeout(() => child.kill(), 5000);
-    const ended = new Promise((resolve, reject) => { child.once('error', reject); child.once('exit', code => resolve(code)); });
-    const config = JSON.stringify({ action: 'login', dataRoot: path.join(root, 'data'), codexBin: fake });
-    child.stdin.write(config + '\n' + config + '\n');
-    const code = await ended; clearTimeout(deadline);
-    assert.equal(code, 0, 'packaged bridge exits successfully after synthetic login');
-    assert.equal(fs.readFileSync(marker, "utf8").trim(), JSON.stringify({ok:true}), "one private stdin session launches exactly one login");
-    assert(fs.existsSync(path.join(root, 'data/assistant-workspace/AGENTS.md')));
-    assert.deepEqual(fs.readdirSync(path.join(root, 'data/assistant-workspace/materials')), []);
-    console.log('PASS packaged Node bridge, dedicated login home, secret filtering, public-template whitelist, one-shot stdin session');
-    const stuck = path.join(root, 'stuck-cli'), pidFile = path.join(root, 'stuck-pid');
-    fs.writeFileSync(stuck, `#!${process.execPath}\nrequire('node:fs').writeFileSync(${JSON.stringify(pidFile)},String(process.pid));process.on('SIGTERM',()=>{});setInterval(()=>{},1000);\n`, {mode:0o700});
-    let stuckPID;
-    const closing = spawn(path.join(app, 'MacOS/sage-node'), [path.join(app, 'Resources/bridge/host.cjs')], {stdio:['pipe','ignore','ignore']});
-    const closed = new Promise(resolve => closing.once('exit', code => resolve(code)));
-    const guard = setTimeout(() => closing.kill('SIGKILL'), 6000);
-    try {
-      closing.stdin.write(JSON.stringify({action:'login', dataRoot:path.join(root,'data'), codexBin:stuck})+'\n');
-      for(let i=0;i<200&&!fs.existsSync(pidFile);i++) await new Promise(resolve=>setTimeout(resolve,10));
-      stuckPID=Number(fs.readFileSync(pidFile,'utf8'));
-      closing.stdin.end();
-      assert.equal(await closed, 1, 'cancelled login cannot report success');
-      assert.throws(()=>process.kill(stuckPID,0), {code:'ESRCH'}, 'cancelled login process must not remain alive');
-      console.log('PASS parent pipe closure cancels and reaps a login that ignores SIGTERM');
-    } finally {
-      clearTimeout(guard);
-      if(stuckPID) try{process.kill(stuckPID,'SIGKILL')}catch{}
-      if(closing.exitCode===null&&closing.signalCode===null) closing.kill('SIGKILL');
-    }
-  } finally { fs.rmSync(root, { recursive: true, force: true }); }
-})().catch(error => { console.error(error.message); process.exitCode = 1; });
+const { once } = require('node:events');
+const app = path.resolve(__dirname, '../output/Sage.app/Contents');
+const bridge = path.join(app, 'Resources/bridge');
+const { MaterialsHost } = require(path.join(bridge, 'materials-host.cjs'));
+const root = fs.mkdtempSync(path.join(os.tmpdir(), 'sage-mac-materials-'));
+async function eventually(predicate) {
+  for (let i=0;i<200;i++) { if(predicate()) return; await new Promise(r=>setTimeout(r,5)); }
+  throw Error('Timed out waiting for fixture');
+}
+(async()=>{
+ let host;
+ try {
+  const config={apiBaseUrl:'https://fixture.invalid',siteToken:'synthetic-site',captureToken:'synthetic-device',dataRoot:root};
+  const workspace=path.join(root,'assistant-workspace');
+  let jobs=[],requests=0; const results=new Map();
+  const fetcher=async(url,options)=>{
+   requests++;
+   assert.equal(options.headers['OAI-Sites-Authorization'],'Bearer synthetic-site');
+   assert.equal(options.headers.Authorization,'Bearer synthetic-device');
+   assert.equal(options.redirect,'error');
+   assert(url.startsWith(config.apiBaseUrl+'/capture/materials'));
+   if(options.method==='POST')results.set(url.split('/').at(-1),JSON.parse(options.body));
+   return Response.json(options.method==='GET'?{jobs:jobs.splice(0)}:{saved:true});
+  };
+  host=new MaterialsHost(config,{fetcher,interval:5});
+  assert.deepEqual(fs.readdirSync(workspace),['materials']);
+  fs.writeFileSync(path.join(workspace,'materials/resume.md'),'简历原文\n经验');
+  await eventually(()=>requests>1);
+  assert.equal(results.size,0,'connection does not upload documents proactively');
+  const job=(id,name,args={})=>({id,request:JSON.stringify({name,arguments:args})});
+  jobs=[job('list','list_materials'),job('read','read_material',{path:'resume.md'}),job('escape','read_material',{path:'../private.txt'}),job('generate','codex_request')];
+  await eventually(()=>results.size===4);
+  assert.equal(results.get('list').files[0].path,'resume.md');
+  assert.equal(results.get('read').text,'简历原文\n经验');
+  assert(results.get('escape').error); assert(results.get('generate').error);
+  assert(!results.get('generate').text);
+  console.log('PASS authenticated on-demand catalog and original UTF-8; traversal and generation rejected');
+  fs.writeFileSync(path.join(root,'private.txt'),'never expose');
+  fs.symlinkSync(path.join(root,'private.txt'),path.join(workspace,'materials/link.txt'));
+  jobs=[job('symlink','read_material',{path:'link.txt'}),job('stale','read_material',{path:'resume.md',revision:'obsolete'})];
+  await eventually(()=>results.has('symlink')&&results.has('stale'));
+  assert(results.get('symlink').error); assert(results.get('stale').error);
+  console.log('PASS document symlinks and stale revisions fail without disclosing content');
+  const pending=[]; host.materials.call=()=>new Promise(resolve=>pending.push(resolve));
+  jobs=Array.from({length:9},(_,i)=>job('slow-'+i,'list_materials'));
+  await eventually(()=>pending.length===8);
+  host.close(); pending.forEach(resolve=>resolve({files:[]}));
+  await new Promise(r=>setImmediate(r));
+  assert.equal([...results.keys()].filter(k=>k.startsWith('slow-')).length,0);
+  console.log('PASS eight-read bound and shutdown cancels stale uploads');
+  for(const override of [{siteToken:''},{siteToken:'x\r\nInjected: y'},{captureToken:{}},{apiBaseUrl:'http://example.com'},{apiBaseUrl:'https://user:secret@example.com'},{apiBaseUrl:'https://fixture.invalid/path'}]){
+   assert.throws(()=>new MaterialsHost({...config,...override},{fetcher}));
+  }
+  assert.deepEqual(fs.readdirSync(bridge).sort(),['electron','materials-host.cjs','native-appshot.cjs']);
+  assert.deepEqual(fs.readdirSync(path.join(bridge,'electron')),['materials-host.cjs','materials.cjs']);
+  const child=spawn(path.join(app,'MacOS/sage-node'),[path.join(bridge,'materials-host.cjs')],{stdio:['pipe','ignore','ignore']});
+  const ended=once(child,'exit'),guard=setTimeout(()=>child.kill('SIGKILL'),5000);
+  child.stdin.end(JSON.stringify({...config,apiBaseUrl:'http://127.0.0.1:1'})+'\n');
+  const [code]=await ended; clearTimeout(guard); assert.equal(code,0);
+  console.log('PASS packaged Node closes with parent; no model host, credentials in argv or agent templates');
+ } finally {host?.close();fs.rmSync(root,{recursive:true,force:true});}
+})().catch(error=>{console.error(error);process.exitCode=1;});

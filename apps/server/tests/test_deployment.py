@@ -33,6 +33,7 @@ class CaptureAndDeploymentApiTests(unittest.TestCase):
             accept_screen_snapshot=AsyncMock(return_value=True),
         )
         self.registry = SimpleNamespace(
+            _store=None,
             get=AsyncMock(return_value=self.runtime),
             deployment_state=AsyncMock(return_value={"active": False, "draining": True}),
             begin_deployment=AsyncMock(return_value=True),

@@ -4,7 +4,6 @@ const fs = require("node:fs");
 const path = require("node:path");
 const os = require("node:os");
 const { runtimeOptions, createRuntimeContext } = require("./codex-runtime.cjs");
-const { loadConnection, saveConnection } = require("./desktop-connection.cjs");
 
 test("dedicated workspace keeps explicit prompt, isolated login and excludes inherited provider credentials", t => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "sage-runtime-test-"));
@@ -28,7 +27,7 @@ test("dedicated workspace keeps explicit prompt, isolated login and excludes inh
   assert.equal(options.env.SystemRoot, "keep-system");
 });
 
-test("saved login directory stays bound after environment changes and across conversations", async t => {
+test("legacy runtime directory stays bound after environment changes", async t => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "sage-bound-runtime-"));
   const workspace = path.join(root, "saved-workspace");
   fs.mkdirSync(workspace);
@@ -39,15 +38,11 @@ test("saved login directory stays bound after environment changes and across con
     fs.rmdirSync(path.join(workspace, "materials"));
     fs.rmdirSync(path.join(workspace, ".runtime/codex")); fs.rmdirSync(path.join(workspace, ".runtime"));
     fs.unlinkSync(path.join(workspace, "AGENTS.md")); fs.rmdirSync(workspace);
-    fs.unlinkSync(path.join(root, "connection.bin")); fs.rmdirSync(root);
+    fs.rmdirSync(root);
   });
-  let stored;
-  const storage = { isAsyncEncryptionAvailable: async () => true,
-    encryptStringAsync: async value => { stored = value; return Buffer.from("encrypted-fixture"); },
-    decryptStringAsync: async () => ({ result: stored }) };
-  await saveConnection(root, storage, { accessToken: "private-fixture", codexWorkspace: workspace, codexBin: process.execPath });
-  const environment = { SystemRoot: "preserved-system", CODEX_HOME: "unrelated-login" };
-  await loadConnection(root, storage, environment);
+  // Historical CLI unit coverage. Product config no longer restores a CLI.
+  const environment = { SystemRoot: "preserved-system", CODEX_HOME: "unrelated-login",
+    INTERVIEW_CODEX_WORKSPACE: workspace, INTERVIEW_CODEX_BIN: process.execPath };
   const context = createRuntimeContext({ packaged: true, dataRoot: root, environment });
   delete environment.INTERVIEW_CODEX_WORKSPACE;
   environment.INTERVIEW_CODEX_BIN = "wrong.exe";

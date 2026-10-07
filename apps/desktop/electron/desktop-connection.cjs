@@ -13,16 +13,13 @@ function validateConnection(value) {
   if (typeof value.accessToken !== "string" || !value.accessToken.trim()) {
     throw new Error("缺少电脑连接配置。");
   }
-  const optional = {};
-  for (const key of ["codexWorkspace", "codexBin"]) {
-    if (value[key] !== undefined) {
-      if (typeof value[key] !== "string" || !path.isAbsolute(value[key]) || value[key].includes("\0")) {
-        throw new Error("Codex 路径必须是绝对路径。");
-      }
-      optional[key] = value[key];
-    }
+  // Preserve the old documents location while dropping the obsolete executable path.
+  const workspace = value.materialsWorkspace ?? value.codexWorkspace;
+  if (workspace !== undefined && (typeof workspace !== "string" || !path.isAbsolute(workspace) || workspace.includes("\0"))) {
+    throw new Error("资料目录必须是绝对路径。");
   }
-  return { apiBaseUrl: url.origin, accessToken: value.accessToken.trim(), ...optional };
+  return { apiBaseUrl: url.origin, accessToken: value.accessToken.trim(),
+    ...(workspace === undefined ? {} : { materialsWorkspace: workspace }) };
 }
 
 async function saveConnection(directory, safeStorage, value) {
@@ -51,11 +48,10 @@ async function loadConnection(directory, safeStorage, environment = process.env)
     }
     if (!requested) environment.INTERVIEW_API_BASE_URL = value.apiBaseUrl;
     if (environment.INTERVIEW_ACCESS_TOKEN === undefined) environment.INTERVIEW_ACCESS_TOKEN = value.accessToken;
-    if (environment.INTERVIEW_CODEX_WORKSPACE === undefined && value.codexWorkspace) environment.INTERVIEW_CODEX_WORKSPACE = value.codexWorkspace;
-    if (environment.INTERVIEW_CODEX_BIN === undefined && value.codexBin) environment.INTERVIEW_CODEX_BIN = value.codexBin;
+    if (environment.INTERVIEW_MATERIALS_WORKSPACE === undefined && value.materialsWorkspace) environment.INTERVIEW_MATERIALS_WORKSPACE = value.materialsWorkspace;
     return true;
   } catch {
-    throw new Error("无法读取这台电脑的连接配置，请重新配置 Sage。配置不能复制到其他 Windows 账户使用。");
+    throw new Error("无法读取这台电脑的连接配置，请重新配置 Cue。配置不能复制到其他 Windows 账户使用。");
   }
 }
 

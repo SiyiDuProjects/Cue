@@ -1,5 +1,19 @@
 # Safe interview-server releases
 
+The current 0.3.1 desktop and shared UI use Sites (`apps/cloud`), not this v12
+backend. The legacy GitHub workflow now validates/deploys only server changes
+and copies the existing production `web/` assets into its staging directory.
+Do not copy `apps/desktop/dist` to this server: those assets require the Sites
+protocol. Existing private history, deployment gate and rollback are retained.
+
+ChatGPT Events releases also require `health.chatgpt_events=true`. Subscriptions,
+frozen request materials and delivery receipts use the existing private SQLite
+mount. Pending deliveries count as active work in the deployment gate. A restart
+retains subscriptions but marks uncertain requests interrupted instead of
+resending them. After deploying, rescan the existing Sage MCP in ChatGPT to load
+the event catalog and extended `read_interview` schema; a real user subscription
+is required before a Mac hotkey can deliver to a Work chat.
+
 The Responses/MCP release also packages public `app/prompts/*.md` and
 `app/plugin/*` assets. `/health` advertises Responses and authenticated ChatGPT MCP;
 the release gate validates their presence. `INTERVIEW_PUBLIC_URL` is the canonical

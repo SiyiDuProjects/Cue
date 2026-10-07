@@ -49,14 +49,18 @@ plugin_server, plugin_app, plugin_auth = build_plugin(plugin_registry)
 async def lifespan(app):
     server, sdk_app, _ = build_plugin(plugin_registry, plugin_auth)
     app.state.plugin_app = sdk_app
+    app.state.plugin_events = sdk_app.events
     async with server.session_manager.run():
+        await sdk_app.events.start()
         try:
             yield
         finally:
+            await sdk_app.events.close()
             await get_interview_registry().clear()
 
 
 app = FastAPI(title="Interview Copilot API", version=API_VERSION, lifespan=lifespan)
+app.state.plugin_events = plugin_app.events
 
 
 app.add_middleware(
@@ -82,6 +86,7 @@ def health() -> dict[str, object]:
         "answer_providers": ["codex", "responses"],
         "responses_model": settings.openai_responses_model,
         "chatgpt_mcp": True,
+        "chatgpt_events": True,
         "mock_live_model": settings.openai_live_model,
         "realtime_transcription_model": settings.openai_realtime_transcription_model,
         "code_reasoning_effort": settings.openai_code_reasoning_effort,
@@ -384,7 +389,9 @@ async def deployment_state(
 ) -> dict[str, bool]:
     await _require_deployment_access(request, authorization)
     response.headers["Cache-Control"] = "no-store"
-    return await get_interview_registry().deployment_state()
+    state = await get_interview_registry().deployment_state()
+    state["active"] = state["active"] or await app.state.plugin_events.has_pending()
+    return state
 
 
 @app.post("/api/deployment")
@@ -393,8 +400,9 @@ async def begin_deployment(
 ) -> dict[str, bool]:
     await _require_deployment_access(request, authorization)
     registry = get_interview_registry()
-    if not await registry.begin_deployment():
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="An interview is active. Deployment was not started.")
+    async with app.state.plugin_events.request_lock:
+        if await app.state.plugin_events.has_pending() or not await registry.begin_deployment():
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="An interview or event delivery is active. Deployment was not started.")
     response.headers["Cache-Control"] = "no-store"
     return await registry.deployment_state()
 
@@ -561,6 +569,10 @@ def _mount_web_app() -> None:
         if (candidate / "index.html").is_file():
             app.mount("/", InterviewStaticFiles(directory=candidate, html=True), name="web")
             return
+
+
+from app.services.plugin_event_routes import install_event_routes
+install_event_routes(app, plugin_registry)
 
 
 @app.api_route(

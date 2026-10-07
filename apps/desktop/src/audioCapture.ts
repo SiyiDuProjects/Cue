@@ -1,4 +1,4 @@
-import type { Speaker } from "./types";
+type Speaker = "interviewer" | "candidate";
 
 export type CaptureHealthPhase = "ready" | "muted" | "interrupted" | "error";
 

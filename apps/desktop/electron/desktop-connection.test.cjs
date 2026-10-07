@@ -36,15 +36,15 @@ test("saved credentials cannot be redirected to a different server", async t => 
   assert.equal(await loadConnection(directory, storage, env), false);
   assert.equal(env.INTERVIEW_ACCESS_TOKEN, "explicit-other-token");
 });
-test("desktop-only Codex paths survive encrypted config import without storing provider auth", async t => {
+test("legacy documents directory survives import without restoring a CLI or provider auth", async t => {
   const { directory, storage } = fixture(t);
   const workspace = path.join(directory, "personal"), binary = path.join(directory, "codex.exe");
   await saveConnection(directory, storage, { accessToken: "fixture-token", codexWorkspace: workspace,
     codexBin: binary, OPENAI_API_KEY: "not-stored" });
   const env = {};
   await loadConnection(directory, storage, env);
-  assert.equal(env.INTERVIEW_CODEX_WORKSPACE, workspace);
-  assert.equal(env.INTERVIEW_CODEX_BIN, binary);
+  assert.equal(env.INTERVIEW_MATERIALS_WORKSPACE, workspace);
+  assert.equal(env.INTERVIEW_CODEX_BIN, undefined);
   assert.equal(env.OPENAI_API_KEY, undefined);
   assert.throws(() => validateConnection({ accessToken: "fixture", codexWorkspace: "relative/path" }), /绝对路径/);
 });

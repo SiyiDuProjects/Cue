@@ -2,454 +2,342 @@ import AppKit
 import SwiftUI
 import SageCore
 
+/// Mac owns capture; Sites owns the recording and ChatGPT owns answers.
 @MainActor final class AppStore: ObservableObject {
-    @Published var state = ChatState()
+    @Published var state = CaptureState()
     @Published var connection = "未连接"
     @Published var connected = false
     @Published var connecting = false
-    @Published var loggingIn = false
-    @Published var loginStatus = ""
-    @Published var draft = "" { didSet { persistDraft() } }
-    @Published var provider = "responses"
-    @Published var profile = "default"
     @Published var error: String?
-    @Published var conversations: [JSON] = []
     @Published var showSettings = false
-    @Published var showHistory = false
     @Published var showTranscript = false
     @Published var showSources = false
-    @Published var sourceID = "frontmost"
+    @Published var showChatGPT = false
+    @Published var sourceID = "frontmost" {
+        didSet { if !preview { UserDefaults.standard.set(sourceID, forKey: "capture.source") } }
+    }
     @Published var sources: [CaptureSource] = []
     @Published var preparing = false
     @Published var channelStatus = ["interviewer": "未开启", "candidate": "未开启"]
-    @Published var pairing: JSON?
-    @Published var pendingSwitch = false
     @Published var previewImage: NSImage?
     @Published var previewText = ""
     @Published var screenshotBusy = false
     @Published private(set) var initialSnapshotPending = true
-    @Published var pendingSend: String?
-    var serverText = UserDefaults.standard.string(forKey: "server") ?? "https://interview.siyidu.com"
-    var codexPath = UserDefaults.standard.string(forKey: "codex") ?? ""
+    @Published private(set) var needsSignIn = false
+    static let serviceURL = "https://interview.siyidu.com"
+    let chatgpt: ChatGPTRequests
     let preview: Bool
+    var openCaptureSettings: () -> Void = {}
     private let http: HTTPClient
     private let capture: CaptureController
-    private let host = ModelHost()
+    private let host = MaterialsHost()
+    private let loadCredential: (String) async throws -> String
     private var address: ServerAddress?
+    private var credentials: SiteCredentials?
     private var session: Session?
-    private var accessToken = ""
     private var links: [String: SocketLink] = [:]
     private var sending: Set<String> = []
+    private var stoppingChannels: Set<String> = []
+    private var poll: Task<Void, Never>?
+    private var retry: Task<Void, Never>?
     private var timer: Timer?
-    private var drafts: [String: String] = [:]
-    private var draftKey = ""
-    private var draftSaveFailed = false
-    private var draftStorageUnavailable = false
-    private var lastGap = Date.distantPast
-    private var targetConversation: String?
-    private var sentDraft = ""
-    private var refreshing = false
-    private var modeReady = false
-    private var supportsAppShot = false
-    private var capabilityEpoch = UUID()
-    private var shouldStartAfterPrepare = false
     private var generation = UUID()
-    private var conversationEpoch = UUID()
-    private var screenshotOperation: String?
-    var busy: Bool { state.busyID != nil || pendingSend != nil }
-    init(preview: Bool = false, http: HTTPClient = HTTPClient(), capture: CaptureController? = nil) {
-        self.capture = capture ?? CaptureController()
-        self.http = http
-        self.preview = preview
-        if preview { seedPreview() }
-        else {
-            do { drafts = try LocalFiles.loadDrafts() }
-            catch { draftStorageUnavailable = true; draftSaveFailed = true; self.error = "无法读取已保存草稿，已停止覆盖文件。请先备份并修复本机 drafts.json。" }
-        }
-        host.onFailure = { [weak self] message in self?.error = message }
+    private var audioGeneration = UUID()
+    private var linksGeneration = UUID()
+    private var restored = false
+    private var failures = 0
+    private var lastGap = Date.distantPast
+    private var imageCache: [String: JSON] = [:]
+    private var supportsAppShot = false
+    private var snapshotSerial = 0
+    private var changingRecording = false
+    private var flushingRequest = false
+    private let roles = ["interviewer", "candidate"]
+    init(preview: Bool = false, http: HTTPClient = HTTPClient(), capture: CaptureController? = nil,
+         loadCredential: @escaping (String) async throws -> String = Credentials.load) {
+        self.preview = preview; self.http = http; self.capture = capture ?? CaptureController(); self.loadCredential = loadCredential
+        chatgpt = ChatGPTRequests(http: http, preview: preview)
+        if preview {
+            state.conversationID = "preview"
+            state.merge(["id": "sample", "speaker": "interviewer", "text": "解释滑动窗口，并给出 Python 实现。", "revision": 1])
+            connection = "界面预览 · 无网络与采集"
+        } else { sourceID = UserDefaults.standard.string(forKey: "capture.source") ?? "frontmost" }
+        host.onFailure = { [weak self] in self?.error = $0 }
+        chatgpt.onShortcut = { [weak self] in self?.requestChatGPT() }
     }
-    private func persistDraft() {
-        guard !preview, !draftKey.isEmpty else { return }
-        guard !draftStorageUnavailable else { return }
-        drafts[draftKey] = draft
-        do { try LocalFiles.write(try JSONEncoder().encode(drafts), to: LocalFiles.root.appendingPathComponent("drafts.json")); draftSaveFailed = false }
-        catch { draftSaveFailed = true; self.error = "草稿保存失败，请先复制文字；当前草稿仍在内存中。" }
+    func restoreConnection() async { guard !preview else { return }; await restoreOnce() }
+    private func restoreOnce() async {
+        guard !restored else { return }; restored = true
+        await connect(server: Self.serviceURL, token: "", remember: false)
     }
-    private func selectDraft(_ conversation: String) {
-        draftKey = "\(address?.url.absoluteString ?? "preview")|\(conversation)"
-        draft = drafts[draftKey] ?? ""
-    }
-    func loginCodex(_ path: String) {
-        guard !loggingIn else { return }
+    func connect(server: String, token: String, remember: Bool) async {
+        guard !connecting, !state.active, !state.stopping, !preparing else { return }
+        let epoch = await disconnect(); connecting = true
+        defer { if generation == epoch { connecting = false } }
         do {
-            loggingIn = true; loginStatus = "请在浏览器中完成 Codex 登录。"
-            try host.login(codex: path) { [weak self] success in
-                self?.loggingIn = false
-                self?.loginStatus = success ? "Codex 已登录。" : "登录未完成，请检查 CLI 路径后重试。"
-            }
-        } catch { loggingIn = false; loginStatus = error.localizedDescription }
-    }
-    func connect(server: String, token: String, codex: String, remember: Bool) async {
-        guard !connecting else { return }
-        connecting = true; defer { connecting = false }
-        do {
-            guard !state.active && !state.stopping && !busy else { throw SageError("请先停止转录和当前回答，再修改服务器连接。") }
             let address = try ServerAddress(server)
-            let health = try await http.request(address, "/health")
-            try validateHealth(health)
-            let token = token.isEmpty ? try Credentials.load(address.url.absoluteString) : token.trimmingCharacters(in: .whitespacesAndNewlines)
-            let result = try await http.request(address, "/api/interviews", method: "POST", token: token, body: ["device_name": "Sage · \(Host.current().localizedName ?? "Mac")"])
-            let session = try Session(result)
-            if remember { try Credentials.save(token, origin: address.url.absoluteString) }
-            let epoch = await disconnect()
+            connection = "正在读取保存的登录…"
+            let saved = token.isEmpty ? try await loadCredential(address.url.absoluteString) : token.trimmingCharacters(in: .whitespacesAndNewlines)
             guard generation == epoch else { return }
-            self.address = address; self.session = session; accessToken = token
+            guard !saved.isEmpty else { needsSignIn = true; connection = "请配置 Cue 登录"; return }
+            let keys: SiteCredentials
+            do { keys = try SiteCredentials(saved) }
+            catch { needsSignIn = true; connection = "请重新配置 Cue 登录"; self.error = error.localizedDescription; return }
+            http.authorizeSite(address, token: keys.site)
+            connection = "正在连接…"
+            let health = try await http.request(address, "/health", token: keys.device)
+            guard generation == epoch else { return }
+            guard health["capture_protocol"] as? String == protocolVersion else { throw SageError("服务器协议不兼容，请更新 Cue。") }
+            let result = try await http.request(address, "/capture/session", method: "POST", token: keys.device, body: [:])
+            guard generation == epoch else { return }
+            let session = try Session(result)
+            if remember { try await Credentials.save(saved, origin: address.url.absoluteString) }
+            guard generation == epoch else { return }
+            self.address = address; self.credentials = keys; self.session = session
             supportsAppShot = health["appshot"] as? Bool == true
-            serverText = address.url.absoluteString; codexPath = codex
-            if !preview { UserDefaults.standard.set(serverText, forKey: "server"); UserDefaults.standard.set(codex, forKey: "codex") }
-            state = ChatState(); state.conversationID = session.conversationID
-            selectDraft(session.conversationID)
-            try establishLinks(address: address, session: session)
-            showSettings = false; error = nil
-        } catch { self.error = error.localizedDescription }
+            state = CaptureState(); state.conversationID = session.conversationID
+            try await refreshState(epoch: epoch)
+            guard generation == epoch else { return }
+            connected = true; needsSignIn = false; connection = "已连接"; failures = 0; error = nil
+            chatgpt.configure(address: address, session: session, supported: health["chatgpt_events"] as? Bool == true)
+            try establishLinks(address, keys, epoch: epoch)
+            showSettings = false
+            if !preview {
+                try host.start(address: address, session: session, siteToken: keys.site)
+                poll = Task { [weak self] in
+                    while !Task.isCancelled {
+                        try? await Task.sleep(for: .seconds(2))
+                        guard !Task.isCancelled, let self, generation == epoch else { return }
+                        do { try await refreshState(epoch: epoch); connected = true; connection = "已连接" }
+                        catch { await connectionFailed(error, epoch: epoch); return }
+                    }
+                }
+            }
+        } catch {
+            guard generation == epoch else { return }
+            await connectionFailed(error, epoch: epoch)
+        }
     }
-    #if DEBUG
-    var testEstablish: ((ServerAddress, Session) -> Void)?
-    var testControl: ((JSON) -> Void)?
-    func testSession(_ origin: String, _ value: Session) throws { address = try ServerAddress(origin); session = value; connected = true; initialSnapshotPending = false; state.conversationID = value.conversationID }
-    func testReceive(_ event: JSON) { receive(event) }
-    func testRefresh() async { await refreshSession() }
-    var testSupportsAppShot: Bool { supportsAppShot }
-    func testConnectionState(_ ready: Bool, role: String = "client") -> Task<Void, Never>? {
-        guard let address else { return nil }
-        return connectionStateChanged(ready, message: "fixture", role: role, address: address)
+    private func connectionFailed(_ failure: Error, epoch: UUID) async {
+        guard generation == epoch else { return }
+        if state.active || preparing { await stopAudio() }
+        guard generation == epoch else { return }
+        connected = false; initialSnapshotPending = true; error = failure.localizedDescription
+        if let response = failure as? HTTPFailure, [401,403].contains(response.status) {
+            links.values.forEach { $0.close() }; links = [:]; host.stop(); chatgpt.disconnect(); http.clearAuthorization()
+            needsSignIn = true; connection = "请重新配置登录"; return
+        }
+        connection = "正在恢复连接…"; failures += 1
+        guard !preview else { return }
+        retry?.cancel()
+        let delay = min(failures * 2, 30)
+        retry = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(delay))
+            guard !Task.isCancelled, let self, generation == epoch else { return }
+            await connect(server: Self.serviceURL, token: "", remember: false)
+        }
     }
-    func testCaptureLinks(_ value: [String: SocketLink]) { links = value }
-    func testCaptureEvent(_ value: JSON, role: String = "interviewer") { captureEvent(value, role: role) }
-    #endif
-    private func establishLinks(address: ServerAddress, session: Session) throws {
+    private func establishLinks(_ address: ServerAddress, _ keys: SiteCredentials, epoch: UUID) throws {
         #if DEBUG
-        if let testEstablish { testEstablish(address, session); connected = true; return }
+        if let testEstablish { testEstablish(address, session!); return }
         #endif
-        let epoch = generation
-        try host.start(address: address, session: session, codex: codexPath)
-        for role in ["client", "interviewer", "candidate"] {
-            let link = SocketLink(url: try address.socket(interview: session.interviewID, role: role), token: role == "client" ? session.token : session.captureToken, role: role)
-            link.onState = { [weak self] ready, message in
-                guard let self, generation == epoch else { return }
-                connectionStateChanged(ready, message: message, role: role, address: address)
+        let linkEpoch = UUID(); linksGeneration = linkEpoch
+        links.values.forEach { $0.close() }; links = [:]
+        for role in roles {
+            let link = SocketLink(url: try address.socket(interview: "current", role: role), token: keys.device, role: role, siteToken: keys.site)
+            link.onEvent = { [weak self] in guard let self, generation == epoch, linksGeneration == linkEpoch else { return }; audioEvent($0, role: role) }
+            link.onState = { [weak self] ready, _ in
+                guard let self, generation == epoch, linksGeneration == linkEpoch else { return }
+                if !ready && (state.active || preparing) && !state.stopping {
+                    error = "音频连接中断；已保存文字保留，请手动重新开始。"
+                    Task { await self.stopAudio() }
+                }
             }
-            link.onEvent = { [weak self] event in
-                guard let self, generation == epoch else { return }
-                if role == "client" { receive(event) }
-                else { captureEvent(event, role: role) }
-            }
+            link.onGap = { [weak self] in if self?.generation == epoch && self?.linksGeneration == linkEpoch { self?.reportGap(role) } }
             link.onExpired = { [weak self] in
-                guard let self, generation == epoch else { return }
-                Task { await self.refreshSession() }
+                guard let self, generation == epoch, linksGeneration == linkEpoch else { return }
+                Task { await self.connectionFailed(HTTPFailure(status: 401, detail: "登录已失效。"), epoch: epoch) }
             }
-            link.onGap = { [weak self] in if self?.generation == epoch { self?.reportGap(role) } }
             links[role] = link; link.start()
         }
-        timer = Timer.scheduledTimer(withTimeInterval: 0.02, repeats: true) { [weak self] _ in
-            Task { @MainActor in self?.pumpAudio() }
+        timer?.invalidate()
+        timer = Timer.scheduledTimer(withTimeInterval: 0.02, repeats: true) { [weak self] _ in Task { @MainActor in self?.pumpAudio() } }
+    }
+    private func refreshState(epoch: UUID) async throws {
+        guard !changingRecording, let address, let session else { return }
+        snapshotSerial += 1; let serial = snapshotSerial
+        let result = try await http.request(address, "/capture/state", token: session.captureToken)
+        guard generation == epoch, snapshotSerial == serial, !changingRecording, let recording = result["recording"] as? String else { return }
+        if state.conversationID != recording {
+            guard !state.active && !preparing && !state.stopping else { throw SageError("采集场次已变更，请停止后重连。") }
+            state = CaptureState(); state.conversationID = recording; imageCache = [:]
+            self.session?.conversationID = recording
+            if let keys = credentials { try establishLinks(address, keys, epoch: epoch) }
         }
-    }
-    private func validateHealth(_ health: JSON) throws {
-        guard health["realtime_protocol"] as? String == protocolVersion,
-              health["chat"] as? Bool == true, health["pinned_code"] as? Bool == false else {
-            throw SageError("服务器协议不兼容，请先更新服务器。")
+        for turn in result["turns"] as? [JSON] ?? [] { state.merge(turn) }
+        var images: [JSON] = []
+        for row in result["images"] as? [JSON] ?? [] {
+            guard let id = row["id"] as? String else { continue }
+            if let cached = imageCache[id] { images.append(cached); continue }
+            let original = try await http.request(address, "/capture/images/\(id)", token: session.captureToken)
+            guard generation == epoch, snapshotSerial == serial, state.conversationID == recording else { return }
+            let meta = (row["meta"] as? String).flatMap { try? JSONSerialization.jsonObject(with: Data($0.utf8)) as? JSON } ?? [:]
+            let image: JSON = ["request_id": id, "image_url": "data:\(original["mimeType"] as? String ?? "image/png");base64,\(original["data"] as? String ?? "")", "appshot": meta["appshot"] ?? [:]]
+            imageCache[id] = image; images.append(image)
         }
-    }
-    private func invalidateCapabilities() {
-        supportsAppShot = false; capabilityEpoch = UUID()
-    }
-    @discardableResult private func connectionStateChanged(_ ready: Bool, message: String, role: String, address: ServerAddress) -> Task<Void, Never>? {
-        if role == "client" { initialSnapshotPending = true; connected = ready; connection = message }
-        else { channelStatus[role] = ready ? (capture.isPrepared ? "已就绪" : "未开启") : "正在重连" }
-        // Even a reconnect with a still-valid token may reach a rolled-back server.
-        invalidateCapabilities()
-        guard ready else { return nil }
-        let epoch = generation, capability = capabilityEpoch
-        return Task { [weak self] in
-            guard let self, generation == epoch, capabilityEpoch == capability else { return }
-            do {
-                let health = try await http.request(address, "/health")
-                guard generation == epoch, capabilityEpoch == capability else { return }
-                try validateHealth(health)
-                supportsAppShot = health["appshot"] as? Bool == true
-            } catch {
-                if generation == epoch, capabilityEpoch == capability {
-                    self.error = "无法确认服务器 App Shot 能力，请重新连接或选择屏幕截图。"
-                }
-            }
-        }
-    }
-    private func refreshSession() async {
-        guard !refreshing, let address else { return }
-        refreshing = true; defer { refreshing = false }
-        let token = accessToken
-        let epoch = await disconnect()
-        guard generation == epoch else { return }
-        do {
-            let health = try await http.request(address, "/health")
-            guard generation == epoch else { return }
-            try validateHealth(health)
-            let result = try await http.request(address, "/api/interviews", method: "POST", token: token, body: ["device_name": "Sage · Mac"])
-            guard generation == epoch else { return }
-            let session = try Session(result); self.session = session
-            supportsAppShot = health["appshot"] as? Bool == true
-            state.active = false; state.stopping = false
-            try establishLinks(address: address, session: session)
-            error = "会话已恢复。转录和未确认的回答没有自动重启。"
-        } catch { if generation == epoch { self.error = error.localizedDescription } }
+        guard generation == epoch, snapshotSerial == serial, state.conversationID == recording else { return }
+        state.screens = images; imageCache = imageCache.filter { key, _ in images.contains { $0["request_id"] as? String == key } }
+        initialSnapshotPending = false
     }
     @discardableResult func disconnect() async -> UUID {
-        let epoch = UUID(); generation = epoch; invalidateCapabilities(); timer?.invalidate(); timer = nil
-        shouldStartAfterPrepare = false; preparing = false; screenshotBusy = false; screenshotOperation = nil; sending = []
-        links.values.forEach { $0.close() }; links = [:]; host.stop()
-        connected = false; initialSnapshotPending = true; connection = "未连接"; pendingSend = nil
-        _ = await capture.finish()
-        return epoch
+        let epoch = UUID(); generation = epoch; audioGeneration = UUID()
+        retry?.cancel(); retry = nil; poll?.cancel(); poll = nil; timer?.invalidate(); timer = nil
+        links.values.forEach { $0.close() }; links = [:]; host.stop(); chatgpt.disconnect(); http.clearAuthorization()
+        connected = false; connecting = false; preparing = false; initialSnapshotPending = true; screenshotBusy = false
+        sending = []; stoppingChannels = []; state.active = false; state.stopping = false; supportsAppShot = false
+        snapshotSerial += 1; changingRecording = false; flushingRequest = false
+        address = nil; credentials = nil; session = nil; imageCache = [:]; connection = "未连接"
+        _ = await capture.finish(); return epoch
     }
-    private func receive(_ event: JSON) {
-        let old = state.conversationID
-        state.apply(event)
-        if state.conversationID != old {
-            conversationEpoch = UUID(); screenshotOperation = nil; screenshotBusy = false
-            session?.conversationID = state.conversationID; selectDraft(state.conversationID)
-            provider = "responses"; profile = "default"; pendingSend = nil
+    func perform(_ action: @escaping () async throws -> Void) { let epoch = generation; Task { do { try await action() } catch { if generation == epoch { self.error = error.localizedDescription } } } }
+    func control(_ value: JSON) async throws {
+        switch value["type"] as? String {
+        case "stop_transcription": await stopAudio()
+        case "new_transcription":
+            guard connected, !preparing, !state.active, !state.stopping, !chatgpt.waiting, !flushingRequest, !screenshotBusy, let address, let session else { throw SageError("请先停止转录和投递。") }
+            initialSnapshotPending = true; changingRecording = true; snapshotSerial += 1
+            let epoch = generation
+            defer { if generation == epoch { changingRecording = false } }
+            _ = try await http.request(address, "/capture/new", method: "POST", token: session.captureToken, body: [:])
+            guard generation == epoch else { return }; changingRecording = false
+            try await refreshState(epoch: epoch)
+        default: throw SageError("不支持的采集操作。")
         }
-        let type = event["type"] as? String ?? ""
-        if type == "session_ready" || type == "conversation_reset" { initialSnapshotPending = true }
-        if type == "chat_snapshot", let last = state.messages.last {
-            provider = last.provider; profile = last.profile == "lc" ? "default" : last.profile
-        }
-        if type == "chat_message", let message = event["chat_message"] as? JSON, message["message_id"] as? String == pendingSend {
-            if draft == sentDraft { draft = "" }
-            pendingSend = nil
-        }
-        if type == "operation_snapshot" {
-            if let id = screenshotOperation, !state.operations.contains(where: { $0["operation_id"] as? String == id && ["accepted", "running"].contains($0["status"] as? String ?? "") }) {
-                screenshotOperation = nil; screenshotBusy = false
-            }
-            if let id = pendingSend {
-                if state.messages.contains(where: { $0.id == id }) { if draft == sentDraft { draft = "" } }
-                else { error = "发送未确认，草稿已保留；请核对记录后重试。" }
-            }
-            pendingSend = nil
-            initialSnapshotPending = false
-        }
-        if type == "operation_status", ["failed", "cancelled", "completed"].contains(event["status"] as? String ?? "") {
-            if event["operation_id"] as? String == pendingSend { pendingSend = nil }
-            if event["kind"] as? String == "request_screen_capture", event["operation_id"] as? String == screenshotOperation {
-                screenshotOperation = nil; screenshotBusy = false
-            }
-        }
-        if type == "device_status", let details = event["channel_details"] as? [String: JSON] {
-            for (role, value) in details {
-                if let detail = value["detail"] as? String, !detail.isEmpty { channelStatus[role] = detail }
-            }
-        }
-        if let message = state.error { error = message; state.error = nil }
     }
-    func control(_ payload: JSON) async throws {
-        var body = payload
-        if let target = body["conversation_id"] as? String, target != state.conversationID { throw SageError("聊天已经切换，原草稿未发送。") }
-        body["conversation_id"] = body["conversation_id"] ?? state.conversationID
-        if body["operation_id"] == nil { body["operation_id"] = UUID().uuidString }
-        #if DEBUG
-        if let testControl { testControl(body); return }
-        #endif
-        guard let link = links["client"], connected else { throw SageError("请先连接服务器。") }
-        try await link.send(body)
-    }
-    func perform(_ action: @escaping () async throws -> Void) {
-        Task { do { try await action() } catch { self.error = error.localizedDescription } }
-    }
-    func send() {
-        guard !busy else { stopAnswer(); return }
-        let id = UUID().uuidString, text = draft
-        let requestIDs = state.screens.compactMap { $0["request_id"] as? String }
-        let chosenProvider = provider, chosenProfile = profile
-        let conversation = state.conversationID, epoch = generation, chatEpoch = conversationEpoch
-        pendingSend = id; sentDraft = text
+    func requestChatGPT() {
+        guard connected, !initialSnapshotPending, !screenshotBusy, !state.stopping, !preparing, !flushingRequest else { error = "请等待连接、截图或转录收尾完成。"; return }
+        guard !chatgpt.waiting else { return }
+        let epoch = generation, recording = state.conversationID
+        let images = state.screens.compactMap { $0["request_id"] as? String }
+        flushingRequest = true
         perform { [self] in
-            do {
-                guard epoch == generation, chatEpoch == conversationEpoch else { throw SageError("连接或聊天已经变更，原草稿未发送。") }
-                try await control(["type": "chat_send", "conversation_id": conversation, "operation_id": id, "action": text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "answer" : "send",
-                    "text": text, "request_ids": requestIDs, "provider": chosenProvider, "profile": chosenProfile])
-            } catch { if pendingSend == id { pendingSend = nil }; throw error }
+            defer { if generation == epoch { flushingRequest = false } }
+            await chatgpt.refresh()
+            guard generation == epoch, state.conversationID == recording else { return }
+            guard chatgpt.canRequest else { showChatGPT = true; openCaptureSettings(); return }
+            guard let address, let session else { return }
+            let id = UUID().uuidString.lowercased()
+            _ = try await http.request(address, "/api/prepare", method: "POST", token: session.captureToken,
+                body: ["request_id": id, "conversation_id": recording, "image_ids": images, "local_boundary": !sending.isEmpty])
+            for role in sending { try await links[role]?.send(["type": "prepare_request", "request_id": id]) }
+            guard generation == epoch, state.conversationID == recording else { return }
+            chatgpt.submit(conversation: recording, imageIDs: images, preparedID: id)
         }
     }
-    func stopAnswer() {
-        guard let id = state.busyID else { return }
-        perform { [self] in try await control(["type": "chat_stop", "target_operation_id": id]) }
+    func openFallback() {
+        // The shared, authenticated page owns the manual API action and its saved result.
+        guard let url = URL(string: Self.serviceURL + "/?view=fallback" + (chatgpt.requestID.map { "&request=" + $0 } ?? "")) else { return }
+        NSWorkspace.shared.open(url)
     }
+
     func screenshot() {
-        // session_ready precedes the initial operation snapshot. Do not admit a
-        // new request into that old snapshot's reconciliation window.
-        guard connected, !initialSnapshotPending, !screenshotBusy else { return }
+        guard connected, !initialSnapshotPending, !screenshotBusy, let address, let session else { return }
         screenshotBusy = true
-        let conversation = state.conversationID, epoch = generation, chatEpoch = conversationEpoch, operation = UUID().uuidString
-        screenshotOperation = operation
+        let epoch = generation, recording = state.conversationID, source = sourceID
         perform { [self] in
-            do {
-                guard generation == epoch, conversationEpoch == chatEpoch, connected, !initialSnapshotPending, screenshotOperation == operation else { throw SageError("连接或聊天正在恢复，截图请求未发送。") }
-                try await control(["type": "request_screen_capture", "conversation_id": conversation, "operation_id": operation, "collect_only": true])
-            } catch {
-                if screenshotOperation == operation { screenshotBusy = false; screenshotOperation = nil }
-                throw error
+            defer { if generation == epoch { screenshotBusy = false } }
+            if source == "frontmost" || source.hasPrefix("window:") { guard supportsAppShot else { throw SageError("服务器尚未支持 App Shot。") } }
+            var value = try await capture.screenshot(source: source)
+            guard generation == epoch, state.conversationID == recording else { throw SageError("采集场次已变更，截图未上传。") }
+            let id = UUID().uuidString.lowercased(); value["request_id"] = id; value["recording"] = recording
+            _ = try await http.request(address, "/capture/images", method: "POST", token: session.captureToken, body: value)
+            guard generation == epoch, state.conversationID == recording else { return }
+            imageCache[id] = ["request_id": id, "image_url": value["image_data"] ?? "", "appshot": value["appshot"] ?? [:]]
+            try await refreshState(epoch: epoch)
+        }
+    }
+    func removeScreen(_ id: String) {
+        guard let address, let session else { return }; let epoch = generation
+        perform { [self] in
+            _ = try await http.request(address, "/capture/images/\(id)", method: "DELETE", token: session.captureToken)
+            guard generation == epoch else { return }; imageCache[id] = nil; try await refreshState(epoch: epoch)
+        }
+    }
+    func loadSources() { perform { [self] in sources = try await capture.sources(); showSources = true } }
+    func toggleTranscription() { perform { [self] in if state.active || state.stopping || preparing { await stopAudio() } else { try await startAudio() } } }
+    private func startAudio() async throws {
+        guard connected, !initialSnapshotPending, roles.allSatisfy({ links[$0]?.ready == true }) else { throw SageError("双路连接尚未就绪，请稍后重试。") }
+        let epoch = generation, audio = UUID(); audioGeneration = audio; preparing = true
+        do {
+            try await capture.prepare()
+            guard generation == epoch, audioGeneration == audio, preparing else { return }
+            for role in roles { try await links[role]?.send(["type": "start"]) }
+            for _ in 0..<240 {
+                guard generation == epoch, audioGeneration == audio else { return }
+                if roles.allSatisfy({ sending.contains($0) }) { preparing = false; state.active = true; return }
+                try await Task.sleep(for: .milliseconds(50))
+            }
+            throw SageError("转录启动超时，请停止后重试。")
+        } catch { if generation == epoch, audioGeneration == audio { await stopAudio() }; throw error }
+    }
+    private func stopAudio() async {
+        guard !state.stopping else { return }
+        let epoch = generation; audioGeneration = UUID(); state.stopping = true; preparing = false
+        stoppingChannels = sending
+        var complete = await capture.finish()
+        guard generation == epoch else { return }
+        if let sink = capture.sink {
+            for role in roles {
+                let tail = sink.take(role); if tail.gap { complete = false }
+                if sending.contains(role) { for frame in tail.frames { if links[role]?.audio(frame) != true { complete = false } } }
             }
         }
-    }
-    func removeScreen(_ id: String) { perform { [self] in try await control(["type": "clear_screens", "request_ids": [id]]) } }
-    func listConversations() {
-        perform { [self] in
-            guard let address, let session else { return }
-            conversations = try await http.request(address, "/api/conversations", token: session.token)["conversations"] as? [JSON] ?? []
-            showHistory = true
+        for role in roles { do { try await links[role]?.send(["type": "stop"]) } catch { complete = false; stoppingChannels.remove(role) } }
+        sending = []; state.active = false
+        for _ in 0..<240 {
+            guard generation == epoch else { return }
+            if stoppingChannels.isEmpty { break }; try? await Task.sleep(for: .milliseconds(50))
         }
+        guard generation == epoch else { return }
+        if !complete || !stoppingChannels.isEmpty { error = "音频尾句未全部确认；已保存的文字保留。" }
+        stoppingChannels = []; state.stopping = false
+        if let address, let keys = credentials { try? establishLinks(address, keys, epoch: epoch) }
+        try? await refreshState(epoch: epoch)
     }
-    func switchTo(_ id: String?, confirmed: Bool = false) {
-        persistDraft()
-        guard !draftSaveFailed else { return }
-        targetConversation = id
-        if busy && !confirmed { pendingSwitch = true; return }
-        perform { [self] in
-            guard let address, let session else { return }
-            _ = try await http.request(address, "/api/conversations/switch", method: "POST", token: session.token,
-                body: ["current_id": state.conversationID, "target_id": id as Any? ?? NSNull(), "stop_active": confirmed])
-            showHistory = false; pendingSwitch = false
-        }
-    }
-    func confirmSwitch() { switchTo(targetConversation, confirmed: true) }
-    func rename(_ title: String) {
-        perform { [self] in
-            guard let address, let session else { return }
-            _ = try await http.request(address, "/api/conversations/\(state.conversationID)", method: "PATCH", token: session.token, body: ["title": title])
-            state.title = title
-        }
-    }
-    func loadSources() {
-        perform { [self] in sources = try await capture.sources(); showSources = true }
-    }
-    func toggleTranscription() {
-        if state.active || state.stopping {
-            perform { [self] in try await control(["type": "stop_transcription"]) }
-        } else { perform { [self] in try await control(["type": "start_transcription", "mode": "assist"]) } }
-    }
-    private func captureEvent(_ event: JSON, role: String) {
-        guard let link = links[role] else { return }
+    private func audioEvent(_ event: JSON, role: String) {
         switch event["type"] as? String {
-        case "session_ready":
-            perform { [self] in try await link.send(["type": "capture_status", "phase": capture.isPrepared ? "ready" : "interrupted", "mode": "assist", "detail": capture.isPrepared ? "" : "转录未开启。"]) }
-        case "prepare_capture":
-            guard !preparing else { return }
-            guard event["mode"] as? String != "mock" else { error = "此 Mac 客户端当前仅支持普通面试转录。"; return }
-            preparing = true; modeReady = false; shouldStartAfterPrepare = true
-            let epoch = generation
-            Task {
-                defer { if generation == epoch { preparing = false } }
-                do {
-                    try await capture.prepare()
-                    guard generation == epoch else { return }
-                    guard shouldStartAfterPrepare else { _ = await capture.finish(); return }
-                    for channel in ["candidate", "interviewer"] {
-                        guard let captureLink = links[channel], captureLink.ready else { throw SageError("双路采集连接尚未就绪，请稍后重试。") }
-                        try await captureLink.send(["type": "capture_status", "phase": "ready", "mode": "assist"])
-                    }
-                    for _ in 0..<100 {
-                        if modeReady || generation != epoch || !shouldStartAfterPrepare { break }; try await Task.sleep(nanoseconds: 50_000_000)
-                    }
-                    guard generation == epoch, shouldStartAfterPrepare else { return }
-                    guard modeReady else { throw SageError("音频准备确认超时。") }
-                    if shouldStartAfterPrepare { try await control(["type": "start_transcription", "mode": "assist"]) }
-                } catch {
-                    if generation == epoch {
-                        if !(error is CancellationError) { self.error = error.localizedDescription }
-                        _ = await capture.finish()
-                    }
-                }
-            }
-        case "capture_mode_ready": modeReady = true
-        case "capture_start": sending.insert(role); channelStatus[role] = "转录中"
-        case "capture_stop":
-            shouldStartAfterPrepare = false
-            let epoch = generation
-            Task {
-                var complete = await capture.finish()
-                if let sink = capture.sink {
-                    let tail = sink.take(role)
-                    if tail.gap { complete = false }
-                    for frame in tail.frames { if !link.audio(frame) { complete = false } }
-                }
-                sending.remove(role); channelStatus[role] = "未开启"
-                if let id = event["request_id"] as? String {
-                    do { try await link.send(["type": "capture_stopped", "request_id": id, "complete": complete]) }
-                    catch {
-                        if generation == epoch, links[role] === link {
-                            self.error = "音频收尾确认失败，尾句可能不完整。"
-                        }
-                    }
-                }
-                try? await link.send(["type": "capture_status", "phase": "interrupted", "mode": "assist", "detail": "转录未开启。"])
-            }
-        case "screen_capture_request":
-            guard let requestID = event["request_id"] as? String, let address, let session else { return }
-            let epoch = generation, chatEpoch = conversationEpoch, conversation = event["conversation_id"] as? String ?? state.conversationID
-            let selectedSource = sourceID, capability = capabilityEpoch
-            let windowShot = selectedSource == "frontmost" || selectedSource.hasPrefix("window:")
-            Task {
-                do {
-                    guard generation == epoch, conversationEpoch == chatEpoch, state.conversationID == conversation else { throw SageError("截图所属聊天已切换，请重新截图。") }
-                    if windowShot && (!supportsAppShot || capabilityEpoch != capability) { throw SageError("服务器尚未支持 App Shot 文字，请更新服务器或选择屏幕截图。") }
-                    var payload = try await capture.screenshot(source: selectedSource)
-                    guard generation == epoch else { return }
-                    guard state.conversationID == conversation, conversationEpoch == chatEpoch else { throw SageError("截图所属聊天已切换，原截图未上传。") }
-                    if windowShot && (!supportsAppShot || capabilityEpoch != capability) { throw SageError("截图期间服务器连接已改变，请重新截图。") }
-                    payload["request_id"] = requestID
-                    _ = try await http.request(address, "/api/interviews/\(session.interviewID)/screenshots", method: "POST", token: session.captureToken, body: payload)
-                } catch {
-                    try? await link.send(["type": "screen_snapshot", "request_id": requestID, "error": error.localizedDescription])
-                    if generation == epoch { self.error = error.localizedDescription }
-                }
-            }
-        case "browser_connection_request": pairing = event
-        case "browser_connection_result": pairing = nil
-        case "error": error = event["detail"] as? String
+        case "started":
+            guard preparing && !state.stopping else { Task { try? await links[role]?.send(["type": "stop"]) }; return }
+            sending.insert(role); channelStatus[role] = "转录中"
+        case "transcript": if let turn = event["turn"] as? JSON { state.merge(turn) }
+        case "stopped":
+            sending.remove(role); stoppingChannels.remove(role); channelStatus[role] = "未开启"
+            if event["complete"] as? Bool != true { error = "转录中断，尾句可能不完整。" }
+        case "error": error = event["detail"] as? String ?? "转录失败。"; Task { await stopAudio() }
         default: break
         }
     }
-    func decidePairing(_ approved: Bool) {
-        guard let id = pairing?["request_id"] as? String else { return }
-        perform { [self] in try await links["interviewer"]?.send(["type": "browser_connection_decision", "request_id": id, "approved": approved]); pairing = nil }
-    }
     private func pumpAudio() {
-        guard let sink = capture.sink else { return }
-        for role in ["interviewer", "candidate"] {
+        guard !preparing, !state.stopping, let sink = capture.sink else { return }
+        for role in roles {
             let batch = sink.take(role)
-            if sending.contains(role) {
-                for frame in batch.frames { links[role]?.audio(frame) }
-                if batch.gap { reportGap(role) }
-            }
+            if sending.contains(role) { for frame in batch.frames { links[role]?.audio(frame) }; if batch.gap { reportGap(role) } }
         }
-        if let message = sink.error() {
-            error = message
-            perform { [self] in try await control(["type": "stop_transcription"]) }
-        }
+        if let message = sink.error() { error = message; Task { await stopAudio() } }
     }
     private func reportGap(_ role: String) {
         guard Date().timeIntervalSince(lastGap) > 3 else { return }; lastGap = Date()
-        channelStatus[role] = "音频出现缺口"; error = "连接积压或中断，部分音频未上传；已记录文字保留。"
-        Task { try? await links[role]?.send(["type": "capture_status", "phase": "interrupted", "mode": "assist", "audio_gap": true, "detail": "音频出现缺口。"])
-            if capture.isPrepared { try? await links[role]?.send(["type": "capture_status", "phase": "ready", "mode": "assist"]) }
-        }
+        channelStatus[role] = "音频出现缺口"; error = "连接积压或中断，部分音频未上传；已保存文字保留。"
     }
-    private func seedPreview() {
-        state.conversationID = "preview"; state.title = "算法与系统设计"
-        state.apply(["type": "chat_message", "chat_message": ["message_id": "sample", "text": "解释一下滑动窗口的思路，并给出 Python 实现。", "provider": "responses", "profile": "default"]])
-        state.apply(["type": "answer_completed", "response_id": "chat:sample", "text": "## 用窗口维护当前状态\n\n左右指针维护一个连续区间。右指针扩展窗口；条件不满足时，移动左指针，直到窗口重新有效。\n\n```python\ndef longest_unique(text):\n    seen = {}\n    left = best = 0\n    for right, char in enumerate(text):\n        left = max(left, seen.get(char, -1) + 1)\n        seen[char] = right\n        best = max(best, right - left + 1)\n    return best\n```\n\n每个位置只处理一次，时间复杂度 **O(n)**。"])
-        connection = "界面预览 · 无网络与采集"
-    }
+    #if DEBUG
+    var testEstablish: ((ServerAddress, Session) -> Void)?
+    var testServer: String? { address?.url.absoluteString }
+    var testReadyChannels: Int { links.values.filter { $0.ready }.count }
+    func testRestoreConnection() async { await restoreOnce() }
+    func testSession(_ origin: String, _ value: Session) throws { address = try ServerAddress(origin); session = value; connected = true; initialSnapshotPending = false; state.conversationID = value.conversationID }
+    func testCaptureLinks(_ value: [String: SocketLink]) { links = value }
+    func testCaptureEvent(_ value: JSON, role: String = "interviewer") { audioEvent(value, role: role) }
+    func testStartAudio() async throws { try await startAudio() }
+    func testSnapshot() async throws { try await refreshState(epoch: generation) }
+    #endif
 }
