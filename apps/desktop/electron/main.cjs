@@ -19,9 +19,13 @@ const {
   globalShortcut,
 } = require("electron");
 const { loadDesktopEnvironment } = require("./desktop-environment.cjs");
-const { loadConnection, saveConnection, validateConnection } = require("./desktop-connection.cjs");
+const {
+  loadConnection,
+  saveConnection,
+  validateConnection,
+} = require("./desktop-connection.cjs");
 const { createScreenCaptureService } = require("./screen-capture.cjs");
-const { MaterialsHost } = require("./materials-host.cjs");
+
 const { DESKTOP_WINDOW_OPTIONS } = require("./desktop-window.cjs");
 const TRAY_ICON_DATA_URL =
   "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAAAAXNSR0IArs4c6QAAAARnQU1BAACxjwv8YQUAAAAJcEhZcwAADsMAAA7DAcdvqGQAAALoSURBVFhH1Vc9aFUxFO7o2LH0Vp7g5qRbt5Pm+oMgWoVCQZGCIlIUng7yBJEiguJQHYpCC6KCFGqx1KVdtINi0aUOgkMFUYcnahHpoJ0iX25zSU6S9/IuOvjBN+Xk/CXny71dXf8rst3Un+UkbHKbv4oaUU+vpNOZFAt9uVBRSrGcDVCjRrSN+6iEGlF3ltNYlotfXrD2vIPEuc9kFK0VPwKOk6kTlzTMfbfFVkkjFasOEl3kMaJAcO7AUIwcV2O3J9Tii+fq5ZsVhxPTD9W+Uye9PRZv8lgeNtvuVb5r6Iiaf/ZUpWD100d18MwoD66Ji8xjlsCFCZ05qv69scHjtATs0SnuC8X17qGdPLYGWsQ3gGitja9ra+rBk3k1evWKGjpf15yafaQr5wh1IsvFHI9tqvdaD8LJz/V1XdX4/Xtq+/69no3hscYFnaDB2/erng3odQHiwY2q8sTlS04X+o8OezbQCCcBKFjAqBIxCTZ2HDrg2WS5aJbBoXbcoCoRDCNpgGPjNoblMeBh4YudEEFxEa9NTeq7YuPirXHPvqRRyD5Jg95ihNADBLo791h9+f7NCcaBTvD9NjNJdZ0AxIEvcqJKjFqKHsAGoxs6eycBI89oBV+0ifby1oZg9AFd4j5CxOQVdyAnwRcN4cyeawDJIBA0YXJ2Rh2un/X2pRBvjpmCHr5ouPT6lRM8pbWpxOXfHEQtwx+4Afi52XSC8/WqhOrWiLbYCQTfATuBliPVIb33AKLAjUBbVHAX8DJyG5s4Howpnu6IBBeUNOgkACArbshlFSOGceSvHOy4EEV1QIoVHlsj1oWZxQUniVRgUrivIoFA9QaxV/HcjetJWgCYLkWebfcVDCHLxXRgoz5TTALe+BDwQYKqo2cvxbJz82OAUSwJOxnzNQS2Vb8ieDeP1RLQas9RNeIHpX3lIWiZlmIp4DSF71peuE4ARziW2HejTfw/ljr/L6D/HQaoUfwzOhSdtvoPkf0OHX9hJAwAAAAASUVORK5CYII=";
@@ -34,7 +38,6 @@ app.setPath("userData", dataRoot);
 app.setName("Cue");
 let window,
   tray,
-  host,
   quitting = false,
   credentials,
   origin,
@@ -69,10 +72,7 @@ function headers() {
 function permitted(endpoint, method) {
   return (
     /^(GET|POST|DELETE)$/.test(method) &&
-    (/^\/capture\/(state|new|images(?:\/[a-zA-Z0-9_-]+)?)$/.test(endpoint) ||
-      /^\/api\/(prepare(?:\/[a-zA-Z0-9_-]+)?|answers(?:\/[a-zA-Z0-9_-]+)?|interviews\/current\/chatgpt-events(?:\/[a-zA-Z0-9_-]+)?)$/.test(
-        endpoint,
-      ))
+    /^\/capture\/(state|materials|images(?:\/[a-zA-Z0-9_-]+)?)$/.test(endpoint)
   );
 }
 async function request(endpoint, method = "GET", body) {
@@ -95,18 +95,8 @@ async function connect() {
     signal: AbortSignal.timeout(8000),
   });
   const health = await response.json();
-  if (!response.ok || health.capture_protocol !== "sage-capture-v1")
+  if (!response.ok || health.capture_protocol !== "cue-chat-v1")
     throw Error("此服务器尚未切换采集版本，请保留已安装的客户端。");
-  if (!host)
-    host = new MaterialsHost({
-      apiBaseUrl: origin,
-      siteToken: credentials.site,
-      captureToken: credentials.device,
-      dataRoot,
-      workspace:
-        process.env.INTERVIEW_MATERIALS_WORKSPACE ||
-        process.env.INTERVIEW_CODEX_WORKSPACE,
-    });
   return { origin };
 }
 function configure() {
@@ -141,8 +131,6 @@ function configure() {
       accessToken: JSON.stringify(value),
       materialsWorkspace: process.env.INTERVIEW_MATERIALS_WORKSPACE,
     });
-    host?.close();
-    host = null;
     credentials = value;
     return connect();
   });
@@ -150,21 +138,24 @@ function configure() {
   handle("sage:sources", () => capture.listSources());
   handle("sage:select", (id) => capture.selectSource(id));
   handle("sage:screenshot", () => capture.captureSnapshot());
-  handle("sage:answer", async (body) => {
-    const response = await net.fetch(origin + "/api/answers", {
-      method: "POST",
-      headers: headers(),
-      body: JSON.stringify(body),
-      redirect: "error",
-      signal: AbortSignal.timeout(125000),
-    });
-    if (!response.ok) {
-      const error = await response.json();
-      throw Error(error.detail || "备用 API 请求失败。");
-    }
-    const reader = response.body.getReader();
-    while (!(await reader.read()).done) {}
+  handle("sage:settings", () => shell.openExternal(origin + "/settings"));
+  handle("sage:pin", (value) => {
+    window.setAlwaysOnTop(value === true);
     return {};
+  });
+  handle("sage:materials", async () => {
+    const picked = await dialog.showOpenDialog(window, {
+      title: "选择要更新的个人资料",
+      properties: ["openFile", "multiSelections"],
+      filters: [{ name: "文本资料", extensions: ["txt", "md"] }],
+    });
+    if (picked.canceled) return {};
+    if (picked.filePaths.length > 20) throw Error("最多选择20份资料。");
+    const materials = picked.filePaths.map((file) => {
+      if (fs.statSync(file).size > 250000) throw Error("资料过大。");
+      return { name: path.basename(file), text: fs.readFileSync(file, "utf8") };
+    });
+    return request("/capture/materials", "POST", { materials });
   });
   const ses = session.defaultSession;
   const mainFrame = (contents, details) =>
@@ -199,7 +190,7 @@ function configure() {
     },
     { useSystemPicker: false },
   );
-  // Only the trusted capture page can open the two authenticated sockets. Tokens never enter its JS.
+  // Only the trusted capture page can open the authenticated capture socket. Tokens never enter its JS.
   ses.webRequest.onBeforeSendHeaders((details, callback) => {
     const url = new URL(details.url);
     if (url.protocol === "wss:" || url.protocol === "ws:") {
@@ -208,7 +199,7 @@ function configure() {
       if (
         details.webContentsId !== window?.webContents.id ||
         url.origin !== expected.origin ||
-        !/^\/capture\/audio\/(candidate|interviewer)$/.test(url.pathname) ||
+        url.pathname !== "/capture/socket" ||
         url.search ||
         url.hash
       ) {
@@ -235,14 +226,16 @@ async function show() {
   if (!window) {
     const dev =
       !app.isPackaged &&
-      process.argv.some((value) => /^--renderer-url=http:\/\/127\.0\.0\.1:5173\/?$/.test(value));
+      process.argv.some((value) =>
+        /^--renderer-url=http:\/\/127\.0\.0\.1:5173\/?$/.test(value),
+      );
     renderer = dev
       ? "http://127.0.0.1:5173/"
       : pathToFileURL(path.join(__dirname, "../dist/index.html")).href;
     window = new BrowserWindow({
       ...DESKTOP_WINDOW_OPTIONS,
-      width: 760,
-      height: 720,
+      width: 640,
+      height: 780,
       minWidth: 480,
       webPreferences: {
         preload: path.join(__dirname, "preload.cjs"),
@@ -306,7 +299,8 @@ else {
       if (app.isPackaged)
         await loadConnection(dataRoot, safeStorage, process.env);
       origin = validateConnection({
-        apiBaseUrl: process.env.INTERVIEW_API_BASE_URL || "https://interview.siyidu.com",
+        apiBaseUrl:
+          process.env.INTERVIEW_API_BASE_URL || "https://interview.siyidu.com",
         accessToken: "origin-validation",
       }).apiBaseUrl;
       try {
@@ -335,12 +329,8 @@ else {
       tray.setToolTip("Cue");
       tray.setContextMenu(
         Menu.buildFromTemplate([
-          { label: "请 ChatGPT 回答", click: trigger },
-          { label: "设置", click: () => void show() },
-          {
-            label: "API 备用回答",
-            click: () => void shell.openExternal(origin + "/?view=fallback"),
-          },
+          { label: "回答", click: trigger },
+          { label: "打开 Cue", click: () => void show() },
           { type: "separator" },
           { label: "退出", click: () => app.quit() },
         ]),
@@ -349,7 +339,7 @@ else {
       if (!globalShortcut.register("Control+Alt+Enter", trigger))
         dialog.showErrorBox(
           "快捷键已被占用",
-          "仍可使用托盘中的“请 ChatGPT 回答”。",
+          "仍可使用 Cue 窗口中的回答按钮。",
         );
     })
     .catch(() => {
@@ -371,7 +361,6 @@ app.on("before-quit", (event) => {
         "window.sageCapture?.audio(false)",
       );
     } catch {}
-    host?.close();
     globalShortcut.unregisterAll();
     app.quit();
   })();

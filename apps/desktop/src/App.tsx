@@ -1,1 +1,1 @@
-export { default } from "../../cloud/ui/App";
+export { default } from "../../../packages/chat-ui/App";

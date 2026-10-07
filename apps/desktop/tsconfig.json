@@ -2,7 +2,11 @@
   "compilerOptions": {
     "target": "ES2020",
     "useDefineForClassFields": true,
-    "lib": ["DOM", "DOM.Iterable", "ES2020"],
+    "lib": [
+      "DOM",
+      "DOM.Iterable",
+      "ES2020"
+    ],
     "allowJs": false,
     "skipLibCheck": true,
     "esModuleInterop": true,
@@ -14,7 +18,24 @@
     "resolveJsonModule": true,
     "isolatedModules": true,
     "noEmit": true,
-    "jsx": "react-jsx"
+    "jsx": "react-jsx",
+    "baseUrl": ".",
+    "paths": {
+      "react": [
+        "node_modules/@types/react"
+      ],
+      "react/*": [
+        "node_modules/@types/react/*"
+      ],
+      "react-dom/*": [
+        "node_modules/@types/react-dom/*"
+      ],
+      "*": [
+        "node_modules/*"
+      ]
+    }
   },
-  "include": ["src"]
+  "include": [
+    "src"
+  ]
 }

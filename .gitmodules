@@ -1,0 +1,3 @@
+[submodule "apps/cloud"]
+	path = apps/cloud
+	url = https://github.com/SiyiDuProjects/Cue-cloud.git

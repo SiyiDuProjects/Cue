@@ -11,6 +11,7 @@ export interface AudioCaptureHandle {
   getHealth: () => CaptureHealth;
   stop: () => void;
   finish: () => Promise<boolean>;
+  flush: () => Promise<void>;
 }
 
 interface LocalAudioCaptureOptions {
@@ -21,7 +22,8 @@ interface LocalAudioCaptureOptions {
 }
 
 const DISPLAY_MEDIA_CONSTRAINTS: DisplayMediaStreamOptions = {
-  audio: true, video: { frameRate: { max: 1 }, width: { max: 64 }, height: { max: 64 } },
+  audio: true,
+  video: { frameRate: { max: 1 }, width: { max: 64 }, height: { max: 64 } },
 };
 const USER_MEDIA_CONSTRAINTS: MediaStreamConstraints = {
   audio: {
@@ -36,9 +38,14 @@ const TARGET_SAMPLE_RATE = 24000;
 const PCM_STALL_MS = 3000;
 const MAX_PCM_AGE_SECONDS = 0.5;
 
-export async function requestCaptureStream(speaker: Speaker): Promise<MediaStream> {
-  if (speaker === "candidate") return navigator.mediaDevices.getUserMedia(USER_MEDIA_CONSTRAINTS);
-  const stream = await navigator.mediaDevices.getDisplayMedia(DISPLAY_MEDIA_CONSTRAINTS);
+export async function requestCaptureStream(
+  speaker: Speaker,
+): Promise<MediaStream> {
+  if (speaker === "candidate")
+    return navigator.mediaDevices.getUserMedia(USER_MEDIA_CONSTRAINTS);
+  const stream = await navigator.mediaDevices.getDisplayMedia(
+    DISPLAY_MEDIA_CONSTRAINTS,
+  );
   if (stream.getAudioTracks().length === 0) {
     stream.getTracks().forEach((track) => track.stop());
     throw new Error("没有采集到系统音频，请确认系统允许音频采集。");
@@ -46,7 +53,9 @@ export async function requestCaptureStream(speaker: Speaker): Promise<MediaStrea
   return stream;
 }
 
-export function startLocalAudioCapture(options: LocalAudioCaptureOptions): AudioCaptureHandle {
+export function startLocalAudioCapture(
+  options: LocalAudioCaptureOptions,
+): AudioCaptureHandle {
   const audioTracks = options.stream.getAudioTracks();
   if (audioTracks.length === 0) throw new Error("当前媒体流没有音频轨道。");
   const tracks = options.stream.getTracks();
@@ -55,9 +64,16 @@ export function startLocalAudioCapture(options: LocalAudioCaptureOptions): Audio
   let processorNode: AudioWorkletNode | undefined;
   let gainNode: GainNode;
   try {
-    sourceNode = audioContext.createMediaStreamSource(new MediaStream(audioTracks));
-    if (audioContext.sampleRate !== TARGET_SAMPLE_RATE || !audioContext.audioWorklet) {
-      throw new Error("音频处理环境不支持 24 kHz AudioWorklet，请重新打开桌面端。");
+    sourceNode = audioContext.createMediaStreamSource(
+      new MediaStream(audioTracks),
+    );
+    if (
+      audioContext.sampleRate !== TARGET_SAMPLE_RATE ||
+      !audioContext.audioWorklet
+    ) {
+      throw new Error(
+        "音频处理环境不支持 24 kHz AudioWorklet，请重新打开桌面端。",
+      );
     }
     gainNode = audioContext.createGain();
     gainNode.gain.value = 0;
@@ -70,15 +86,23 @@ export function startLocalAudioCapture(options: LocalAudioCaptureOptions): Audio
 
   let stopped = false;
   let finishing: Promise<boolean> | undefined;
+  let flushAck: (() => void) | undefined;
   let finishAck: ((complete: boolean) => void) | undefined;
   let endedNotified = false;
   let processorFailed = false;
   let receivedPcm = false;
   let lastPcmAt = Date.now();
-  let health: CaptureHealth = { phase: "interrupted", detail: "正在初始化音频处理。" };
+  let health: CaptureHealth = {
+    phase: "interrupted",
+    detail: "正在初始化音频处理。",
+  };
 
   function reportHealth(next: CaptureHealth) {
-    if (stopped || (health.phase === next.phase && health.detail === next.detail)) return;
+    if (
+      stopped ||
+      (health.phase === next.phase && health.detail === next.detail)
+    )
+      return;
     health = next;
     options.onHealthChange?.({ ...health });
   }
@@ -86,18 +110,39 @@ export function startLocalAudioCapture(options: LocalAudioCaptureOptions): Audio
   function checkHealth() {
     if (stopped) return;
     if (processorFailed) {
-      reportHealth({ phase: "error", detail: "音频处理启动失败或异常停止，请恢复这一路采集。" });
-    } else if (endedNotified || tracks.some((track) => track.readyState === "ended")) {
-      reportHealth({ phase: "error", detail: "媒体轨道已结束，请恢复这一路采集。" });
+      reportHealth({
+        phase: "error",
+        detail: "音频处理启动失败或异常停止，请恢复这一路采集。",
+      });
+    } else if (
+      endedNotified ||
+      tracks.some((track) => track.readyState === "ended")
+    ) {
+      reportHealth({
+        phase: "error",
+        detail: "媒体轨道已结束，请恢复这一路采集。",
+      });
     } else if (audioContext.state === "closed") {
-      reportHealth({ phase: "error", detail: "音频处理已关闭，请恢复这一路采集。" });
+      reportHealth({
+        phase: "error",
+        detail: "音频处理已关闭，请恢复这一路采集。",
+      });
     } else if (audioTracks.some((track) => track.muted)) {
       // Track.muted means unavailable source data, not a person being quiet.
-      reportHealth({ phase: "muted", detail: "媒体源暂时没有提供音频，正在等待恢复。" });
+      reportHealth({
+        phase: "muted",
+        detail: "媒体源暂时没有提供音频，正在等待恢复。",
+      });
     } else if (String(audioContext.state) !== "running") {
-      reportHealth({ phase: "interrupted", detail: "音频处理已暂停，请恢复这一路采集。" });
+      reportHealth({
+        phase: "interrupted",
+        detail: "音频处理已暂停，请恢复这一路采集。",
+      });
     } else if (!receivedPcm || Date.now() - lastPcmAt > PCM_STALL_MS) {
-      reportHealth({ phase: "interrupted", detail: "音频处理未输出数据，请恢复这一路采集。" });
+      reportHealth({
+        phase: "interrupted",
+        detail: "音频处理未输出数据，请恢复这一路采集。",
+      });
     } else {
       reportHealth({ phase: "ready", detail: "音频处理正常。" });
     }
@@ -117,72 +162,126 @@ export function startLocalAudioCapture(options: LocalAudioCaptureOptions): Audio
   audioContext.addEventListener("statechange", checkHealth);
   const healthTimer = window.setInterval(checkHealth, 1000);
 
-  void audioContext.audioWorklet.addModule(new URL("./pcm-worklet.js", document.baseURI).href).then(() => {
-    if (stopped) return;
-    processorNode = new AudioWorkletNode(audioContext, "interview-pcm", {
-      numberOfInputs: 1, numberOfOutputs: 1, outputChannelCount: [1],
-      channelCount: 1, channelCountMode: "explicit",
-    });
-    processorNode.onprocessorerror = () => { processorFailed = true; checkHealth(); };
-    processorNode.port.onmessage = ({ data }) => {
-      if (data?.type === 'finished') { finishAck?.(true); return; }
-      if (stopped || !(data.pcm instanceof ArrayBuffer)) return;
-      if (audioContext.currentTime - data.endTime > MAX_PCM_AGE_SECONDS) {
-        reportHealth({ phase: "interrupted", detail: "界面处理延迟，部分过期音频已跳过；请补充遗漏内容。" });
-        return;
-      }
-      receivedPcm = true;
-      lastPcmAt = Date.now();
+  void audioContext.audioWorklet
+    .addModule(new URL("./pcm-worklet.js", document.baseURI).href)
+    .then(() => {
+      if (stopped) return;
+      processorNode = new AudioWorkletNode(audioContext, "interview-pcm", {
+        numberOfInputs: 1,
+        numberOfOutputs: 1,
+        outputChannelCount: [1],
+        channelCount: 1,
+        channelCountMode: "explicit",
+      });
+      processorNode.onprocessorerror = () => {
+        processorFailed = true;
+        checkHealth();
+      };
+      processorNode.port.onmessage = ({ data }) => {
+        if (data?.type === "flushed") {
+          flushAck?.();
+          return;
+        }
+        if (data?.type === "finished") {
+          finishAck?.(true);
+          return;
+        }
+        if (stopped || !(data.pcm instanceof ArrayBuffer)) return;
+        if (audioContext.currentTime - data.endTime > MAX_PCM_AGE_SECONDS) {
+          reportHealth({
+            phase: "interrupted",
+            detail: "界面处理延迟，部分过期音频已跳过；请补充遗漏内容。",
+          });
+          return;
+        }
+        receivedPcm = true;
+        lastPcmAt = Date.now();
+        checkHealth();
+        // Zero-valued PCM is valid silence, not a broken device.
+        if (health.phase === "ready") options.onChunk(data.pcm);
+      };
+      sourceNode.connect(processorNode);
+      processorNode.connect(gainNode);
+    })
+    .catch(() => {
+      processorFailed = true;
       checkHealth();
-      // Zero-valued PCM is valid silence, not a broken device.
-      if (health.phase === "ready") options.onChunk(data.pcm);
-    };
-    sourceNode.connect(processorNode);
-    processorNode.connect(gainNode);
-  }).catch(() => { processorFailed = true; checkHealth(); });
+    });
 
   checkHealth();
   if (audioContext.state === "suspended") {
-    void audioContext.resume().then(checkHealth).catch(() => {
-      reportHealth({ phase: "interrupted", detail: "音频处理无法恢复，请重新连接这一路采集。" });
-    });
+    void audioContext
+      .resume()
+      .then(checkHealth)
+      .catch(() => {
+        reportHealth({
+          phase: "interrupted",
+          detail: "音频处理无法恢复，请重新连接这一路采集。",
+        });
+      });
   }
 
   const stop = () => {
-      if (stopped) return;
-      stopped = true;
-      window.clearInterval(healthTimer);
-      if (processorNode) {
-        processorNode.port.onmessage = null;
-        processorNode.port.close();
-        processorNode.onprocessorerror = null;
-        processorNode.disconnect();
-      }
-      audioContext.removeEventListener("statechange", checkHealth);
-      sourceNode.disconnect();
-      gainNode.disconnect();
-      tracks.forEach((track) => {
-        track.removeEventListener("ended", handleTrackEnded);
-        track.removeEventListener("mute", checkHealth);
-        track.removeEventListener("unmute", checkHealth);
-        track.stop();
-      });
-      if (audioContext.state !== "closed") void audioContext.close().catch(() => {});
-      finishAck?.(false);
-    };
+    if (stopped) return;
+    stopped = true;
+    window.clearInterval(healthTimer);
+    if (processorNode) {
+      processorNode.port.onmessage = null;
+      processorNode.port.close();
+      processorNode.onprocessorerror = null;
+      processorNode.disconnect();
+    }
+    audioContext.removeEventListener("statechange", checkHealth);
+    sourceNode.disconnect();
+    gainNode.disconnect();
+    tracks.forEach((track) => {
+      track.removeEventListener("ended", handleTrackEnded);
+      track.removeEventListener("mute", checkHealth);
+      track.removeEventListener("unmute", checkHealth);
+      track.stop();
+    });
+    if (audioContext.state !== "closed")
+      void audioContext.close().catch(() => {});
+    finishAck?.(false);
+  };
   return {
     getHealth: () => ({ ...health }),
+    flush: () =>
+      new Promise<void>((resolve, reject) => {
+        if (!processorNode || stopped || flushAck) {
+          reject(new Error("音频尚未就绪。"));
+          return;
+        }
+        const timer = window.setTimeout(() => {
+          flushAck = undefined;
+          reject(new Error("音频截止未确认。"));
+        }, 1000);
+        flushAck = () => {
+          flushAck = undefined;
+          window.clearTimeout(timer);
+          resolve();
+        };
+        processorNode.port.postMessage({ type: "flush" });
+      }),
     stop,
     finish: () => {
       if (finishing) return finishing;
-      if (stopped || !processorNode) { stop(); return Promise.resolve(!receivedPcm); }
-      finishing = new Promise<boolean>(resolve => {
+      if (stopped || !processorNode) {
+        stop();
+        return Promise.resolve(!receivedPcm);
+      }
+      finishing = new Promise<boolean>((resolve) => {
         const timer = window.setTimeout(() => finishAck?.(false), 750);
-        finishAck = complete => { finishAck = undefined; window.clearTimeout(timer); stop(); resolve(complete); };
-        processorNode!.port.postMessage({ type: 'finish' });
+        finishAck = (complete) => {
+          finishAck = undefined;
+          window.clearTimeout(timer);
+          stop();
+          resolve(complete);
+        };
+        processorNode!.port.postMessage({ type: "finish" });
       });
       return finishing;
-    }
+    },
   };
 }
 

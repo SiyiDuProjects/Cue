@@ -8,7 +8,9 @@ contextBridge.exposeInMainWorld("sageCaptureHost", {
   sources: () => ipcRenderer.invoke("sage:sources"),
   selectSource: (id) => ipcRenderer.invoke("sage:select", id),
   screenshot: () => ipcRenderer.invoke("sage:screenshot"),
-  startAnswer: (body) => ipcRenderer.invoke("sage:answer", body),
+  openSettings: () => ipcRenderer.invoke("sage:settings"),
+  uploadMaterials: () => ipcRenderer.invoke("sage:materials"),
+  pin: (value) => ipcRenderer.invoke("sage:pin", value),
 });
 ipcRenderer.on("sage:answer-requested", () =>
   window.dispatchEvent(new Event("sage:answer-requested")),

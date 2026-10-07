@@ -1,6 +1,0 @@
-dist/
-node_modules/
-.env*
-evidence/
-.sites-runtime/
-site.tar.gz

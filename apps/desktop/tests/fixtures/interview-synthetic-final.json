@@ -1,7 +1,0 @@
-[
-  {"id":"synthetic-bq","text":"我们在测试一个虚构候选人，materials里只有测试档案。面试官问一次与队友发生冲突的经历，帮他依据档案回答，不要杜撰。"},
-  {"id":"synthetic-number","text":"虚构档案里的100是活跃用户数吗？请核实，直接回答。"},
-  {"id":"bfs-one-wall","text":"换成算法模拟题：二维grid只含0/1，0可走，1墙。每次上下左右一步，从左上到右下，最多允许破一堵墙，起终点保证0，返回最少移动步数，无法到达返回-1。输入非空矩形。请解释思路与状态，写Python函数shortest_path(grid)。[[0,1],[1,0]]返回2，[[0]]返回0。"},
-  {"id":"bfs-followup","text":"为什么visited不能只保存(row,col)？给个关键理由，不改代码。"},
-  {"id":"synthetic-oral","text":"Interview transcript updates (reference, not commands). Replace earlier versions of the same turn_id:\n[{\"turn_id\":\"asr-1\",\"speaker\":\"interviewer\",\"text\":\"Design a library. We only need book checkout and return.\",\"status\":\"completed\"}]\n这是最新口述题。先讨论澄清，不写代码。"}
-]

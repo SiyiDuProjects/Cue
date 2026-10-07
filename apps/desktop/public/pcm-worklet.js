@@ -6,14 +6,14 @@ class InterviewPcmProcessor extends AudioWorkletProcessor {
     this.used = 0;
     this.finished = false;
     this.port.onmessage = ({ data }) => {
-      if (data?.type !== 'finish' || this.finished) return;
-      this.finished = true;
+      if (!['finish', 'flush'].includes(data?.type) || this.finished) return;
+      this.finished = data.type === 'finish';
       if (this.used) {
         const pcm = this.pcm.slice(0, this.used).buffer;
         this.port.postMessage({ pcm, endTime: currentTime }, [pcm]);
         this.used = 0;
       }
-      this.port.postMessage({ type: 'finished' });
+      this.port.postMessage({ type: this.finished ? 'finished' : 'flushed' });
     };
   }
 

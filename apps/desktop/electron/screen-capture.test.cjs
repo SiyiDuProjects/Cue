@@ -1,7 +1,6 @@
 const { test } = require("node:test");
 const assert = require("node:assert/strict");
 const { createScreenCaptureService } = require("./screen-capture.cjs");
-const { createRendererRecovery } = require("./renderer-recovery.cjs");
 
 function source(id, displayId = "") {
   return { id, display_id: displayId, name: `Source ${id}`, thumbnail: {
@@ -156,14 +155,4 @@ test("audio source discovery never changes window capture settings", async () =>
     { getPrimaryDisplay: () => ({ id: 1 }) }, () => [window]);
   assert.equal((await service.getAudioCaptureSource()).id, "screen:primary");
   assert.deepEqual(window.changes, []);
-});
-
-test("renderer recovery is bounded and leaves a user-visible explanation", () => {
-  const recovery = createRendererRecovery();
-  assert.equal(recovery.recordCrash(1000).retry, true);
-  assert.equal(recovery.recordCrash(2000).retry, true);
-  assert.equal(recovery.recordCrash(3000).retry, false);
-  assert.match(recovery.getNotice(), /停止自动恢复/);
-  assert.equal(recovery.recordCrash(63000).retry, true);
-  assert.match(recovery.getNotice(), /缺失音频/);
 });

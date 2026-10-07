@@ -19,8 +19,7 @@ const stage = fs.mkdtempSync(path.join(desktop, "build/sage-app-"));
 fs.mkdirSync(path.join(stage, "electron"));
 // Explicit allowlist: no server code, tests, .env, profile, or node_modules.
 for (const name of ["main.cjs", "preload.cjs", "desktop-environment.cjs", "desktop-connection.cjs",
-  "desktop-window.cjs", "screen-capture.cjs", "renderer-recovery.cjs", "package-diagnostics.cjs",
-  "materials-host.cjs", "materials.cjs"]) {
+  "desktop-window.cjs", "screen-capture.cjs"]) {
   fs.copyFileSync(path.join(desktop, "electron", name), path.join(stage, "electron", name));
 }
 fs.cpSync(path.join(desktop, "dist"), path.join(stage, "dist"), { recursive: true });
@@ -33,10 +32,7 @@ run(process.execPath, [require.resolve("electron-builder/cli.js"), "--projectDir
 const asar = require("@electron/asar");
 const archive = path.resolve(desktop, "../../releases/windows/win-unpacked/resources/app.asar");
 const contents = asar.listPackage(archive).map(file => file.replaceAll("\\", "/").replace(/^\//, ""));
-for (const file of ["electron/materials-host.cjs", "electron/materials.cjs"]) {
-  if (!contents.includes(file)) throw new Error(`Package is missing ${file}`);
-}
 if (contents.some(file => /(^|\/)(materials|codex-workspace|codex-host\.cjs|codex-process\.cjs|codex-runtime\.cjs|\.runtime|\.env|auth\.json|node_modules)(\/|$)/.test(file))) {
   throw new Error("Package contains private/runtime/dependency files.");
 }
-console.log("Verified read-only materials host; no personal material or credentials packaged.");
+console.log("Verified desktop chat package; no personal material or credentials packaged.");

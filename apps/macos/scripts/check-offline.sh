@@ -1,7 +1,8 @@
 #!/bin/bash
 set -euo pipefail
-MAC_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-CONFIGURATION=debug bash "$MAC_ROOT/scripts/build-app.sh"
-"$MAC_ROOT/output/Cue.app/Contents/MacOS/Cue" --self-test
-node "$MAC_ROOT/tests/bridge-smoke.cjs"
-node --test "$MAC_ROOT/tests/native-appshot-smoke.cjs"
+cd "$(dirname "$0")/.."
+export CLANG_MODULE_CACHE_PATH="$PWD/.build/clang-cache"
+export SWIFTPM_MODULECACHE_OVERRIDE="$PWD/.build/swift-cache"
+swift build --disable-sandbox --cache-path "$PWD/.build/cache" -c debug
+.build/debug/SageChecks
+node --test tests/native-appshot-smoke.cjs

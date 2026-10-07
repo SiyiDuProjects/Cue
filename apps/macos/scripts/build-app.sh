@@ -31,11 +31,12 @@ cp "$NODE_BIN" "$APP/Contents/MacOS/sage-node"
 cp "$NODE_LICENSE" "$APP/Contents/Resources/Node-LICENSE.txt"
 cp "$MAC_ROOT/THIRD_PARTY_NOTICES.md" "$APP/Contents/Resources/THIRD_PARTY_NOTICES.md"
 cp "$MAC_ROOT/Support/Info.plist" "$APP/Contents/Info.plist"
-cp "$MAC_ROOT/Support/materials-host.cjs" "$APP/Contents/Resources/bridge/materials-host.cjs"
 cp "$MAC_ROOT/Support/native-appshot.cjs" "$APP/Contents/Resources/bridge/native-appshot.cjs"
-# Reuse only the bounded read-only materials reader. No CLI, agent templates or runtime state.
-cp "$REPO_ROOT/apps/desktop/electron/materials-host.cjs" "$APP/Contents/Resources/bridge/electron/"
-cp "$REPO_ROOT/apps/desktop/electron/materials.cjs" "$APP/Contents/Resources/bridge/electron/"
+(cd "$REPO_ROOT/apps/desktop" && npm run build)
+cp -R "$REPO_ROOT/apps/desktop/dist" "$APP/Contents/Resources/ui"
+# The bundled Vite output is one self-contained script. Classic loading avoids
+# file-origin module CORS in WKWebView without weakening WebKit permissions.
+"$NODE_BIN" -e 'const fs=require("fs");const p=process.argv[1];fs.writeFileSync(p,fs.readFileSync(p,"utf8").replace(/type="module"/g,"defer").replace(/ crossorigin/g,""));' "$APP/Contents/Resources/ui/index.html"
 codesign --force --sign - "$APP/Contents/MacOS/sage-node"
 codesign --force --sign - "$APP"
 codesign --verify --deep --strict "$APP"

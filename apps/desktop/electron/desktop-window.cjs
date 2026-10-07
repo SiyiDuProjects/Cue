@@ -6,14 +6,14 @@ const DESKTOP_WINDOW_OPTIONS = {
   minWidth: 620,
   minHeight: 440,
   frame: true,
-  transparent: false,
-  backgroundColor: "#f5f5f5",
+  transparent: true,
+  backgroundColor: "#00000000",
   resizable: true,
   minimizable: true,
   maximizable: true,
   hasShadow: true,
   show: false,
-  alwaysOnTop: false,
+  alwaysOnTop: true,
 };
 
 module.exports = { DESKTOP_WINDOW_OPTIONS };
