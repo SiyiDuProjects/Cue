@@ -1,13 +1,13 @@
 :root {
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-  color: #253a37;
+  color: #28282b;
   background: transparent;
   font-synthesis: none;
   color-scheme: light dark;
-  --glass: rgba(249, 250, 246, 0.94);
-  --line: rgba(43, 72, 63, 0.12);
-  --muted: #73827b;
-  --accent: #246858;
+  --glass: rgba(250, 250, 252, 0.94);
+  --line: rgba(28, 28, 32, 0.12);
+  --muted: #74747b;
+  --accent: #333338;
   --field: rgba(255, 255, 255, 0.72);
 }
 * {
@@ -97,10 +97,10 @@ p {
   width: 5px;
   height: 5px;
   border-radius: 100%;
-  background: #b0b7b1;
+  background: #b2b2b8;
 }
 .dot.online {
-  background: #5b9676;
+  background: #777780;
 }
 .spacer {
   flex: 1;
@@ -212,7 +212,7 @@ p {
   font-size: 52px;
   font-weight: 650;
   letter-spacing: -5px;
-  color: #669580;
+  color: #85858d;
   margin-bottom: 16px;
 }
 .cue-symbol span {
@@ -333,7 +333,7 @@ textarea {
   font-size: 13px;
 }
 textarea::placeholder {
-  color: #93a097;
+  color: #9898a0;
 }
 .composer-actions {
   display: flex;
@@ -347,14 +347,14 @@ textarea::placeholder {
   padding: 9px 17px;
 }
 .primary:hover {
-  background: #1a5346;
+  background: #50505a;
 }
 .primary span {
   opacity: 0.65;
   margin-left: 10px;
 }
 .stop {
-  background: #66756f;
+  background: #777780;
 }
 .attachments {
   display: flex;
@@ -418,15 +418,18 @@ textarea::placeholder {
 }
 @media (prefers-color-scheme: dark) {
   :root {
-    color: #dfe8e0;
-    --glass: rgba(28, 37, 33, 0.94);
-    --line: rgba(194, 211, 197, 0.14);
-    --muted: #9aa99f;
-    --accent: #5b9c83;
-    --field: rgba(39, 50, 44, 0.75);
+    color: #ededf0;
+    --glass: rgba(28, 28, 31, 0.94);
+    --line: rgba(220, 220, 225, 0.14);
+    --muted: #aaaab2;
+    --accent: #e2e2e8;
+    --field: rgba(43, 43, 47, 0.75);
   }
   .primary {
-    color: #fff;
+    color: #222226;
+  }
+  .primary:hover:not(:disabled) {
+    background: #fff;
   }
   .assistant-message pre {
     background: rgba(0, 0, 0, 0.17);
@@ -498,4 +501,10 @@ textarea::placeholder {
   max-width: 100%;
   height: auto;
   object-fit: contain;
+}
+
+.reconnect {
+  font-size: 12px;
+  border: 1px solid var(--line);
+  white-space: nowrap;
 }

@@ -38,10 +38,16 @@ import SageCore
     let connectionEpoch = connectionGeneration
     defer { if connectionGeneration == connectionEpoch { connecting = false } }
     let address = try ServerAddress(Self.serviceURL)
-    let credential = try await Credentials.load(address.url.absoluteString)
-    guard !closing, connectionGeneration == connectionEpoch else { return }
-    guard !credential.isEmpty else { throw SageError("请在连接设置中导入此电脑的登录配置。") }
-    let keys = try SiteCredentials(credential)
+    let keys: SiteCredentials
+    if let loaded = self.keys {
+      keys = loaded  // A manual reconnect does not need another Keychain read.
+    } else {
+      let credential = try await Credentials.load(address.url.absoluteString)
+      guard !closing, connectionGeneration == connectionEpoch else { return }
+      guard !credential.isEmpty else { throw SageError("请在连接设置中导入此电脑的登录配置。") }
+      keys = try SiteCredentials(credential)
+      self.keys = keys
+    }
     http.authorizeSite(address, token: keys.site)
     let health = try await http.request(address, "/health", token: keys.device)
     guard health["capture_protocol"] as? String == protocolVersion else {
@@ -251,8 +257,9 @@ import SageCore
     guard bytes.count < 16000, let raw = String(data: bytes, encoding: .utf8) else {
       throw SageError("配置无效。")
     }
-    _ = try SiteCredentials(raw)
+    let imported = try SiteCredentials(raw)
     try await Credentials.save(raw, origin: Self.serviceURL)
+    keys = imported
     connectionGeneration = UUID()
     connecting = false
     link?.close()

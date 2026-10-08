@@ -37,6 +37,17 @@ import AppKit
       menu.addItem(item)
     }
     status?.menu = menu
+    // Accessory apps do not receive a default application menu. Without this,
+    // Command-Q is silently ignored while the chat window is active.
+    let applicationMenu = NSMenu()
+    let applicationItem = NSMenuItem()
+    let applicationActions = NSMenu()
+    let quitItem = NSMenuItem(title: "退出 Cue", action: #selector(quit), keyEquivalent: "q")
+    quitItem.target = self
+    applicationActions.addItem(quitItem)
+    applicationItem.submenu = applicationActions
+    applicationMenu.addItem(applicationItem)
+    NSApp.mainMenu = applicationMenu
     let shortcut = AnswerHotkey(action: { [weak self] in self?.answer() })
     if !shortcut.setEnabled(true) {
       store.onEvent(["type": "error", "detail": "全局快捷键被占用，仍可使用窗口中的回答按钮。"])

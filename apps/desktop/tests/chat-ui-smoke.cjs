@@ -128,8 +128,25 @@ app
         await js("document.querySelector('.transcript').textContent"),
         /未完整确认/,
       );
+      await js(
+        "window.dispatchEvent(new CustomEvent('cue:event',{detail:{type:'replaced',detail:'连接已被替换'}}))",
+      );
+      await wait("document.querySelector('.reconnect')");
+      assert.equal(
+        await js("document.querySelector('.primary').disabled"),
+        true,
+      );
+      await js("document.querySelector('.reconnect').click()");
+      await wait(
+        "document.querySelector('.connection').textContent==='已连接'",
+      );
+      assert.equal(
+        await js("document.querySelector('.reconnect')===null"),
+        true,
+      );
+      assert.equal(await js("localStorage.getItem('cue.chat')"), "chat");
       console.log(
-        "PASS chat, screenshot attachment, streaming Markdown/table/math, copy, source restore/failure, silence display and narrow layout; all network blocked",
+        "PASS chat, screenshot attachment, streaming Markdown/table/math, copy, source restore/failure, silence display, manual reconnect and narrow layout; all network blocked",
       );
     } finally {
       win.destroy();

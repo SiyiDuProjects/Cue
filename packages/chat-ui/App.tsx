@@ -23,7 +23,7 @@ export default function App() {
     [error, setError] = useState("");
   const [recording, setRecording] = useState(""),
     [chats, setChats] = useState<Chat[]>([]),
-    [chat, setChat] = useState(""),
+    [chat, setChat] = useState(localStorage.getItem("cue.chat") || ""),
     [messages, setMessages] = useState<Message[]>([]);
   const [turns, setTurns] = useState<Event[]>([]),
     [images, setImages] = useState<Event[]>([]),
@@ -76,9 +76,20 @@ export default function App() {
   const visibleTurns = turns.filter(
     (turn) => turn.text?.trim() || turn.status === "interrupted",
   );
+  async function reconnect() {
+    setStatus("正在连接…");
+    setError("");
+    try {
+      await window.cue.connect();
+    } catch (e) {
+      setStatus("连接未就绪");
+      setError(e instanceof Error ? e.message : String(e));
+    }
+  }
   function choose(id: string) {
     current.current.chat = id;
     setChat(id);
+    localStorage.setItem("cue.chat", id);
     setText(localStorage.getItem("cue.draft." + id) || "");
     setMessages([]);
     follow.current = true;
@@ -196,7 +207,7 @@ export default function App() {
       if (e.type === "answer_requested") void ask();
     };
     window.addEventListener("cue:event", listener);
-    void attempt(() => window.cue.connect());
+    void reconnect();
     return () => window.removeEventListener("cue:event", listener);
   }, []);
   useEffect(() => {
@@ -358,7 +369,14 @@ export default function App() {
           转录 <small>{visibleTurns.length || ""}</small>
         </button>
         <span className="spacer" />
-        <span className="connection">{status}</span>
+        <span className="connection" role="status">
+          {status}
+        </span>
+        {!connected && status !== "正在连接…" && (
+          <button className="reconnect" onClick={() => void reconnect()}>
+            重新连接
+          </button>
+        )}
       </div>
       {error && (
         <div className="notice" role="alert">

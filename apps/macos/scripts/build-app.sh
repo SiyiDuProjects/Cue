@@ -3,6 +3,15 @@ set -euo pipefail
 MAC_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 REPO_ROOT="$(cd "$MAC_ROOT/../.." && pwd)"
 CONFIGURATION="${CONFIGURATION:-release}"
+SIGN_IDENTITY="${CUE_SIGN_IDENTITY:-}"
+if [[ -z "$SIGN_IDENTITY" ]] && ! python3 "$MAC_ROOT/scripts/local-signing.py" configured; then
+  if [[ "${CUE_ALLOW_ADHOC:-0}" == "1" ]]; then
+    SIGN_IDENTITY="-"
+  else
+    echo "No stable Cue signing identity. Configure local signing or CUE_SIGN_IDENTITY before packaging." >&2
+    exit 1
+  fi
+fi
 NODE_BIN="${SAGE_NODE_BIN:-$(command -v node)}"
 NODE_BIN="$("$NODE_BIN" -p 'process.execPath')"
 NODE_LICENSE="${SAGE_NODE_LICENSE:-$(dirname "$(dirname "$NODE_BIN")")/LICENSE}"
@@ -38,11 +47,19 @@ cp -R "$REPO_ROOT/apps/desktop/dist" "$APP/Contents/Resources/ui"
 # The bundled Vite output is one self-contained script. Classic loading avoids
 # file-origin module CORS in WKWebView without weakening WebKit permissions.
 "$NODE_BIN" -e 'const fs=require("fs");const p=process.argv[1];fs.writeFileSync(p,fs.readFileSync(p,"utf8").replace(/type="module"/g,"defer").replace(/ crossorigin/g,""));' "$APP/Contents/Resources/ui/index.html"
-codesign --force --sign - "$APP/Contents/MacOS/sage-node"
-codesign --force --sign - "$APP"
+if [[ -n "$SIGN_IDENTITY" ]]; then
+  codesign --force --sign "$SIGN_IDENTITY" "$APP/Contents/MacOS/sage-node"
+  codesign --force --sign "$SIGN_IDENTITY" "$APP"
+else
+  python3 "$MAC_ROOT/scripts/local-signing.py" sign "$APP/Contents/MacOS/sage-node" "$APP"
+fi
 codesign --verify --deep --strict "$APP"
 if [[ -e "$MAC_ROOT/output/Cue.app" ]]; then
   mv "$MAC_ROOT/output/Cue.app" "$STAGE/previous.app"
 fi
 mv "$APP" "$MAC_ROOT/output/Cue.app"
-echo "Built $MAC_ROOT/output/Cue.app (local ad-hoc signature; not notarized)."
+if [[ "$SIGN_IDENTITY" == "-" ]]; then
+  echo "Built $MAC_ROOT/output/Cue.app (ad-hoc: changed builds may require macOS permission again)."
+else
+  echo "Built $MAC_ROOT/output/Cue.app with the configured stable signing identity."
+fi
