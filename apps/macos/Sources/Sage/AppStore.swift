@@ -123,7 +123,17 @@ import SageCore
   func command(_ value: JSON) async throws {
     if preview {
       if value["type"] as? String == "history" {
-        onEvent(["type": "history", "chat": "preview", "messages": []])
+        // A synthetic exchange so --preview shows real answer layout offline.
+        let answer = "## 思路\n\n用 **哈希表** 记录出现过的数，一次遍历。\n\n```python\ndef two_sum(nums, target):\n    seen = {}\n    for i, x in enumerate(nums):\n        if target - x in seen:\n            return [seen[target - x], i]\n        seen[x] = i\n```\n\n时间 $O(n)$，空间 $O(n)$。"
+        onEvent([
+          "type": "history", "chat": "preview",
+          "messages": [
+            [
+              "id": "preview", "chat": "preview", "text": "两数之和怎么做？", "answer": answer,
+              "status": "completed", "detail": "", "context": "{}",
+            ]
+          ],
+        ])
       }
       return
     }

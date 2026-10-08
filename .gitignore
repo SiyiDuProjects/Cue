@@ -68,3 +68,6 @@ apps/server/web/*
 /artifacts/
 /artifacts-*.txt
 /apps/desktop/artifacts/
+
+# Mac answer view build
+dist-mac/

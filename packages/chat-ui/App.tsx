@@ -1,8 +1,4 @@
-import React, { useEffect, useRef, useState, type ReactNode } from "react";
-import ReactMarkdown, { type Components } from "react-markdown";
-import remarkGfm from "remark-gfm";
-import remarkMath from "remark-math";
-import rehypeKatex from "rehype-katex";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { Button, Dropdown, Label, Spinner, Tooltip } from "@heroui/react";
 import {
   ArrowClockwise,
@@ -10,7 +6,6 @@ import {
   ArrowUp,
   CaretDown,
   Check,
-  Copy,
   GearSix,
   Images,
   Plus,
@@ -22,10 +17,9 @@ import {
   X,
 } from "@phosphor-icons/react";
 import { type Event } from "./bridge";
+import { MessageList, busy, shortcut, type Message } from "./Messages";
 import "./styles.css";
 
-const isMac = /Mac/i.test(navigator.userAgent);
-const shortcut = isMac ? "⌘ ↩" : "Ctrl ↩";
 const time = (value: number) =>
   new Date(value).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 
@@ -64,64 +58,7 @@ function IconAction({
   );
 }
 
-function CodeBlock({ children }: { children?: ReactNode }) {
-  const code = React.Children.toArray(children)[0] as
-    | React.ReactElement<{ className?: string; children?: ReactNode }>
-    | undefined;
-  const language = /language-([\w+-]+)/.exec(code?.props.className || "")?.[1];
-  const text = String(code?.props.children ?? "").replace(/\n$/, "");
-  const [copied, setCopied] = useState(false);
-  return (
-    <div className="code-block">
-      <div className="code-header">
-        <span>{language || "代码"}</span>
-        <Button
-          size="sm"
-          variant="ghost"
-          className="code-copy"
-          onPress={() =>
-            void window.cue.copy(text).then(() => {
-              setCopied(true);
-              setTimeout(() => setCopied(false), 1500);
-            })
-          }
-        >
-          {copied ? <Check /> : <Copy />}
-          {copied ? "已复制" : "复制"}
-        </Button>
-      </div>
-      <pre>{children}</pre>
-    </div>
-  );
-}
-const markdown: Components = {
-  pre: ({ children }) => <CodeBlock>{children}</CodeBlock>,
-  table: ({ children }) => (
-    <div className="table-wrap">
-      <table>{children}</table>
-    </div>
-  ),
-  a: ({ href, children }) =>
-    href && /^https?:\/\//.test(href) ? (
-      <a href={href} target="_blank" rel="noreferrer">
-        {children}
-      </a>
-    ) : (
-      <span>{children}</span>
-    ),
-  img: () => null,
-};
 type Chat = { id: string; title: string };
-type Message = {
-  id: string;
-  chat: string;
-  text: string;
-  answer: string;
-  status: string;
-  detail: string;
-  context?: string;
-};
-const busy = (m: Message) => ["preparing", "running"].includes(m.status);
 export default function App() {
   const [connected, setConnected] = useState(false),
     [status, setStatus] = useState("正在连接…"),
@@ -394,13 +331,7 @@ export default function App() {
   }, [panel]);
   const chatTitle = chats.find((c) => c.id === chat)?.title || "聊天";
   const audioBusy = ["starting", "stopping"].includes(audio);
-  const imageCount = (m: Message) => {
-    try {
-      return JSON.parse(m.context || "{}").images?.length || 0;
-    } catch {
-      return 0;
-    }
-  };
+
   return (
     <div className="cue-app">
       {imagePreview && (
@@ -773,62 +704,7 @@ export default function App() {
           aria-label="聊天记录"
         >
           <div className="column">
-            {!messages.length && (
-              <div className="welcome">
-                <span className="wordmark">Cue</span>
-                <p>
-                  截图或开始转录后，按 <kbd>{shortcut}</kbd> 回答当前问题
-                </p>
-              </div>
-            )}
-            {messages.map((m) => (
-              <article className="exchange" key={m.id}>
-                <div className="user-message">
-                  <p>{m.text || "回答当前问题"}</p>
-                  {imageCount(m) > 0 && (
-                    <span className="attachment-note">
-                      <Images />
-                      {imageCount(m)} 张截图
-                    </span>
-                  )}
-                </div>
-                <div className="assistant-message">
-                  {m.answer && (
-                    <div className="markdown">
-                      <ReactMarkdown
-                        remarkPlugins={[remarkGfm, remarkMath]}
-                        rehypePlugins={[rehypeKatex]}
-                        components={markdown}
-                      >
-                        {m.answer}
-                      </ReactMarkdown>
-                    </div>
-                  )}
-                  {busy(m) && (
-                    <div className="thinking" role="status">
-                      <Spinner size="sm" color="current" />
-                      {m.answer ? "正在回答" : "正在思考…"}
-                    </div>
-                  )}
-                  {m.detail && <p className="detail">{m.detail}</p>}
-                  {m.answer && !busy(m) && (
-                    <div className="message-actions">
-                      <Button
-                        size="sm"
-                        variant="ghost"
-                        className="copy"
-                        onPress={() =>
-                          void attempt(() => window.cue.copy(m.answer))
-                        }
-                      >
-                        <Copy />
-                        复制
-                      </Button>
-                    </div>
-                  )}
-                </div>
-              </article>
-            ))}
+            <MessageList messages={messages} />
           </div>
         </div>
       )}

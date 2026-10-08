@@ -1,4 +1,6 @@
 import AppKit
+import SageCore
+import ScreenCaptureKit
 
 @main struct SageEntry {
   @MainActor static func main() async {
@@ -66,39 +68,57 @@ import AppKit
     }
     hotkey = shortcut
     chat?.show()
+    if let chat { Task { await chat.model.reconnect() } }
     if let i = CommandLine.arguments.firstIndex(of: "--render-preview"),
       CommandLine.arguments.count > i + 1, CommandLine.arguments.contains("--preview")
     {
       let path = CommandLine.arguments[i + 1]
       Task {
         for _ in 0..<100 {
-          if (try? await chat!.web.evaluateJavaScript(
-            "document.querySelector('.connection')?.textContent === '已连接'")) as? Bool == true
-          {
-            break
-          }
+          if chat?.model.connected == true { break }
           try? await Task.sleep(for: .milliseconds(100))
         }
-        do {
-          let diagnostic = try await chat!.web.evaluateJavaScript(
-            "JSON.stringify({bridge:typeof window.cue,status:document.querySelector('.connection')?.textContent,error:document.querySelector('.notice')?.textContent})"
-          )
-          print("Preview:", diagnostic ?? "unavailable")
-          let image = try await chat!.web.takeSnapshot(configuration: nil)
-          guard let tiff = image.tiffRepresentation, let rep = NSBitmapImageRep(data: tiff),
-            let png = rep.representation(using: .png, properties: [:])
-          else { exit(1) }
-          try png.write(to: URL(fileURLWithPath: path))
-          exit(0)
-        } catch {
-          fputs("Preview failed\n", stderr)
-          exit(1)
-        }
+        try? await Task.sleep(for: .milliseconds(1200))
+        guard let window = chat?.window,
+          let png = await Self.snapshot(window),
+          (try? png.write(to: URL(fileURLWithPath: path))) != nil
+        else { exit(1) }
+        exit(0)
       }
     }
   }
+  /// The whole window, toolbar and glass included, when screen access exists.
+  private static func snapshot(_ window: NSWindow) async -> Data? {
+    for _ in 0..<3 where ScreenAccess.granted {
+      do {
+        let content = try await SCShareableContent.excludingDesktopWindows(
+          false, onScreenWindowsOnly: false)
+        guard
+          let target = content.windows.first(where: {
+            $0.windowID == CGWindowID(window.windowNumber)
+          })
+        else { throw SageError("preview window not listed") }
+        let filter = SCContentFilter(desktopIndependentWindow: target)
+        let config = SCStreamConfiguration()
+        config.width = Int(filter.contentRect.width * CGFloat(filter.pointPixelScale))
+        config.height = Int(filter.contentRect.height * CGFloat(filter.pointPixelScale))
+        config.showsCursor = false
+        let image = try await SCScreenshotManager.captureImage(
+          contentFilter: filter, configuration: config)
+        return NSBitmapImageRep(cgImage: image).representation(using: .png, properties: [:])
+      } catch {
+        fputs("Window capture failed: \(error.localizedDescription)\n", stderr)
+        try? await Task.sleep(for: .milliseconds(500))
+      }
+    }
+    guard let view = window.contentView,
+      let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds)
+    else { return nil }
+    view.cacheDisplay(in: view.bounds, to: rep)
+    return rep.representation(using: .png, properties: [:])
+  }
   @objc private func show() { chat?.show() }
-  @objc private func answer() { chat?.emit(["type": "answer_requested"]) }
+  @objc private func answer() { chat?.model.ask() }
   @objc private func quit() { NSApp.terminate(nil) }
   func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows: Bool) -> Bool {
     show()

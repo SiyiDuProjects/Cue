@@ -8,6 +8,7 @@
     "dev": "vite --host 127.0.0.1",
     "dev:desktop": "concurrently -k \"vite --host 127.0.0.1\" \"wait-on http-get://127.0.0.1:5173 && electron . --renderer-url=http://127.0.0.1:5173\"",
     "build": "tsc && vite build",
+    "build:mac": "tsc && vite build --mode mac",
     "start:local": "npm run build && electron .",
     "test:ui": "electron tests/chat-ui-smoke.cjs && electron tests/direct-ui.cjs",
     "test:capture": "node --test tests/capture.test.cjs electron/desktop-connection.test.cjs electron/desktop-environment.test.cjs electron/screen-capture.test.cjs tests/direct-transcription.test.mjs",
@@ -17,17 +18,21 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "@heroui-pro/react": "file:../../../_private/vendor/heroui-pro-react-1.0.0-beta.8.tgz",
     "@heroui/react": "^3.2.6",
     "@heroui/styles": "^3.2.6",
     "@ozymandiasthegreat/vad": "2.0.7",
     "@phosphor-icons/react": "^2.1.10",
     "katex": "^0.19.0",
+    "motion": "^12.43.0",
     "react": "^19.2.8",
     "react-dom": "^19.2.8",
     "react-markdown": "^10.1.0",
+    "react-resizable-panels": "^4.14.3",
     "rehype-katex": "7.0.1",
     "remark-gfm": "^4.0.1",
-    "remark-math": "6.0.0"
+    "remark-math": "6.0.0",
+    "shiki": "^4.5.0"
   },
   "devDependencies": {
     "@tailwindcss/vite": "^4.3.3",

@@ -1,14 +1,20 @@
 import AppKit
 import SageCore
+import SwiftUI
 import WebKit
 
+/// Native window with SwiftUI controls. The embedded page renders answers and
+/// runs the shared transcription client; it gets PCM and events from here.
 @MainActor final class ChatWindow: NSObject, WKScriptMessageHandler, WKNavigationDelegate {
   let window: NSWindow
   let web: WKWebView
   let store: AppStore
+  let model: ChatModel
   private let ui: URL
+  private var page: URL { ui.appendingPathComponent("content.html") }
   init(store: AppStore) {
     self.store = store
+    model = ChatModel(store: store)
     ui = Bundle.main.resourceURL!.appendingPathComponent("ui", isDirectory: true)
     let controller = WKUserContentController()
     let configuration = WKWebViewConfiguration()
@@ -23,50 +29,53 @@ import WebKit
     window.title = "Cue"
     window.titleVisibility = .hidden
     window.titlebarAppearsTransparent = true
+    window.toolbarStyle = .unified
     window.level = .floating
     window.isOpaque = false
     window.backgroundColor = .clear
     window.isReleasedWhenClosed = false
-    window.minSize = NSSize(width: 440, height: 500)
+    let host = NSHostingController(rootView: ChatRootView(model: model, web: web))
+    // SwiftUI's .toolbar items become the window's native unified toolbar.
+    host.sceneBridgingOptions = [.toolbars]
+    window.contentViewController = host
+    window.setContentSize(NSSize(width: 640, height: 780))
+    window.minSize = NSSize(width: 440, height: 520)
     window.setFrameAutosaveName("CueChat")
-    window.center()
-    // Follows the system appearance; .hudWindow was always dark and muddy.
-    let glass = NSVisualEffectView()
-    glass.material = .underWindowBackground
-    glass.blendingMode = .behindWindow
-    glass.state = .active
-    window.contentView = glass
+    if window.frame.origin == .zero { window.center() }
     web.setValue(false, forKey: "drawsBackground")
-    web.translatesAutoresizingMaskIntoConstraints = false
-    glass.addSubview(web)
-    NSLayoutConstraint.activate([
-      web.leadingAnchor.constraint(equalTo: glass.leadingAnchor),
-      web.trailingAnchor.constraint(equalTo: glass.trailingAnchor),
-      web.topAnchor.constraint(equalTo: glass.topAnchor, constant: 28),
-      web.bottomAnchor.constraint(equalTo: glass.bottomAnchor),
-    ])
     controller.add(self, name: "cue")
     controller.addUserScript(
       WKUserScript(source: Self.bridge, injectionTime: .atDocumentStart, forMainFrameOnly: true))
     web.navigationDelegate = self
     store.onEvent = { [weak self] value in self?.emit(value) }
-    web.loadFileURL(ui.appendingPathComponent("index.html"), allowingReadAccessTo: ui)
+    model.render = { [weak self] value in self?.send(value) }
+    model.pin = { [weak self] on in self?.window.level = on ? .floating : .normal }
+    web.loadFileURL(page, allowingReadAccessTo: ui)
   }
   func show() {
     window.makeKeyAndOrderFront(nil)
     NSApp.activate(ignoringOtherApps: true)
   }
+  /// Every event reaches the page (transcription needs PCM and ASR events)
+  /// and the native model (controls and chat state).
   func emit(_ value: JSON) {
+    send(value)
+    model.handle(value)
+  }
+  private func send(_ value: JSON) {
     web.callAsyncJavaScript(
       "window.cueReceive(value)", arguments: ["value": value], in: nil, in: .page
     ) { _ in }
+  }
+  func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+    // Events sent before the page loaded were dropped; show the current chat.
+    model.sendRender()
   }
   func userContentController(
     _ userContentController: WKUserContentController, didReceive message: WKScriptMessage
   ) {
     guard message.frameInfo.isMainFrame,
-      message.frameInfo.request.url?.standardizedFileURL
-        == ui.appendingPathComponent("index.html").standardizedFileURL,
+      message.frameInfo.request.url?.standardizedFileURL == page.standardizedFileURL,
       let value = message.body as? JSON, let id = value["id"] as? String,
       let method = value["method"] as? String
     else { return }
@@ -78,52 +87,33 @@ import WebKit
     {
       do {
         try store.forwardTranscription(event)
-        web.callAsyncJavaScript(
-          "window.cueReply(id,{},null)", arguments: ["id": id], in: nil, in: .page
-        ) { _ in }
+        reply(id, [:] as JSON, nil)
       } catch {
-        web.callAsyncJavaScript(
-          "window.cueReply(id,null,error)",
-          arguments: ["id": id, "error": error.localizedDescription], in: nil, in: .page
-        ) { _ in }
+        reply(id, nil, error.localizedDescription)
       }
       return
     }
     Task {
       do {
-        let result = try await invoke(method, args)
-        web.callAsyncJavaScript(
-          "window.cueReply(id,result,null)", arguments: ["id": id, "result": result], in: nil,
-          in: .page
-        ) { _ in }
+        reply(id, try await invoke(method, args), nil)
       } catch {
-        web.callAsyncJavaScript(
-          "window.cueReply(id,null,error)",
-          arguments: ["id": id, "error": error.localizedDescription], in: nil, in: .page
-        ) { _ in }
+        reply(id, nil, error.localizedDescription)
       }
     }
   }
+  private func reply(_ id: String, _ result: Any?, _ error: String?) {
+    web.callAsyncJavaScript(
+      "window.cueReply(id,result,error)",
+      arguments: ["id": id, "result": result ?? NSNull(), "error": error ?? NSNull()], in: nil,
+      in: .page
+    ) { _ in }
+  }
+  /// The page asks for the current chat when ready, stops audio when its
+  /// transcription client fails, and copies answers.
   private func invoke(_ method: String, _ args: [Any]) async throws -> Any {
     switch method {
-    case "connect": try await store.connect()
-    case "command":
-      guard let value = args.first as? JSON else { throw SageError("操作无效。") }
-      try await store.command(value)
+    case "ready": model.sendRender()
     case "audio": try await store.audio(args.first as? Bool == true)
-    case "request":
-      guard let path = args.first as? String else { throw SageError("操作无效。") }
-      return try await store.request(
-        path, method: args.count > 1 ? args[1] as? String ?? "GET" : "GET",
-        body: args.count > 2 ? args[2] as? JSON : nil)
-    case "screenshot": return try await store.screenshot(args.first as? String ?? "")
-    case "sources": return try await store.sources()
-    case "selectSource": store.selectSource(args.first as? String ?? "frontmost")
-    case "uploadMaterials": return try await store.uploadMaterials()
-    case "importConnection": try await store.importConnection()
-    case "pin": window.level = args.first as? Bool == true ? .floating : .normal
-    case "openSettings": NSWorkspace.shared.open(URL(string: AppStore.serviceURL + "/settings")!)
-    case "openPrivacy": NSWorkspace.shared.open(ScreenAccess.settingsURL)
     case "copy":
       if let text = args.first as? String, text.count < 250000 {
         NSPasteboard.general.clearContents()
@@ -141,7 +131,7 @@ import WebKit
       decisionHandler(.cancel)
       return
     }
-    if url.standardizedFileURL == ui.appendingPathComponent("index.html").standardizedFileURL {
+    if url.standardizedFileURL == page.standardizedFileURL {
       decisionHandler(.allow)
     } else {
       if navigationAction.navigationType == .linkActivated, url.scheme == "https" {
@@ -152,7 +142,6 @@ import WebKit
   }
   static let bridge = """
     (() => {
-      document.documentElement.classList.add('mac');
       const pending = new Map();
       const call = (method,...args) => new Promise((resolve,reject) => {
         const id = crypto.randomUUID();
@@ -164,7 +153,7 @@ import WebKit
         error?p.reject(new Error(error)):p.resolve(result);
       };
       window.cueReceive = value => window.dispatchEvent(new CustomEvent('cue:event',{detail:value}));
-      window.cue = Object.fromEntries(['connect','command','request','audio','screenshot','sources','selectSource','uploadMaterials','importConnection','pin','copy','openSettings','openPrivacy'].map(method=>[method,(...args)=>call(method,...args)]));
+      window.cue = Object.fromEntries(['command','audio','copy','ready'].map(method=>[method,(...args)=>call(method,...args)]));
     })();
     """
 }

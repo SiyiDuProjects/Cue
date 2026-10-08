@@ -41,12 +41,13 @@ cp "$NODE_LICENSE" "$APP/Contents/Resources/Node-LICENSE.txt"
 cp "$MAC_ROOT/THIRD_PARTY_NOTICES.md" "$APP/Contents/Resources/THIRD_PARTY_NOTICES.md"
 cp "$MAC_ROOT/Support/Info.plist" "$APP/Contents/Info.plist"
 cp "$MAC_ROOT/Support/native-appshot.cjs" "$APP/Contents/Resources/bridge/native-appshot.cjs"
-(cd "$REPO_ROOT/apps/desktop" && npm run build)
+# The Mac window is native; the page only renders answers and runs transcription.
+(cd "$REPO_ROOT/apps/desktop" && npm run build:mac)
 cp "$REPO_ROOT/apps/desktop/node_modules/@ozymandiasthegreat/vad/LICENSE" "$APP/Contents/Resources/VAD-LICENSE.txt"
-cp -R "$REPO_ROOT/apps/desktop/dist" "$APP/Contents/Resources/ui"
+cp -R "$REPO_ROOT/apps/desktop/dist-mac" "$APP/Contents/Resources/ui"
 # The bundled Vite output is one self-contained script. Classic loading avoids
 # file-origin module CORS in WKWebView without weakening WebKit permissions.
-"$NODE_BIN" -e 'const fs=require("fs");const p=process.argv[1];fs.writeFileSync(p,fs.readFileSync(p,"utf8").replace(/type="module"/g,"defer").replace(/ crossorigin/g,""));' "$APP/Contents/Resources/ui/index.html"
+"$NODE_BIN" -e 'const fs=require("fs");const p=process.argv[1];fs.writeFileSync(p,fs.readFileSync(p,"utf8").replace(/type="module"/g,"defer").replace(/ crossorigin/g,""));' "$APP/Contents/Resources/ui/content.html"
 if [[ -n "$SIGN_IDENTITY" ]]; then
   codesign --force --sign "$SIGN_IDENTITY" "$APP/Contents/MacOS/sage-node"
   codesign --force --sign "$SIGN_IDENTITY" "$APP"

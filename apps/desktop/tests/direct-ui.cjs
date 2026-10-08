@@ -27,8 +27,8 @@ app.whenReady().then(async () => {
     throw Error("Direct UI timed out");
   };
   try {
-    await win.loadFile(path.join(__dirname, "../dist/index.html"));
-    await wait("document.querySelector('.connection')?.textContent==='已连接'");
+    await win.loadFile(path.join(__dirname, "../dist-mac/content.html"));
+    await wait("!!document.querySelector('.content-view')");
     await run(
       "for(const role of ['interviewer','candidate'])window.cueReceive({type:'asr_config',role,stream:role,token:'ek_synthetic',session:{type:'transcription'}})",
     );

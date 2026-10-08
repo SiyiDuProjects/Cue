@@ -1,6 +1,7 @@
 @import "tailwindcss";
 @import "@heroui/styles";
 @import "katex/dist/katex.min.css";
+@import "@heroui-pro/react/css/components/code-block.css";
 
 /* The shared chat UI lives outside this package; scan it for utilities. */
 @source "../../../packages/chat-ui";

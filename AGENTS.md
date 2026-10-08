@@ -11,8 +11,9 @@ Cue 是个人面试助手：Mac / Windows 桌面半透明悬浮窗中运行 Resp
 ## 目录与发布边界
 
 - `packages/transcription/`：两端共用客户端 VAD、OpenAI 转录 WebSocket、轮换和有序截止逻辑。
-- `packages/chat-ui/`：Mac WKWebView 与 Windows Electron 共用 React 聊天。依赖由 `apps/desktop` 安装；不依赖云端嵌套仓库。
-- `apps/macos/`：AppKit 窗口、钥匙串、ScreenCaptureKit 双路采集、手动 App Shot、快捷键。Node 仅供 App Shot。
+- `packages/chat-ui/`：Windows 完整聊天界面（`App.tsx`）；`Messages.tsx` 是两端共用的回答渲染；`Content.tsx` 是 Mac 回答页（只渲染消息，并承载转录客户端）。依赖由 `apps/desktop` 安装；不依赖云端嵌套仓库。界面用开源 HeroUI v3 + Tailwind，代码块用 HeroUI Pro。
+- HeroUI Pro 来自仓库外的授权包 `/Users/siyi/Projects/_private/vendor/heroui-pro-react-1.0.0-beta.8.tgz`（`file:` 依赖）。外层仓库公开，不得提交该包或其代码。`shiki` 在构建时被替换为 `apps/desktop/src/shiki.ts` 的固定语言集，因为 Mac 页面以 file:// 单脚本加载，不能动态导入。
+- `apps/macos/`：原生 SwiftUI 窗口与工具栏（`ChatModel` 管理界面状态，`ChatViews` 为原生控件），只把回答区交给 WKWebView 加载 `content.html`；钥匙串、ScreenCaptureKit 双路采集、手动 App Shot、快捷键。Node 仅供 App Shot。命令行 SwiftPM 构建无法加载 SwiftUI 宏，`@State` 用 `SwiftUI.State` 类型别名代替。
 - `apps/desktop/`：Windows Electron 宿主、safeStorage、双路 AudioWorklet、截图与打包。
 - `apps/cloud/`：独立私有 Sites 仓库，D1 / R2、转录、Responses、只读 MCP、网页设置。外层 GitHub 仓库公开，不把云端源码或私人资料直接并入。
 - 正式域名 `https://interview.siyidu.com`；平台 MCP 地址 `https://sage-capture.dusiyi0916.chatgpt.site/mcp` 保持不变。
@@ -46,7 +47,7 @@ Cue 是个人面试助手：Mac / Windows 桌面半透明悬浮窗中运行 Resp
 Mac 可加载 `/Users/siyi/Projects/_tools/env.sh`。Windows 使用 `npm.cmd`。共享私钥位于相邻 `_private/Keys`，需要时确认文件，不输出其内容；不要修改其他项目配置。
 
 - 云端：`npm --prefix apps/cloud test`、`npm --prefix apps/cloud run build`。
-- 桌面：`npm --prefix apps/desktop run test:capture`、`npm --prefix apps/desktop run build`、`npm --prefix apps/desktop run test:ui`。
+- 桌面：`npm --prefix apps/desktop run test:capture`、`npm --prefix apps/desktop run build`（Windows）、`npm --prefix apps/desktop run build:mac`（Mac 回答页）、`npm --prefix apps/desktop run test:ui`（需先完成两种构建）。
 - 网页真实 DOM / 文件解析测试：`apps/desktop/node_modules/.bin/electron apps/cloud/tests/settings-ui.cjs`（仅 loopback，合成文件）。
 - Mac：`bash apps/macos/scripts/check-offline.sh`；发布包 `bash apps/macos/scripts/build-app.sh`。
 - 云端真实长测：明确获准后运行 `bash apps/macos/scripts/check-live.sh --run-live 65`。使用合成 PCM、原生钥匙串和真实付费服务，会接管当前桌面连接；期间不要启动另一个客户端或部署云端。它不替代麦克风、系统音频和 Windows 真机验收。

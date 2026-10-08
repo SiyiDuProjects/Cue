@@ -23,10 +23,12 @@ body {
   font-size: 14px;
   background: var(--background);
 }
-/* The Mac window draws system glass behind the page. */
-html.mac body,
-html.mac .cue-app {
-  background: color-mix(in oklab, var(--background) 82%, transparent);
+/* Mac answer view: the native window draws the glass and every control. */
+html.mac body {
+  background: transparent;
+}
+.content-view {
+  height: 100%;
 }
 
 /* Top bar */
@@ -411,30 +413,16 @@ kbd {
   overflow-y: hidden;
   padding: 2px 0;
 }
-.code-block {
+/* Pro code block: keep its colors, align the header with the copy button. */
+.markdown .code-block {
   margin: 0.8em 0;
-  border-radius: 12px;
-  background: var(--surface-secondary);
-  overflow: hidden;
 }
-.code-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 4px 4px 0 14px;
+.code-language {
   font-size: 12px;
   color: var(--muted);
 }
-.code-header .button {
+.code-copy {
   color: var(--muted);
-}
-.code-block pre {
-  margin: 0;
-  padding: 4px 14px 14px;
-  overflow-x: auto;
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  font-size: 12.5px;
-  line-height: 1.6;
 }
 
 /* Composer */

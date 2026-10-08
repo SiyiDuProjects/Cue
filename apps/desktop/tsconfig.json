@@ -21,6 +21,9 @@
     "jsx": "react-jsx",
     "baseUrl": ".",
     "paths": {
+      "@heroui-pro/react/*": [
+        "node_modules/@heroui-pro/react/dist/components/*/index.d.ts"
+      ],
       "react": [
         "node_modules/@types/react"
       ],

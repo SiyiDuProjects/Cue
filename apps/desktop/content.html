@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="zh-CN" class="mac">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="color-scheme" content="light dark" />
+    <script>
+      // The native window follows the system appearance; match it here.
+      (() => {
+        const query = matchMedia("(prefers-color-scheme: dark)");
+        const apply = () => {
+          const theme = query.matches ? "dark" : "light";
+          const root = document.documentElement;
+          root.classList.remove("light", "dark");
+          root.classList.add(theme);
+          root.dataset.theme = theme;
+          root.style.colorScheme = theme;
+        };
+        apply();
+        query.addEventListener("change", apply);
+      })();
+    </script>
+    <title>Cue</title>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/content.tsx"></script>
+  </body>
+</html>
