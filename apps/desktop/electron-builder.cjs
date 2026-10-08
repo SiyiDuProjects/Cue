@@ -9,7 +9,7 @@ module.exports = {
   asar: true,
   toolsets: { nsis: "1.2.1" },
   npmRebuild: false,
-  files: ["package.json", "electron/*.cjs", "dist/**/*", "!node_modules{,/**/*}"],
+  files: ["package.json", "VAD-LICENSE.txt", "electron/*.cjs", "dist/**/*", "!node_modules{,/**/*}"],
   win: { ...(process.platform === "win32" ? {} : {signAndEditExecutable:false}), target: [{ target: "nsis", arch: ["x64"] }], executableName: "Cue", icon: path.join(__dirname, "assets/sage.ico"), requestedExecutionLevel: "asInvoker" },
   nsis: {
     artifactName: "Cue-Setup-${version}.exe",

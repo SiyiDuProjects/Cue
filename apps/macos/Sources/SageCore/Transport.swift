@@ -90,7 +90,6 @@ extension URLSessionWebSocketTask: SocketConnection {}
   public var onEvent: (JSON) -> Void = { _ in }
   public var onState: (Bool, String) -> Void = { _, _ in }
   public var onExpired: () -> Void = {}
-  public var onGap: () -> Void = {}
   private let url: URL
   private let token: String
   private let role: String
@@ -102,7 +101,6 @@ extension URLSessionWebSocketTask: SocketConnection {}
   private var sender: Task<Void, Never>?
   private var stopped = false
   private var frames: [(URLSessionWebSocketTask.Message, CheckedContinuation<Void, Error>?)] = []
-  private var queuedBytes = 0
   public init(
     url: URL, token: String, role: String, siteToken: String = "",
     connectionFactory: ((URL) -> any SocketConnection)? = nil
@@ -213,7 +211,7 @@ extension URLSessionWebSocketTask: SocketConnection {}
       try? await Task.sleep(nanoseconds: UInt64(min(attempt * 2, 15)) * 1_000_000_000)
     }
   }
-  /// Ordered control insertion for a cutoff: no actor suspension between PCM and marker.
+  /// Ordered control insertion for a cutoff: no actor suspension between commit and ask markers.
   public func enqueue(_ json: JSON) throws {
     guard ready, !stopped else { throw SageError("连接尚未就绪。") }
     guard frames.count < 100 else { throw SageError("连接积压，请稍后重试。") }
@@ -230,48 +228,12 @@ extension URLSessionWebSocketTask: SocketConnection {}
       drain()
     }
   }
-  @discardableResult public func audio(_ data: Data) -> Bool {
-    guard ready, !stopped else {
-      onGap()
-      return false
-    }
-    var complete = true
-    while queuedBytes + data.count > 48_000 {
-      let lastControl =
-        frames.lastIndex(where: {
-          if case .string = $0.0 { return true }
-          return false
-        }) ?? -1
-      guard
-        let index = frames.indices.first(where: { index in
-          if index <= lastControl { return false }
-          if case .data = frames[index].0 { return true }
-          return false
-        })
-      else {
-        onGap()
-        return false
-      }
-      if case .data(let old) = frames.remove(at: index).0 { queuedBytes -= old.count }
-      complete = false
-      onGap()
-    }
-    guard data.count <= 24_001 else {
-      onGap()
-      return false
-    }
-    frames.append((.data(data), nil))
-    queuedBytes += data.count
-    drain()
-    return complete
-  }
   private func drain() {
     guard sender == nil, let current = socket else { return }
     sender = Task { [weak self] in
       guard let self else { return }
       while !frames.isEmpty && !Task.isCancelled && socket === current {
         let (message, continuation) = frames.removeFirst()
-        if case .data(let data) = message { queuedBytes -= data.count }
         do {
           try await current.send(message)
           continuation?.resume()
@@ -287,6 +249,5 @@ extension URLSessionWebSocketTask: SocketConnection {}
   private func failQueue() {
     for (_, continuation) in frames { continuation?.resume(throwing: SageError("连接中断，发送未确认。")) }
     frames = []
-    queuedBytes = 0
   }
 }

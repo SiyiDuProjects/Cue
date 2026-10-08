@@ -30,7 +30,10 @@ PY
 swiftc -parse-as-library -module-cache-path "$ROOT/apps/macos/.build/acceptance-cache" \
   "$ROOT/apps/macos/Sources/SageCore/Protocol.swift" \
   "$ROOT/apps/macos/Sources/SageCore/Transport.swift" \
+  "$ROOT/apps/macos/tests/DirectAcceptanceBridge.swift" \
   "$ROOT/apps/macos/tests/live-acceptance.swift" -o "$RUN_DIR/CueAcceptance"
+export CUE_NODE_BIN="$(node -p 'process.execPath')"
+export CUE_DIRECT_RUNNER="$ROOT/apps/desktop/tests/direct-runner.mjs"
 echo "Production acceptance: replaces the desktop connection; uses paid transcription."
 echo "A 65-minute run also checks paid Responses chat. No real microphone or screen capture."
 exec "$RUN_DIR/CueAcceptance" --run-live "$RUN_DIR" "$MINUTES" "$RUN_DIR/report.jsonl"

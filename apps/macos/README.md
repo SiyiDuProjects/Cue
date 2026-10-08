@@ -1,6 +1,6 @@
 # Cue for macOS
 
-macOS 15+ / Apple Silicon。原生半透明浮窗装载共用聊天界面；系统音频、麦克风、App Shot 和凭证保留在原生宿主。
+macOS 15+ / Apple Silicon。原生半透明浮窗装载共用聊天界面；原生宿主采集系统音频和麦克风、执行 App Shot 并保管设备凭证；共用本地界面通过短期凭证直连 OpenAI 转录。
 
 - 窗口内 ⌘ Enter 回答；全局快捷键 ⌃⌥⌘ Enter。
 - 关闭窗口保留菜单栏，菜单栏退出会停止采集和连接。

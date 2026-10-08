@@ -22,6 +22,7 @@ for (const name of ["main.cjs", "preload.cjs", "desktop-environment.cjs", "deskt
   "desktop-window.cjs", "screen-capture.cjs"]) {
   fs.copyFileSync(path.join(desktop, "electron", name), path.join(stage, "electron", name));
 }
+fs.copyFileSync(path.join(desktop, "node_modules/@ozymandiasthegreat/vad/LICENSE"), path.join(stage, "VAD-LICENSE.txt"));
 fs.cpSync(path.join(desktop, "dist"), path.join(stage, "dist"), { recursive: true });
 fs.writeFileSync(path.join(stage, "package.json"), JSON.stringify({
   name: "sage", productName: "Cue", version: metadata.version, description: "Cue desktop interview assistant",

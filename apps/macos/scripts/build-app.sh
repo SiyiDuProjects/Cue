@@ -33,6 +33,7 @@ cp "$MAC_ROOT/THIRD_PARTY_NOTICES.md" "$APP/Contents/Resources/THIRD_PARTY_NOTIC
 cp "$MAC_ROOT/Support/Info.plist" "$APP/Contents/Info.plist"
 cp "$MAC_ROOT/Support/native-appshot.cjs" "$APP/Contents/Resources/bridge/native-appshot.cjs"
 (cd "$REPO_ROOT/apps/desktop" && npm run build)
+cp "$REPO_ROOT/apps/desktop/node_modules/@ozymandiasthegreat/vad/LICENSE" "$APP/Contents/Resources/VAD-LICENSE.txt"
 cp -R "$REPO_ROOT/apps/desktop/dist" "$APP/Contents/Resources/ui"
 # The bundled Vite output is one self-contained script. Classic loading avoids
 # file-origin module CORS in WKWebView without weakening WebKit permissions.

@@ -4,6 +4,10 @@ import {
   type AudioCaptureHandle,
 } from "./audioCapture";
 import { receive, type Event } from "../../../packages/chat-ui/bridge";
+import {
+  directTranscription,
+  installMacTranscription,
+} from "./directTranscription";
 const host = (window as any).sageCaptureHost;
 if (host) {
   let socket: WebSocket | undefined,
@@ -19,9 +23,12 @@ if (host) {
   const handles = new Map<string, AudioCaptureHandle>(),
     held = new Map<string, ArrayBuffer[]>(),
     holding = new Set<string>();
-  const queue: (string | ArrayBuffer)[] = [];
-  let bytes = 0;
+  const queue: string[] = [];
   const report = (detail: string) => receive({ type: "error", detail });
+  const direct = directTranscription(send, (detail) => {
+    report(detail);
+    void stop().catch(() => endLocal());
+  });
   const wait = async (test: () => boolean, ms: number) => {
     const until = Date.now() + ms;
     while (!test()) {
@@ -33,7 +40,6 @@ if (host) {
     if (!ready || socket?.readyState !== WebSocket.OPEN) return;
     while (queue.length && socket.bufferedAmount < 24000) {
       const value = queue.shift()!;
-      if (typeof value !== "string") bytes -= value.byteLength;
       socket.send(value);
     }
   }
@@ -54,28 +60,15 @@ if (host) {
       }
       return;
     }
-    const tagged = new Uint8Array(data.byteLength + 1);
-    tagged[0] = role === "interviewer" ? 0 : 1;
-    tagged.set(new Uint8Array(data), 1);
-    // Never evict audio before an already queued ask/stop marker.
-    while (bytes + tagged.length > 48000) {
-      let index = -1;
-      for (let i = queue.length - 1; i >= 0; i--) {
-        if (typeof queue[i] === "string") break;
-        index = i;
-      }
-      if (index < 0) {
-        report("连接积压，音频出现缺口。");
-        return;
-      }
-      bytes -= (queue.splice(index, 1)[0] as ArrayBuffer).byteLength;
-      report("连接积压，音频出现缺口。");
+    try {
+      direct.pcm(role, data);
+    } catch (error) {
+      report(String(error));
+      void stop().catch(() => endLocal());
     }
-    queue.push(tagged.buffer);
-    bytes += tagged.length;
-    drain();
   }
   function endLocal() {
+    direct.reset();
     generation++;
     handles.forEach((h) => h.stop());
     handles.clear();
@@ -99,13 +92,15 @@ if (host) {
     current.binaryType = "arraybuffer";
     current.onopen = () =>
       current.send(
-        JSON.stringify({ type: "authenticate", protocol: "cue-chat-v1" }),
+        JSON.stringify({ type: "authenticate", protocol: "cue-chat-v2" }),
       );
     current.onmessage = (e) => {
+      if (socket !== current) return;
       lastMessage = Date.now();
       const value = JSON.parse(e.data);
+      if (direct.handle(value)) return;
       if (value.type === "session_ready") {
-        if (value.protocol !== "cue-chat-v1") {
+        if (value.protocol !== "cue-chat-v2") {
           stopped = true;
           current.close();
           return;
@@ -129,7 +124,6 @@ if (host) {
       ready = false;
       endLocal();
       queue.length = 0;
-      bytes = 0;
       clearInterval(heartbeat);
       receive({
         type: "disconnected",
@@ -161,7 +155,7 @@ if (host) {
         if (!(await h.finish())) complete = false;
       handles.clear();
       if (ready) {
-        send({ type: "stop" });
+        direct.control({ type: "stop" });
         await wait(() => phase === "idle", 12000);
       }
       if (!complete) report("本地音频尾帧未全部确认。");
@@ -205,6 +199,8 @@ if (host) {
     }
   }
   async function command(value: Event) {
+    if (value.type === "ask" && ["starting", "stopping"].includes(phase))
+      throw Error("请等待音频就绪。");
     if (value.type === "ask" && handles.size) {
       if (marking) throw Error("正在准备上一轮问题。");
       marking = true;
@@ -215,7 +211,7 @@ if (host) {
             holding.add(role);
           }),
         );
-        send(value);
+        direct.control(value);
       } finally {
         holding.clear();
         for (const [role, frames] of held)
@@ -223,7 +219,7 @@ if (host) {
         held.clear();
         marking = false;
       }
-    } else send(value);
+    } else direct.control(value);
   }
   window.cue = {
     connect: open,
@@ -262,4 +258,4 @@ if (host) {
     socket?.close();
   });
   window.setInterval(drain, 10);
-}
+} else installMacTranscription();

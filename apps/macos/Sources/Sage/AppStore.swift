@@ -1,7 +1,7 @@
 import AppKit
 import SageCore
 
-/// Native credentials and capture never enter the WebView.
+/// Device credentials stay native; PCM and ephemeral ASR tokens enter the local WebView.
 @MainActor final class AppStore {
   static let serviceURL = "https://interview.siyidu.com"
   var onEvent: (JSON) -> Void = { _ in }
@@ -64,7 +64,6 @@ import SageCore
         onEvent(["type": "disconnected", "detail": detail])
       }
     }
-    next.onGap = { [weak self] in self?.onEvent(["type": "error", "detail": "连接积压，部分音频出现缺口。"]) }
     next.onExpired = { [weak self] in
       self?.onEvent(["type": "disconnected", "detail": "登录失效，请更新连接设置。"])
     }
@@ -82,8 +81,13 @@ import SageCore
       cached = value
       phase = "idle"
     case "state": recording = value["recording"] as? String ?? recording
-    case "started": phase = "active"
-    case "stopped": phase = "idle"
+    case "started":
+      phase = "prepared"
+      return  // Publish only after the native devices have actually started.
+    case "stopped":
+      audioGeneration = UUID()
+      phase = "idle"
+      Task { _ = await self.capture.finish() }
     case "replaced":
       audioGeneration = UUID()
       phase = "idle"
@@ -97,9 +101,7 @@ import SageCore
     for batch in sink.takeBoth() {
       let role = batch.role
       for frame in batch.frames {
-        var tagged = Data([role == "interviewer" ? 0 : 1])
-        tagged.append(frame)
-        link?.audio(tagged)
+        onEvent(["type": "pcm", "role": role, "data": frame.base64EncodedString()])
       }
       if batch.gap { onEvent(["type": "error", "detail": "本地音频出现缺口，请检查转录。"]) }
     }
@@ -107,6 +109,10 @@ import SageCore
       onEvent(["type": "error", "detail": error])
       Task { try? await self.audio(false) }
     }
+  }
+  func forwardTranscription(_ value: JSON) throws {
+    guard let link, link.ready else { throw SageError("连接尚未就绪。") }
+    try link.enqueue(value)
   }
   func command(_ value: JSON) async throws {
     if preview {
@@ -116,12 +122,18 @@ import SageCore
       return
     }
     guard let link, link.ready else { throw SageError("连接尚未就绪。") }
+    if value["type"] as? String == "asr_forward", let message = value["message"] as? JSON {
+      try link.enqueue(message)
+      return
+    }
     if value["type"] as? String == "ask" {
-      guard !["starting", "stopping"].contains(phase) else { throw SageError("请等待音频就绪。") }
-      // Drain both bounded local mailboxes into the same ordered send queue.
-      // The marker enters the queue synchronously, before any actor suspension.
+      guard !["starting", "prepared", "stopping"].contains(phase) else {
+        throw SageError("请等待音频就绪。")
+      }
+      // PCM and its marker enter WebKit in native order; the shared client
+      // commits both OpenAI streams before sending the ordered ask to Sites.
       pump()
-      try link.enqueue(value)
+      onEvent(["type": "audio_control", "value": value])
       return
     }
     try await link.send(value)
@@ -135,12 +147,20 @@ import SageCore
       audioGeneration = epoch
       phase = "starting"
       do {
-        try await capture.prepare()
         guard audioGeneration == epoch else { return }
         try await link.send(["type": "start"])
         for _ in 0..<300 {
           guard audioGeneration == epoch else { return }
-          if phase == "active" { return }
+          if phase == "prepared" {
+            try await capture.prepare()
+            guard audioGeneration == epoch else {
+              _ = await capture.finish()
+              return
+            }
+            phase = "active"
+            onEvent(["type": "started"])
+            return
+          }
           try await Task.sleep(for: .milliseconds(50))
         }
         throw SageError("转录启动超时。")
@@ -154,7 +174,7 @@ import SageCore
       phase = "stopping"
       let complete = await capture.finish()
       pump(force: true)
-      try await link.send(["type": "stop"])
+      onEvent(["type": "audio_control", "value": ["type": "stop"]])
       for _ in 0..<240 {
         if phase == "idle" { break }
         try await Task.sleep(for: .milliseconds(50))

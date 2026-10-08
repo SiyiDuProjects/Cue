@@ -70,6 +70,24 @@ import WebKit
       let method = value["method"] as? String
     else { return }
     let args = value["args"] as? [Any] ?? []
+    // Preserve receipt order without creating independently scheduled Tasks for
+    // commit/ask markers forwarded by the shared transcription module.
+    if method == "command", let command = args.first as? JSON,
+      command["type"] as? String == "asr_forward", let event = command["message"] as? JSON
+    {
+      do {
+        try store.forwardTranscription(event)
+        web.callAsyncJavaScript(
+          "window.cueReply(id,{},null)", arguments: ["id": id], in: nil, in: .page
+        ) { _ in }
+      } catch {
+        web.callAsyncJavaScript(
+          "window.cueReply(id,null,error)",
+          arguments: ["id": id, "error": error.localizedDescription], in: nil, in: .page
+        ) { _ in }
+      }
+      return
+    }
     Task {
       do {
         let result = try await invoke(method, args)

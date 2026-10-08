@@ -8,11 +8,11 @@ import Security
   let name: String
   var link: SocketLink!
   var raw: URLSessionWebSocketTask?
+  var bridge: DirectAcceptanceBridge!
   let network = URLSession(configuration: .ephemeral)
   var events: [JSON] = []
   var answers: [String: JSON] = [:]
   var failure: String?
-  var gaps = 0
   var strictConnection = false
   var disconnected = 0
   let report: (JSON) -> Void
@@ -21,6 +21,7 @@ import Security
   ) throws {
     self.name = name
     self.report = report
+    bridge = try DirectAcceptanceBridge()
     link = SocketLink(
       url: try address.socket(interview: "current", role: "interviewer"), token: keys.device,
       role: "desktop", siteToken: keys.site,
@@ -33,21 +34,36 @@ import Security
         return socket
       })
     link.onEvent = { [weak self] event in self?.receive(event) }
-    link.onGap = { [weak self] in
-      self?.gaps += 1
-      self?.failure = "PCM queue gap"
-    }
-    link.onState = { [weak self] ready, _ in
+    link.onState = { [weak self] ready, detail in
       guard let self else { return }
       if !ready {
+        try? bridge.send(["kind": "server", "value": ["type": "disconnected"]])
         disconnected += 1
         if strictConnection { failure = "Unexpected disconnect during soak" }
       }
-      report(["client": name, "event": "connection", "ready": ready])
+      report([
+        "client": name, "event": "connection", "ready": ready, "detail": detail,
+        "close_code": raw?.closeCode.rawValue ?? 0,
+      ])
+    }
+    bridge.onMessage = { [weak self] message in
+      guard let self else { return }
+      if message["kind"] as? String == "error" {
+        failure = message["detail"] as? String ?? "Direct transcription failed"
+      } else if message["kind"] as? String == "send", let value = message["value"] as? JSON,
+        link.ready
+      {
+        do { try link.enqueue(value) } catch { failure = "Server control queue failed" }
+      }
     }
   }
   func receive(_ event: JSON) {
     let type = event["type"] as? String ?? "unknown"
+    if type.hasPrefix("asr_") || ["session_ready", "stopped", "replaced"].contains(type) {
+      do { try bridge.send(["kind": "server", "value": event]) } catch {
+        failure = "Direct runtime is unavailable"
+      }
+    }
     if type == "error" { failure = event["detail"] as? String ?? "Server error" }
     if [
       "session_ready", "started", "stopped", "state", "replaced", "rotated", "chat_created",
@@ -91,7 +107,11 @@ import Security
   }
   func command(_ value: JSON, expecting type: String) async throws -> JSON {
     let index = events.count
-    try await link.send(value)
+    if ["ask", "stop"].contains(value["type"] as? String ?? "") {
+      try bridge.send(["kind": "control", "value": value])
+    } else {
+      try await link.send(value)
+    }
     return try await wait(type, after: index)
   }
   func finals(after index: Int) -> [JSON] {
@@ -100,14 +120,18 @@ import Security
     }
   }
   func close() {
+    bridge.close()
     link.close()
     network.invalidateAndCancel()
   }
   func ask(chat: String, text: String, effort: String, cancel: Bool = false) async throws -> JSON {
     let id = UUID().uuidString.lowercased()
     let start = Date()
-    try await link.send([
-      "type": "ask", "id": id, "chat": chat, "text": text, "effort": effort, "images": [],
+    try bridge.send([
+      "kind": "control",
+      "value": [
+        "type": "ask", "id": id, "chat": chat, "text": text, "effort": effort, "images": [],
+      ],
     ])
     var didCancel = false
     while Date().timeIntervalSince(start) < 135 {
@@ -231,12 +255,15 @@ import Security
         } else {
           frame.append(Data(count: chunk))
         }
-        guard client.link.audio(frame) else { throw SageError("Synthetic audio was not queued") }
+        try client.bridge.send([
+          "kind": "pcm", "role": role == 0 ? "interviewer" : "candidate",
+          "audio": frame.dropFirst().base64EncodedString(),
+        ])
       }
       if Int(elapsed / 60) != minute {
         minute = Int(elapsed / 60)
         report([
-          "event": "soak_progress", "elapsed": elapsed, "gaps": client.gaps,
+          "event": "soak_progress", "elapsed": elapsed,
           "rotations": client.events.filter { $0["type"] as? String == "rotated" }.count,
         ])
       }
@@ -343,12 +370,14 @@ import Security
         }
       }
       defer { chatTask.cancel() }
-      let speechTimes: [Double] = minutes >= 62 ? [0, 3270, 3330, 3660] : [0, minutes * 60 - 15]
+      // Frequent speech exercises persistence cost, and crosses the 55-minute
+      // handover while both channels contain real speech (rather than silence).
+      let speechTimes = Array(stride(from: 0.0, to: minutes * 60 - 5, by: 6.0))
       try await stream(
         second, fixtures: fixtures, seconds: minutes * 60, speechAt: speechTimes, report: report)
       try await chatTask.value
       let final = try await second.command(["type": "stop"], expecting: "stopped")
-      guard final["complete"] as? Bool == true, second.gaps == 0 else {
+      guard final["complete"] as? Bool == true else {
         throw SageError("Soak ended with missing audio")
       }
       if minutes >= 62 {
@@ -378,7 +407,7 @@ import Security
       else { throw SageError("Stopped recording revived") }
       report([
         "event": "passed", "wall_seconds": Date().timeIntervalSince(beginning),
-        "soak_minutes": minutes, "gaps": second.gaps,
+        "soak_minutes": minutes,
       ])
       clients.forEach { $0.close() }
       try? handle.close()

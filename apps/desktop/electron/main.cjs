@@ -95,7 +95,7 @@ async function connect() {
     signal: AbortSignal.timeout(8000),
   });
   const health = await response.json();
-  if (!response.ok || health.capture_protocol !== "cue-chat-v1")
+  if (!response.ok || health.capture_protocol !== "cue-chat-v2")
     throw Error("此服务器尚未切换采集版本，请保留已安装的客户端。");
   return { origin };
 }
@@ -194,6 +194,18 @@ function configure() {
   ses.webRequest.onBeforeSendHeaders((details, callback) => {
     const url = new URL(details.url);
     if (url.protocol === "wss:" || url.protocol === "ws:") {
+      if (
+        details.webContentsId === window?.webContents.id &&
+        url.origin === "wss://api.openai.com" &&
+        url.pathname === "/v1/realtime" &&
+        url.search === "?intent=transcription" &&
+        !url.hash
+      ) {
+        // This path uses the scoped ephemeral subprotocol from Sites. Never add
+        // device/Sites credentials to an OpenAI request.
+        callback({ requestHeaders: details.requestHeaders });
+        return;
+      }
       const expected = new URL(origin);
       expected.protocol = expected.protocol === "https:" ? "wss:" : "ws:";
       if (
