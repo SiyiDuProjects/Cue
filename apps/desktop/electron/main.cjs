@@ -11,6 +11,7 @@ const {
   Menu,
   net,
   nativeImage,
+  nativeTheme,
   session,
   safeStorage,
   screen,
@@ -246,6 +247,7 @@ async function show() {
       : pathToFileURL(path.join(__dirname, "../dist/index.html")).href;
     window = new BrowserWindow({
       ...DESKTOP_WINDOW_OPTIONS,
+      backgroundColor: nativeTheme.shouldUseDarkColors ? "#0e0e10" : "#f4f4f5",
       width: 640,
       height: 780,
       minWidth: 480,

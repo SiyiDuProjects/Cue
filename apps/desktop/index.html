@@ -5,13 +5,27 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
     <meta name="color-scheme" content="light dark" />
     <script>
-      try {
-        const saved = localStorage.getItem("heroui-theme");
-        const theme = saved === "dark" || (saved === "system" && matchMedia("(prefers-color-scheme: dark)").matches) ? "dark" : "light";
-        document.documentElement.classList.add(theme);
-        document.documentElement.dataset.theme = theme;
-        document.querySelector('meta[name="color-scheme"]').content = theme;
-      } catch {}
+      // Follow the system appearance unless the user saved a choice.
+      (() => {
+        const query = matchMedia("(prefers-color-scheme: dark)");
+        const apply = () => {
+          let saved = "system";
+          try {
+            saved = localStorage.getItem("heroui-theme") || "system";
+          } catch {}
+          const theme =
+            saved === "dark" || (saved === "system" && query.matches)
+              ? "dark"
+              : "light";
+          const root = document.documentElement;
+          root.classList.remove("light", "dark");
+          root.classList.add(theme);
+          root.dataset.theme = theme;
+          root.style.colorScheme = theme;
+        };
+        apply();
+        query.addEventListener("change", apply);
+      })();
     </script>
     <title>Cue</title>
   </head>

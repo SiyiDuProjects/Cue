@@ -6,8 +6,9 @@ const DESKTOP_WINDOW_OPTIONS = {
   minWidth: 620,
   minHeight: 440,
   frame: true,
-  transparent: true,
-  backgroundColor: "#00000000",
+  // An opaque window keeps the native Windows frame and resize behavior; the
+  // page paints the theme background. main.cjs picks the matching color.
+  transparent: false,
   resizable: true,
   minimizable: true,
   maximizable: true,

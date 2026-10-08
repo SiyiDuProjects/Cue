@@ -37,15 +37,15 @@ app
         "document.querySelector('.connection')?.textContent==='已连接'",
       );
       assert.equal(
-        await js("document.querySelector('.cue-symbol').textContent"),
-        "cue",
+        await js("document.querySelector('.wordmark').textContent"),
+        "Cue",
       );
-      await js("document.querySelector('.composer-actions button').click()");
+      await js("document.querySelector('.shot-button').click()");
       await wait("document.querySelector('.attachments img')");
       await js(
         "const input=document.querySelector('textarea');Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype,'value').set.call(input,'如何处理重复元素？');input.dispatchEvent(new Event('input',{bubbles:true}));",
       );
-      await js("document.querySelector('.primary').click()");
+      await js("document.querySelector('.send-button').click()");
       await wait("document.querySelector('.assistant-message table')");
       assert.equal(await js("window.lastAsk.images[0]"), "shot");
       assert.equal(await js("window.lastAsk.text"), "如何处理重复元素？");
@@ -126,7 +126,7 @@ app
           {id:'speech',text:'测试转录',status:'final'},
           {id:'interrupted',text:'',status:'interrupted'},
         ]) window.dispatchEvent(new CustomEvent('cue:event',{detail:{type:'transcript',turn:{...turn,speaker:'interviewer',created:1}}}));
-        [...document.querySelectorAll('.capturebar button')].find(b=>b.textContent.startsWith('转录')).click();
+        document.querySelector('[aria-label="转录"]').click();
       `);
       await wait("document.querySelectorAll('.turn').length===2");
       assert.match(
@@ -138,7 +138,7 @@ app
       );
       await wait("document.querySelector('.reconnect')");
       assert.equal(
-        await js("document.querySelector('.primary').disabled"),
+        await js("document.querySelector('.send-button').disabled"),
         true,
       );
       await js("document.querySelector('.reconnect').click()");

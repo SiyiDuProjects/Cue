@@ -30,8 +30,9 @@ import WebKit
     window.minSize = NSSize(width: 440, height: 500)
     window.setFrameAutosaveName("CueChat")
     window.center()
+    // Follows the system appearance; .hudWindow was always dark and muddy.
     let glass = NSVisualEffectView()
-    glass.material = .hudWindow
+    glass.material = .underWindowBackground
     glass.blendingMode = .behindWindow
     glass.state = .active
     window.contentView = glass
@@ -151,6 +152,7 @@ import WebKit
   }
   static let bridge = """
     (() => {
+      document.documentElement.classList.add('mac');
       const pending = new Map();
       const call = (method,...args) => new Promise((resolve,reject) => {
         const id = crypto.randomUUID();

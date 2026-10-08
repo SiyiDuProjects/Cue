@@ -1,11 +1,116 @@
-import React, { useEffect, useRef, useState } from "react";
-import ReactMarkdown from "react-markdown";
+import React, { useEffect, useRef, useState, type ReactNode } from "react";
+import ReactMarkdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import remarkMath from "remark-math";
 import rehypeKatex from "rehype-katex";
+import { Button, Dropdown, Label, Spinner, Tooltip } from "@heroui/react";
+import {
+  ArrowClockwise,
+  ArrowSquareOut,
+  ArrowUp,
+  CaretDown,
+  Check,
+  Copy,
+  GearSix,
+  Images,
+  Plus,
+  PushPin,
+  PushPinSlash,
+  Stop,
+  Subtitles,
+  Waveform,
+  X,
+} from "@phosphor-icons/react";
 import { type Event } from "./bridge";
 import "./styles.css";
-import "katex/dist/katex.min.css";
+
+const isMac = /Mac/i.test(navigator.userAgent);
+const shortcut = isMac ? "⌘ ↩" : "Ctrl ↩";
+const time = (value: number) =>
+  new Date(value).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+
+/** Icon-only actions always carry a tooltip and an accessible name. */
+function IconAction({
+  label,
+  onPress,
+  isDisabled,
+  pressed,
+  className,
+  children,
+}: {
+  label: string;
+  onPress: () => void;
+  isDisabled?: boolean;
+  pressed?: boolean;
+  className?: string;
+  children: ReactNode;
+}) {
+  return (
+    <Tooltip delay={400}>
+      <Button
+        isIconOnly
+        size="sm"
+        variant={pressed ? "secondary" : "ghost"}
+        aria-label={label}
+        aria-pressed={pressed}
+        isDisabled={isDisabled}
+        className={className}
+        onPress={onPress}
+      >
+        {children}
+      </Button>
+      <Tooltip.Content>{label}</Tooltip.Content>
+    </Tooltip>
+  );
+}
+
+function CodeBlock({ children }: { children?: ReactNode }) {
+  const code = React.Children.toArray(children)[0] as
+    | React.ReactElement<{ className?: string; children?: ReactNode }>
+    | undefined;
+  const language = /language-([\w+-]+)/.exec(code?.props.className || "")?.[1];
+  const text = String(code?.props.children ?? "").replace(/\n$/, "");
+  const [copied, setCopied] = useState(false);
+  return (
+    <div className="code-block">
+      <div className="code-header">
+        <span>{language || "代码"}</span>
+        <Button
+          size="sm"
+          variant="ghost"
+          className="code-copy"
+          onPress={() =>
+            void window.cue.copy(text).then(() => {
+              setCopied(true);
+              setTimeout(() => setCopied(false), 1500);
+            })
+          }
+        >
+          {copied ? <Check /> : <Copy />}
+          {copied ? "已复制" : "复制"}
+        </Button>
+      </div>
+      <pre>{children}</pre>
+    </div>
+  );
+}
+const markdown: Components = {
+  pre: ({ children }) => <CodeBlock>{children}</CodeBlock>,
+  table: ({ children }) => (
+    <div className="table-wrap">
+      <table>{children}</table>
+    </div>
+  ),
+  a: ({ href, children }) =>
+    href && /^https?:\/\//.test(href) ? (
+      <a href={href} target="_blank" rel="noreferrer">
+        {children}
+      </a>
+    ) : (
+      <span>{children}</span>
+    ),
+  img: () => null,
+};
 type Chat = { id: string; title: string };
 type Message = {
   id: string;
@@ -271,286 +376,390 @@ export default function App() {
         [id]: "data:" + v.mimeType + ";base64," + v.data,
       }));
     });
-  }
+  }  const input = useRef<HTMLTextAreaElement>(null);
+  useEffect(() => {
+    // Grow with the draft up to a few lines; the message list keeps the rest.
+    const el = input.current;
+    if (!el) return;
+    el.style.height = "auto";
+    el.style.height = Math.min(el.scrollHeight, 168) + "px";
+  }, [text]);
+  useEffect(() => {
+    if (!panel) return;
+    const close = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setPanel("");
+    };
+    window.addEventListener("keydown", close);
+    return () => window.removeEventListener("keydown", close);
+  }, [panel]);
+  const chatTitle = chats.find((c) => c.id === chat)?.title || "聊天";
+  const audioBusy = ["starting", "stopping"].includes(audio);
+  const imageCount = (m: Message) => {
+    try {
+      return JSON.parse(m.context || "{}").images?.length || 0;
+    } catch {
+      return 0;
+    }
+  };
   return (
-    <main className="shell">
+    <div className="cue-app">
       {imagePreview && (
         <div
           className="image-preview"
           role="dialog"
           aria-modal="true"
           aria-label="截图预览"
+          onClick={() => setImagePreview("")}
           onKeyDown={(e) => {
             if (e.key === "Escape") setImagePreview("");
           }}
         >
-          <button autoFocus onClick={() => setImagePreview("")}>
-            关闭
-          </button>
+          <Button
+            isIconOnly
+            variant="secondary"
+            aria-label="关闭预览"
+            className="image-preview-close"
+            autoFocus
+            onPress={() => setImagePreview("")}
+          >
+            <X />
+          </Button>
           {previews[imagePreview] ? (
             <img src={previews[imagePreview]} alt="截图原图" />
           ) : (
-            <span>正在读取…</span>
+            <Spinner size="sm" color="current" />
           )}
         </div>
       )}
       <header className="topbar">
-        <span className="brand">
-          Cue
-          <span className={"dot " + (connected ? "online" : "")} />
+        <span
+          className={"status-dot " + (connected ? "online" : "")}
+          aria-hidden="true"
+        />
+        <span className="connection sr-only" role="status">
+          {status}
         </span>
-        <select
-          aria-label="聊天"
-          value={chat}
-          disabled={sending}
-          onChange={(e) => choose(e.target.value)}
+        <Dropdown>
+          <Button
+            variant="ghost"
+            size="sm"
+            className="chat-trigger"
+            aria-label="切换聊天"
+            isDisabled={sending || !chats.length}
+          >
+            <span className="truncate">{chatTitle}</span>
+            <CaretDown className="text-muted" />
+          </Button>
+          <Dropdown.Popover placement="bottom start" className="chat-menu">
+            <Dropdown.Menu aria-label="聊天">
+              {chats.map((c) => (
+                <Dropdown.Item
+                  key={c.id}
+                  id={c.id}
+                  textValue={c.title}
+                  onAction={() => choose(c.id)}
+                >
+                  <Label className="truncate">{c.title}</Label>
+                  {c.id === chat && <Check className="ml-auto text-accent" />}
+                </Dropdown.Item>
+              ))}
+            </Dropdown.Menu>
+          </Dropdown.Popover>
+        </Dropdown>
+        <IconAction
+          label="新聊天"
+          isDisabled={!connected || sending}
+          onPress={() => void attempt(() => command({ type: "new_chat" }))}
         >
-          <option value="" disabled>
-            聊天
-          </option>
-          {chats.map((c) => (
-            <option key={c.id} value={c.id}>
-              {c.title}
-            </option>
-          ))}
-        </select>
-        <button
-          className="icon"
-          title="新聊天"
-          aria-label="新聊天"
-          disabled={!connected || sending}
-          onClick={() => void attempt(() => command({ type: "new_chat" }))}
+          <Plus />
+        </IconAction>
+        <span className="flex-1" />
+        <Button
+          size="sm"
+          variant={audio === "active" ? "danger-soft" : "ghost"}
+          className={"record-button " + (audio === "active" ? "recording" : "")}
+          isDisabled={!connected || audioBusy}
+          onPress={() => void toggleAudio()}
         >
-          ＋
-        </button>
-        <span className="spacer" />
-        <button
-          className={"icon " + (pinned ? "chosen" : "")}
-          title="置顶"
-          aria-label="置顶"
-          aria-pressed={pinned}
-          onClick={() =>
+          {audioBusy ? (
+            <Spinner size="sm" color="current" />
+          ) : audio === "active" ? (
+            <span className="record-dot" aria-hidden="true" />
+          ) : (
+            <Waveform />
+          )}
+          {audio === "active"
+            ? "停止转录"
+            : audio === "starting"
+              ? "开启中"
+              : audio === "stopping"
+                ? "收尾中"
+                : "开始转录"}
+        </Button>
+        <IconAction
+          label="转录"
+          pressed={panel === "transcript"}
+          className="transcript-toggle"
+          onPress={() => void showPanel("transcript")}
+        >
+          <Subtitles />
+          {visibleTurns.length > 0 && (
+            <span className="count-badge">{visibleTurns.length}</span>
+          )}
+        </IconAction>
+        <IconAction
+          label={pinned ? "取消置顶" : "置顶"}
+          className={pinned ? "pin-on" : ""}
+          onPress={() =>
             void attempt(async () => {
               await window.cue.pin(!pinned);
               setPinned(!pinned);
             })
           }
         >
-          ⌁
-        </button>
-        <button
-          className="icon"
-          title="设置"
-          aria-label="设置"
-          onClick={() => void showPanel("settings")}
+          {pinned ? <PushPin weight="fill" /> : <PushPinSlash />}
+        </IconAction>
+        <IconAction
+          label="设置"
+          pressed={panel === "settings"}
+          onPress={() => void showPanel("settings")}
         >
-          ⚙
-        </button>
+          <GearSix />
+        </IconAction>
       </header>
-      <div className="capturebar">
-        <button
-          className={"record " + (audio === "active" ? "recording" : "")}
-          disabled={!connected || ["starting", "stopping"].includes(audio)}
-          onClick={() => void toggleAudio()}
-        >
-          <span />
-          {audio === "active"
-            ? "停止转录"
-            : audio === "starting"
-              ? "正在开启…"
-              : audio === "stopping"
-                ? "正在收尾…"
-                : "开始转录"}
-        </button>
-        <button
-          className={panel === "transcript" ? "chosen" : ""}
-          onClick={() => void showPanel("transcript")}
-        >
-          转录 <small>{visibleTurns.length || ""}</small>
-        </button>
-        <span className="spacer" />
-        <span className="connection" role="status">
-          {status}
-        </span>
-        {!connected && status !== "正在连接…" && (
-          <button className="reconnect" onClick={() => void reconnect()}>
+      {!connected && status !== "正在连接…" && (
+        <div className="banner" role="status">
+          <span>{status}</span>
+          <Button
+            size="sm"
+            variant="secondary"
+            className="reconnect"
+            onPress={() => void reconnect()}
+          >
+            <ArrowClockwise />
             重新连接
-          </button>
-        )}
-      </div>
+          </Button>
+        </div>
+      )}
       {error && (
         <div className="notice" role="alert">
           <span>{error}</span>
-          <button aria-label="关闭提示" onClick={() => setError("")}>
-            ×
-          </button>
+          <Button
+            isIconOnly
+            size="sm"
+            variant="ghost"
+            aria-label="关闭提示"
+            onPress={() => setError("")}
+          >
+            <X />
+          </Button>
         </div>
       )}
       {panel === "settings" && (
-        <section className="panel settings" aria-label="设置">
-          <div>
-            <label htmlFor="effort">回答深度</label>
-            <select
-              id="effort"
-              value={effort}
-              onChange={(e) => setEffort(e.target.value)}
-            >
-              <option value="">跟随网页设置</option>
-              <option value="low">快速 · low</option>
-              <option value="medium">均衡 · medium</option>
-              <option value="high">深入 · high</option>
-              <option value="xhigh">最深入 · xhigh</option>
-            </select>
-          </div>
-          <p className="hint">更深入，通常更慢。</p>
-          <div>
-            <label htmlFor="source">截图来源</label>
-            <select
-              id="source"
-              value={source}
-              disabled={sourceBusy}
-              onChange={(e) => void selectSource(e.target.value)}
-            >
-              {!source && (
-                <option value="" disabled>
-                  请选择截图来源
-                </option>
+        <>
+          <div
+            className="sheet-backdrop"
+            aria-hidden="true"
+            onClick={() => setPanel("")}
+          />
+          <section className="settings-sheet" aria-label="设置">
+            <div className="field">
+              <label htmlFor="effort">回答深度</label>
+              <select
+                id="effort"
+                value={effort}
+                onChange={(e) => setEffort(e.target.value)}
+              >
+                <option value="">跟随网页设置</option>
+                <option value="low">快速</option>
+                <option value="medium">均衡</option>
+                <option value="high">深入</option>
+                <option value="xhigh">最深入</option>
+              </select>
+              <p className="hint">越深入，通常越慢。</p>
+            </div>
+            <div className="field">
+              <label htmlFor="source">截图来源</label>
+              <select
+                id="source"
+                value={source}
+                disabled={sourceBusy}
+                onChange={(e) => void selectSource(e.target.value)}
+              >
+                {!source && (
+                  <option value="" disabled>
+                    请选择截图来源
+                  </option>
+                )}
+                {sources.map((s) => (
+                  <option key={s.id} value={s.id} disabled={s.disabled}>
+                    {s.name || s.title}
+                  </option>
+                ))}
+              </select>
+              {sources.some((s) => s.permission === "screen") && (
+                <Button
+                  size="sm"
+                  variant="secondary"
+                  className="self-start"
+                  onPress={() => void attempt(() => window.cue.openPrivacy!())}
+                >
+                  打开录屏权限设置
+                  <ArrowSquareOut />
+                </Button>
               )}
-              {sources.map((s) => (
-                <option key={s.id} value={s.id} disabled={s.disabled}>
-                  {s.name || s.title}
-                </option>
-              ))}
-            </select>
-          </div>
-          {sources.some((s) => s.permission === "screen") && (
-            <button
-              onClick={() => void attempt(() => window.cue.openPrivacy!())}
-            >
-              打开录屏权限设置 ↗
-            </button>
-          )}
-          <div className="actions">
-            <button
-              onClick={() => void attempt(() => window.cue.openSettings())}
-            >
-              网页设置 ↗
-            </button>
-            <button
-              onClick={() => void attempt(() => window.cue.uploadMaterials())}
-            >
-              更新个人资料…
-            </button>
-            <button
-              onClick={() => void attempt(() => window.cue.importConnection())}
-            >
-              连接设置…
-            </button>
-            <button
-              disabled={audio !== "idle" || sending || !connected}
-              onClick={() =>
-                void attempt(() => command({ type: "new_recording" }))
-              }
-            >
-              新一场转录
-            </button>
-          </div>
-          <div>
-            <input
-              aria-label="聊天名称"
-              placeholder="重命名当前聊天"
-              maxLength={100}
-              onKeyDown={(e) => {
-                if (e.key === "Enter" && e.currentTarget.value.trim())
-                  void attempt(() =>
-                    command({
-                      type: "rename_chat",
-                      chat,
-                      title: e.currentTarget.value,
-                    }),
-                  );
-              }}
-            />
-            <span className="hint">Enter 保存</span>
-          </div>
-        </section>
+            </div>
+            <div className="field">
+              <label htmlFor="chat-title">聊天名称</label>
+              <input
+                id="chat-title"
+                key={chat}
+                defaultValue={chatTitle}
+                maxLength={100}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && e.currentTarget.value.trim())
+                    void attempt(() =>
+                      command({
+                        type: "rename_chat",
+                        chat,
+                        title: e.currentTarget.value,
+                      }),
+                    );
+                }}
+              />
+              <p className="hint">按 Enter 保存。</p>
+            </div>
+            <div className="sheet-actions">
+              <Button
+                size="sm"
+                variant="secondary"
+                isDisabled={audio !== "idle" || sending || !connected}
+                onPress={() =>
+                  void attempt(() => command({ type: "new_recording" }))
+                }
+              >
+                新一场转录
+              </Button>
+              <Button
+                size="sm"
+                variant="secondary"
+                onPress={() => void attempt(() => window.cue.uploadMaterials())}
+              >
+                更新资料
+              </Button>
+              <Button
+                size="sm"
+                variant="ghost"
+                onPress={() => void attempt(() => window.cue.openSettings())}
+              >
+                网页设置
+                <ArrowSquareOut />
+              </Button>
+              <Button
+                size="sm"
+                variant="ghost"
+                onPress={() =>
+                  void attempt(() => window.cue.importConnection())
+                }
+              >
+                连接设置
+              </Button>
+            </div>
+          </section>
+        </>
       )}
       {panel === "transcript" ? (
         <section className="transcript" aria-label="转录">
-          <h2>本场转录</h2>
-          <p className="hint">最近一小时 · 系统音频和麦克风分别记录</p>
-          {!visibleTurns.length && <p className="empty-note">暂无转录</p>}
-          {visibleTurns.map((t) => (
-            <div className="turn" key={t.id}>
-              <span>
-                {t.speaker === "candidate" ? "我" : "对方"} ·{" "}
-                {new Date(t.created).toLocaleTimeString([], {
-                  hour: "2-digit",
-                  minute: "2-digit",
-                })}
-              </span>
-              <p>
-                {t.text || "…"}
-                {t.status === "partial" && <small> · 转录中</small>}
-                {t.status === "interrupted" && <small> · 未完整确认</small>}
-              </p>
+          <div className="column">
+            <div className="section-title">
+              <h2>转录</h2>
+              <span className="hint">最近一小时 · 电脑音频与麦克风分开记录</span>
             </div>
-          ))}
-          {images.length > 0 && (
-            <>
-              <h2>截图</h2>
-              <div className="image-library">
-                {images.map((i) => (
-                  <div className="saved-image" key={i.id}>
-                    <button
-                      aria-pressed={selected.includes(i.id)}
-                      onClick={() => {
-                        setSelected((s) =>
-                          s.includes(i.id)
-                            ? s.filter((id) => id !== i.id)
-                            : [...s, i.id].slice(-8),
-                        );
-                        void preview(i.id);
-                      }}
-                    >
-                      {previews[i.id] ? (
-                        <img src={previews[i.id]} alt="手动截图" />
-                      ) : (
-                        <span>
-                          截图 · {new Date(i.created).toLocaleTimeString()}
-                        </span>
-                      )}
-                    </button>
-                    <div className="image-actions">
+            {!visibleTurns.length && <p className="empty-note">还没有转录。</p>}
+            {visibleTurns.map((t) => (
+              <div className="turn" key={t.id}>
+                <div className="turn-meta">
+                  <span
+                    className={
+                      "speaker " + (t.speaker === "candidate" ? "me" : "them")
+                    }
+                  >
+                    {t.speaker === "candidate" ? "我" : "对方"}
+                  </span>
+                  <span>{time(t.created)}</span>
+                  {t.status === "partial" && <span>转录中</span>}
+                  {t.status === "interrupted" && <span>未完整确认</span>}
+                </div>
+                <p>{t.text || "…"}</p>
+              </div>
+            ))}
+            {images.length > 0 && (
+              <>
+                <div className="section-title">
+                  <h2>截图</h2>
+                  <span className="hint">点选后随下一次提问发送</span>
+                </div>
+                <div className="image-library">
+                  {images.map((i) => (
+                    <div className="saved-image" key={i.id}>
                       <button
+                        className="thumb"
+                        aria-pressed={selected.includes(i.id)}
                         onClick={() => {
+                          setSelected((s) =>
+                            s.includes(i.id)
+                              ? s.filter((id) => id !== i.id)
+                              : [...s, i.id].slice(-8),
+                          );
                           void preview(i.id);
-                          setImagePreview(i.id);
                         }}
                       >
-                        查看
+                        {previews[i.id] ? (
+                          <img src={previews[i.id]} alt="手动截图" />
+                        ) : (
+                          <span>{time(i.created)}</span>
+                        )}
+                        {selected.includes(i.id) && (
+                          <span className="thumb-check">
+                            <Check weight="bold" />
+                          </span>
+                        )}
                       </button>
-                      <button
-                        disabled={sending}
-                        onClick={() =>
-                          void attempt(async () => {
-                            await window.cue.request(
-                              "/capture/images/" + i.id,
-                              "DELETE",
-                            );
-                            setImages((v) => v.filter((x) => x.id !== i.id));
-                            setSelected((v) => v.filter((x) => x !== i.id));
-                          })
-                        }
-                      >
-                        移除
-                      </button>
+                      <div className="image-actions">
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          onPress={() => {
+                            void preview(i.id);
+                            setImagePreview(i.id);
+                          }}
+                        >
+                          查看
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          isDisabled={sending}
+                          onPress={() =>
+                            void attempt(async () => {
+                              await window.cue.request(
+                                "/capture/images/" + i.id,
+                                "DELETE",
+                              );
+                              setImages((v) => v.filter((x) => x.id !== i.id));
+                              setSelected((v) => v.filter((x) => x !== i.id));
+                            })
+                          }
+                        >
+                          移除
+                        </Button>
+                      </div>
                     </div>
-                  </div>
-                ))}
-              </div>
-            </>
-          )}
+                  ))}
+                </div>
+              </>
+            )}
+          </div>
         </section>
       ) : (
         <div
@@ -563,124 +772,152 @@ export default function App() {
           }}
           aria-label="聊天记录"
         >
-          {!messages.length && (
-            <div className="welcome">
-              <div className="cue-symbol">
-                c<span>ue</span>
+          <div className="column">
+            {!messages.length && (
+              <div className="welcome">
+                <span className="wordmark">Cue</span>
+                <p>
+                  截图或开始转录后，按 <kbd>{shortcut}</kbd> 回答当前问题
+                </p>
               </div>
-              <span className="shortcut">⌘ / Ctrl + Enter</span>
-            </div>
-          )}
-          {messages.map((m) => (
-            <article className="exchange" key={m.id}>
-              <div className="user-message">
-                {m.text || "回答当前问题"}
-                {m.context && JSON.parse(m.context).images?.length > 0 && (
-                  <small> · {JSON.parse(m.context).images.length} 张截图</small>
-                )}
-              </div>
-              <div className="assistant-message">
-                <ReactMarkdown
-                  remarkPlugins={[remarkGfm, remarkMath]}
-                  rehypePlugins={[rehypeKatex]}
-                >
-                  {m.answer}
-                </ReactMarkdown>
-                {busy(m) && (
-                  <div className="thinking" role="status">
-                    <span />
-                    {m.answer ? "正在回答" : "正在思考…"}
-                  </div>
-                )}
-                {m.detail && <p className="hint">{m.detail}</p>}
-                {m.answer && (
-                  <button
-                    className="copy"
-                    onClick={() =>
-                      void attempt(() => window.cue.copy(m.answer))
-                    }
-                  >
-                    复制
-                  </button>
-                )}
-              </div>
-            </article>
-          ))}
+            )}
+            {messages.map((m) => (
+              <article className="exchange" key={m.id}>
+                <div className="user-message">
+                  <p>{m.text || "回答当前问题"}</p>
+                  {imageCount(m) > 0 && (
+                    <span className="attachment-note">
+                      <Images />
+                      {imageCount(m)} 张截图
+                    </span>
+                  )}
+                </div>
+                <div className="assistant-message">
+                  {m.answer && (
+                    <div className="markdown">
+                      <ReactMarkdown
+                        remarkPlugins={[remarkGfm, remarkMath]}
+                        rehypePlugins={[rehypeKatex]}
+                        components={markdown}
+                      >
+                        {m.answer}
+                      </ReactMarkdown>
+                    </div>
+                  )}
+                  {busy(m) && (
+                    <div className="thinking" role="status">
+                      <Spinner size="sm" color="current" />
+                      {m.answer ? "正在回答" : "正在思考…"}
+                    </div>
+                  )}
+                  {m.detail && <p className="detail">{m.detail}</p>}
+                  {m.answer && !busy(m) && (
+                    <div className="message-actions">
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        className="copy"
+                        onPress={() =>
+                          void attempt(() => window.cue.copy(m.answer))
+                        }
+                      >
+                        <Copy />
+                        复制
+                      </Button>
+                    </div>
+                  )}
+                </div>
+              </article>
+            ))}
+          </div>
         </div>
       )}
-      <footer className="composer">
-        <div className="attachments">
-          {selected.map((id, index) => (
-            <div key={id}>
-              {previews[id] ? (
-                <img src={previews[id]} alt={"截图 " + (index + 1)} />
-              ) : (
-                <span>截图 {index + 1}</span>
-              )}
-              <button
-                aria-label="移除附件"
-                onClick={() => setSelected((s) => s.filter((x) => x !== id))}
-              >
-                ×
-              </button>
+      <footer className="composer-dock">
+        <div className="composer">
+          {selected.length > 0 && (
+            <div className="attachments">
+              {selected.map((id, index) => (
+                <div className="attachment" key={id}>
+                  {previews[id] ? (
+                    <img src={previews[id]} alt={"截图 " + (index + 1)} />
+                  ) : (
+                    <span>截图 {index + 1}</span>
+                  )}
+                  <button
+                    aria-label="移除附件"
+                    onClick={() =>
+                      setSelected((s) => s.filter((x) => x !== id))
+                    }
+                  >
+                    <X weight="bold" />
+                  </button>
+                </div>
+              ))}
             </div>
-          ))}
-        </div>
-        <textarea
-          aria-label="补充问题"
-          placeholder="输入问题…"
-          value={text}
-          onChange={(e) => {
-            setText(e.target.value);
-            localStorage.setItem("cue.draft." + chat, e.target.value);
-          }}
-          onKeyDown={(e) => {
-            if (
-              e.key === "Enter" &&
-              (e.metaKey || e.ctrlKey) &&
-              !e.nativeEvent.isComposing
-            ) {
-              e.preventDefault();
-              void ask();
-            }
-          }}
-        />
-        <div className="composer-actions">
-          <button disabled={!connected || working} onClick={() => void shot()}>
-            {working ? "截图中…" : "＋ 截图"}
-          </button>
-          <span className="hint">
-            {selected.length ? selected.length + " 张截图" : ""}
-          </span>
-          <span className="spacer" />
-          {sending ? (
-            <button
-              className="primary stop"
-              onClick={() =>
-                void attempt(() =>
-                  command({ type: "cancel", id: active?.id || pending }),
-                )
-              }
-            >
-              停止
-            </button>
-          ) : (
-            <button
-              className="primary"
-              disabled={
-                !connected ||
-                !chat ||
-                working ||
-                audio === "starting" ||
-                audio === "stopping"
-              }
-              onClick={() => void ask()}
-            >
-              回答 <span>↵</span>
-            </button>
           )}
+          <textarea
+            ref={input}
+            rows={1}
+            aria-label="补充问题"
+            placeholder="补充问题，或直接回答当前问题…"
+            value={text}
+            onChange={(e) => {
+              setText(e.target.value);
+              localStorage.setItem("cue.draft." + chat, e.target.value);
+            }}
+            onKeyDown={(e) => {
+              if (
+                e.key === "Enter" &&
+                (e.metaKey || e.ctrlKey) &&
+                !e.nativeEvent.isComposing
+              ) {
+                e.preventDefault();
+                void ask();
+              }
+            }}
+          />
+          <div className="composer-actions">
+            <Button
+              size="sm"
+              variant="ghost"
+              className="shot-button"
+              isDisabled={!connected || working}
+              onPress={() => void shot()}
+            >
+              {working ? <Spinner size="sm" color="current" /> : <Images />}
+              截图
+            </Button>
+            <span className="flex-1" />
+            <kbd className="shortcut-hint">{shortcut}</kbd>
+            {sending ? (
+              <Button
+                size="sm"
+                variant="secondary"
+                className="send-button"
+                onPress={() =>
+                  void attempt(() =>
+                    command({ type: "cancel", id: active?.id || pending }),
+                  )
+                }
+              >
+                <Stop weight="fill" />
+                停止
+              </Button>
+            ) : (
+              <Button
+                size="sm"
+                variant="primary"
+                className="send-button"
+                isDisabled={!connected || !chat || working || audioBusy}
+                onPress={() => void ask()}
+              >
+                <ArrowUp weight="bold" />
+                回答
+              </Button>
+            )}
+          </div>
         </div>
       </footer>
-    </main>
+    </div>
   );
 }
