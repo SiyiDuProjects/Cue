@@ -210,12 +210,17 @@ import SageCore
   }
   func sources() async throws -> [JSON] {
     var choices: [JSON] = [["id": "frontmost", "name": "App Shot · 最近应用"]]
-    do {
-      choices += try await capture.sources().map { ["id": $0.id, "name": $0.name] }
-    } catch {
+    if !ScreenAccess.granted {
+      // Reading state never asks; the UI offers the system settings page instead.
       choices.append([
-        "id": "unavailable", "name": "屏幕/窗口不可用（检查录屏权限）", "disabled": true,
+        "id": "unavailable", "name": "屏幕/窗口：需要录屏权限", "disabled": true, "permission": "screen",
       ])
+    } else {
+      do {
+        choices += try await capture.sources().map { ["id": $0.id, "name": $0.name] }
+      } catch {
+        choices.append(["id": "unavailable", "name": "屏幕/窗口暂时不可用", "disabled": true])
+      }
     }
     if !choices.contains(where: { $0["id"] as? String == sourceID }) {
       choices.append(["id": sourceID, "name": "原截图来源不可用，请重新选择", "disabled": true])

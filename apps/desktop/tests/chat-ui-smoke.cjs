@@ -78,6 +78,11 @@ app
         ),
         true,
       );
+      // Missing access is shown as a link to System Settings, never requested here.
+      await js(
+        "[...document.querySelectorAll('button')].find(b=>b.textContent.includes('录屏权限')).click()",
+      );
+      await wait("window.privacyOpened === 1");
       const choose = async (id) => {
         await js(
           `document.querySelector('#source').value=${JSON.stringify(id)};document.querySelector('#source').dispatchEvent(new Event('change',{bubbles:true}));`,

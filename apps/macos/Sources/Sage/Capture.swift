@@ -20,6 +20,20 @@ struct CaptureSource: Identifiable, Hashable {
   let name: String
 }
 
+/// ScreenCaptureKit calls prompt when access is missing, so callers check first.
+/// Only explicit capture actions may ask; listing sources must stay silent.
+enum ScreenAccess {
+  static let settingsURL = URL(
+    string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture")!
+  static var granted: Bool { CGPreflightScreenCaptureAccess() }
+  static func require(asking: Bool) throws {
+    guard !granted else { return }
+    if asking { _ = CGRequestScreenCaptureAccess() }
+    throw SageError(
+      "Cue 没有录屏权限。在系统设置的「录屏与系统录音」中开启 Cue；如果已显示开启，移除 Cue 后重新添加一次。")
+  }
+}
+
 /// Samples stay on a serial audio queue. Only bounded PCM mailboxes cross to the UI thread.
 final class AudioSink: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Sendable {
   let queue = DispatchQueue(label: "com.siyidu.sage.audio", qos: .userInitiated)
@@ -180,6 +194,7 @@ final class AudioSink: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Se
     }
   }
   func sources() async throws -> [CaptureSource] {
+    try ScreenAccess.require(asking: false)
     let content = try await SCShareableContent.excludingDesktopWindows(
       true, onScreenWindowsOnly: true)
     let displays = content.displays.map {
@@ -272,6 +287,13 @@ final class AudioSink: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Se
         let id = window[kCGWindowNumber as String] as? UInt32
       else { throw SageError("请先切换到目标应用，再回到 Cue 获取 App Shot，或在更多中选择窗口。") }
       selected = "window:\(id)"
+    }
+    do { try ScreenAccess.require(asking: true) } catch {
+      // App Shot already failed through ChatGPT; report both instead of prompting twice.
+      if let nativeFailure {
+        throw SageError(nativeFailure.localizedDescription + "\n" + error.localizedDescription)
+      }
+      throw error
     }
     let content = try await SCShareableContent.excludingDesktopWindows(
       true, onScreenWindowsOnly: true)
@@ -403,6 +425,8 @@ final class AudioSink: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Se
     let authorized = await AVCaptureDevice.requestAccess(for: .audio)
     guard current() else { throw CancellationError() }
     guard authorized else { throw SageError("请在系统设置中允许 Cue 使用麦克风。") }
+    // System audio comes through ScreenCaptureKit and needs the same access.
+    try ScreenAccess.require(asking: true)
     let filter = try await filter(source: "primary", excludeSelf: false)
     guard current() else { throw CancellationError() }
     let config = SCStreamConfiguration()

@@ -1,6 +1,8 @@
 export type Event = Record<string, any>;
 export interface CueBridge {
   openSettings(): Promise<unknown>;
+  /** Mac only: opens the system privacy page without requesting access. */
+  openPrivacy?(): Promise<unknown>;
   copy(text: string): Promise<unknown>;
   connect(): Promise<unknown>;
   command(value: Event): Promise<unknown>;

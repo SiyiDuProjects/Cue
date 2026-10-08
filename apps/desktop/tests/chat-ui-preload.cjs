@@ -65,8 +65,16 @@ window.cue = {
     return [
       { id: "screen:0", name: "主显示器" },
       { id: "frontmost", name: "App Shot · 最近应用" },
-      { id: "unavailable", name: "录屏权限未开启", disabled: true },
+      {
+        id: "unavailable",
+        name: "录屏权限未开启",
+        disabled: true,
+        permission: "screen",
+      },
     ].map((v) => ({ ...v, selected: v.id === source }));
+  },
+  openPrivacy: async () => {
+    window.privacyOpened = (window.privacyOpened || 0) + 1;
   },
   selectSource: async (id) => {
     if (window.rejectSource) throw Error("来源已关闭");

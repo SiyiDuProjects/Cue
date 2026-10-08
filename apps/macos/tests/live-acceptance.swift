@@ -50,6 +50,7 @@ import Security
       guard let self else { return }
       if message["kind"] as? String == "error" {
         failure = message["detail"] as? String ?? "Direct transcription failed"
+        report(["client": name, "event": "client_error", "detail": failure ?? ""])
       } else if message["kind"] as? String == "send", let value = message["value"] as? JSON,
         link.ready
       {

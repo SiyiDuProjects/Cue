@@ -17,7 +17,7 @@ export class DirectTranscription {
     if (event.type === "asr_config") {
       const epoch = this.epoch;
       void this.open(event).catch(() => {
-        if (epoch === this.epoch) this.failed("无法连接语音服务。");
+        if (epoch === this.epoch) this.failed("无法连接语音服务。", "client_setup");
       });
       return true;
     }
@@ -67,7 +67,10 @@ export class DirectTranscription {
       published: new Map(),
     };
     this.channels.set(channel.id, channel);
-    const timeout = setTimeout(() => this.failed("语音连接超时。"), 10000);
+    const timeout = setTimeout(
+      () => this.failed("语音连接超时。", "openai_timeout"),
+      10000,
+    );
     channel.timeout = timeout;
     ws.addEventListener("open", () => {
       if (channel.closed) return;
@@ -90,7 +93,8 @@ export class DirectTranscription {
           this.active.set(channel.role, channel);
           this.send({ type: "asr_ready", stream: channel.id });
         } else if (event.type === "error") {
-          this.failed("语音服务拒绝了请求。");
+          const code = event.error?.code || event.error?.type || "openai_error";
+          this.failed(`语音服务拒绝了请求（${code}）。`, code);
         } else if (
           event.type === "input_audio_buffer.committed" ||
           /^conversation\.item\.input_audio_transcription\.(delta|full|completed|failed)$/.test(
@@ -132,14 +136,18 @@ export class DirectTranscription {
           }
         }
       } catch {
-        this.failed("转录数据无效，采集已停止。");
+        this.failed("转录数据无效，采集已停止。", "invalid_event");
       }
     });
-    const closed = () => {
+    const closed = (event) => {
       if (!channel.closed && epoch === this.epoch)
-        this.failed("语音连接中断，请重新开始。");
+        this.failed(
+          channel.ready ? "语音连接中断，请重新开始。" : "无法连接语音服务。",
+          // A close code tells a rejected handshake from a dropped connection.
+          "closed_" + (event?.code ?? "error"),
+        );
     };
-    ws.addEventListener("error", closed);
+    ws.addEventListener("error", () => closed({ code: "error" }));
     ws.addEventListener("close", closed);
   }
   pcm(role, buffer) {
@@ -149,7 +157,7 @@ export class DirectTranscription {
     if (!bytes.length || bytes.length > 24000 || bytes.length % 2)
       throw Error("Invalid PCM frame");
     if (channel.ws.bufferedAmount > 64000) {
-      this.failed("音频连接积压，采集已停止。");
+      this.failed("音频连接积压，采集已停止。", "backlog");
       return;
     }
     channel.ws.send(
@@ -207,12 +215,12 @@ export class DirectTranscription {
     }
     this.send(value);
   }
-  failed(detail) {
+  failed(detail, reason = "client_error") {
     const channel = [...this.channels.values()].find((c) => !c.closed);
     this.reset();
     if (channel) {
       try {
-        this.send({ type: "asr_failed", stream: channel.id });
+        this.send({ type: "asr_failed", stream: channel.id, reason });
       } catch {}
     }
     this.fail(detail);

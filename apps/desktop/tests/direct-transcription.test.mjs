@@ -177,3 +177,22 @@ test("partial coalescing preserves complete text and final events", async () => 
   assert.equal(sent.at(-1).event.transcript, "hello world");
   direct.reset();
 });
+test("a rejected handshake tells the server why, without the token", async () => {
+  const { direct, sent, failures } = fixture();
+  await direct.open({
+    role: "interviewer",
+    stream: "s",
+    token: "ek_synthetic",
+    session: { type: "transcription" },
+  });
+  const socket = Socket.instances[0];
+  socket.dispatchEvent(new Event("open"));
+  socket.receive({ type: "error", error: { code: "invalid_value" } });
+  assert.deepEqual(sent.at(-1), {
+    type: "asr_failed",
+    stream: "s",
+    reason: "invalid_value",
+  });
+  assert.match(failures[0], /invalid_value/);
+  assert(!JSON.stringify(sent).includes("ek_synthetic"));
+});

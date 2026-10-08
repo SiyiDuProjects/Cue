@@ -423,6 +423,13 @@ export default function App() {
               ))}
             </select>
           </div>
+          {sources.some((s) => s.permission === "screen") && (
+            <button
+              onClick={() => void attempt(() => window.cue.openPrivacy!())}
+            >
+              打开录屏权限设置 ↗
+            </button>
+          )}
           <div className="actions">
             <button
               onClick={() => void attempt(() => window.cue.openSettings())}

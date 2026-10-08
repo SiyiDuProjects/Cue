@@ -122,6 +122,7 @@ import WebKit
     case "importConnection": try await store.importConnection()
     case "pin": window.level = args.first as? Bool == true ? .floating : .normal
     case "openSettings": NSWorkspace.shared.open(URL(string: AppStore.serviceURL + "/settings")!)
+    case "openPrivacy": NSWorkspace.shared.open(ScreenAccess.settingsURL)
     case "copy":
       if let text = args.first as? String, text.count < 250000 {
         NSPasteboard.general.clearContents()
@@ -161,7 +162,7 @@ import WebKit
         error?p.reject(new Error(error)):p.resolve(result);
       };
       window.cueReceive = value => window.dispatchEvent(new CustomEvent('cue:event',{detail:value}));
-      window.cue = Object.fromEntries(['connect','command','request','audio','screenshot','sources','selectSource','uploadMaterials','importConnection','pin','copy','openSettings'].map(method=>[method,(...args)=>call(method,...args)]));
+      window.cue = Object.fromEntries(['connect','command','request','audio','screenshot','sources','selectSource','uploadMaterials','importConnection','pin','copy','openSettings','openPrivacy'].map(method=>[method,(...args)=>call(method,...args)]));
     })();
     """
 }
