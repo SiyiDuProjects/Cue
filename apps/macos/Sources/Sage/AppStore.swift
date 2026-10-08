@@ -183,7 +183,22 @@ import SageCore
     return result
   }
   func sources() async throws -> [JSON] {
-    try await capture.sources().map { ["id": $0.id, "name": $0.name] }
+    var choices: [JSON] = [["id": "frontmost", "name": "App Shot · 最近应用"]]
+    do {
+      choices += try await capture.sources().map { ["id": $0.id, "name": $0.name] }
+    } catch {
+      choices.append([
+        "id": "unavailable", "name": "屏幕/窗口不可用（检查录屏权限）", "disabled": true,
+      ])
+    }
+    if !choices.contains(where: { $0["id"] as? String == sourceID }) {
+      choices.append(["id": sourceID, "name": "原截图来源不可用，请重新选择", "disabled": true])
+    }
+    return choices.map { choice in
+      var value = choice
+      value["selected"] = choice["id"] as? String == sourceID
+      return value
+    }
   }
   func selectSource(_ id: String) {
     sourceID = id

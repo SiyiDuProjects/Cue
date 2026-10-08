@@ -46,6 +46,7 @@ Mac 可加载 `/Users/siyi/Projects/_tools/env.sh`。Windows 使用 `npm.cmd`。
 - 桌面：`npm --prefix apps/desktop run test:capture`、`npm --prefix apps/desktop run build`、`npm --prefix apps/desktop run test:ui`。
 - 网页真实 DOM / 文件解析测试：`apps/desktop/node_modules/.bin/electron apps/cloud/tests/settings-ui.cjs`（仅 loopback，合成文件）。
 - Mac：`bash apps/macos/scripts/check-offline.sh`；发布包 `bash apps/macos/scripts/build-app.sh`。
+- 云端真实长测：明确获准后运行 `bash apps/macos/scripts/check-live.sh --run-live 65`。使用合成 PCM、原生钥匙串和真实付费服务，会接管当前桌面连接；期间不要启动另一个客户端或部署云端。它不替代麦克风、系统音频和 Windows 真机验收。
 - Windows：`npm --prefix apps/desktop run package:windows`。
 - 离线测试使用合成媒体和模拟上游，不读生产 key。真实媒体、付费模型和长连接结果单独留证；无人值守不打开用户麦克风。
 

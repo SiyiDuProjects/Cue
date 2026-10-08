@@ -35,6 +35,8 @@ export default function App() {
     [pending, setPending] = useState("");
   const [panel, setPanel] = useState(""),
     [sources, setSources] = useState<Event[]>([]),
+    [source, setSource] = useState(""),
+    [sourceBusy, setSourceBusy] = useState(false),
     [effort, setEffort] = useState(localStorage.getItem("cue.effort") || ""),
     [pinned, setPinned] = useState(true),
     [imagePreview, setImagePreview] = useState("");
@@ -71,6 +73,9 @@ export default function App() {
     }
   };
   const command = (value: Event) => window.cue.command(value);
+  const visibleTurns = turns.filter(
+    (turn) => turn.text?.trim() || turn.status === "interrupted",
+  );
   function choose(id: string) {
     current.current.chat = id;
     setChat(id);
@@ -228,8 +233,23 @@ export default function App() {
   }
   async function showPanel(name: string) {
     setPanel(panel === name ? "" : name);
-    if (name === "settings")
-      await attempt(async () => setSources(await window.cue.sources()));
+    if (name === "settings" && panel !== name) {
+      setSourceBusy(true);
+      await attempt(async () => {
+        const choices = await window.cue.sources();
+        setSources(choices);
+        setSource(choices.find((choice) => choice.selected)?.id || "");
+      });
+      setSourceBusy(false);
+    }
+  }
+  async function selectSource(id: string) {
+    setSourceBusy(true);
+    await attempt(async () => {
+      await window.cue.selectSource(id);
+      setSource(id);
+    });
+    setSourceBusy(false);
   }
   async function preview(id: string) {
     if (previews[id]) return;
@@ -335,7 +355,7 @@ export default function App() {
           className={panel === "transcript" ? "chosen" : ""}
           onClick={() => void showPanel("transcript")}
         >
-          转录 <small>{turns.length || ""}</small>
+          转录 <small>{visibleTurns.length || ""}</small>
         </button>
         <span className="spacer" />
         <span className="connection">{status}</span>
@@ -369,12 +389,17 @@ export default function App() {
             <label htmlFor="source">截图来源</label>
             <select
               id="source"
-              onChange={(e) =>
-                void attempt(() => window.cue.selectSource(e.target.value))
-              }
+              value={source}
+              disabled={sourceBusy}
+              onChange={(e) => void selectSource(e.target.value)}
             >
+              {!source && (
+                <option value="" disabled>
+                  请选择截图来源
+                </option>
+              )}
               {sources.map((s) => (
-                <option key={s.id} value={s.id}>
+                <option key={s.id} value={s.id} disabled={s.disabled}>
                   {s.name || s.title}
                 </option>
               ))}
@@ -429,8 +454,8 @@ export default function App() {
         <section className="transcript" aria-label="转录">
           <h2>本场转录</h2>
           <p className="hint">最近一小时 · 系统音频和麦克风分别记录</p>
-          {!turns.length && <p className="empty-note">暂无转录</p>}
-          {turns.map((t) => (
+          {!visibleTurns.length && <p className="empty-note">暂无转录</p>}
+          {visibleTurns.map((t) => (
             <div className="turn" key={t.id}>
               <span>
                 {t.speaker === "candidate" ? "我" : "对方"} ·{" "}
