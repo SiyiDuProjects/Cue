@@ -47,6 +47,18 @@ import AppKit
     applicationActions.addItem(quitItem)
     applicationItem.submenu = applicationActions
     applicationMenu.addItem(applicationItem)
+    let editItem = NSMenuItem(title: "编辑", action: nil, keyEquivalent: "")
+    let editActions = NSMenu(title: "编辑")
+    for (title, selector, key) in [
+      ("撤销", "undo:", "z"), ("重做", "redo:", "Z"),
+      ("剪切", "cut:", "x"), ("复制", "copy:", "c"),
+      ("粘贴", "paste:", "v"), ("全选", "selectAll:", "a"),
+    ] {
+      // Nil target routes standard editing actions to the focused WebView.
+      editActions.addItem(NSMenuItem(title: title, action: Selector(selector), keyEquivalent: key))
+    }
+    editItem.submenu = editActions
+    applicationMenu.addItem(editItem)
     NSApp.mainMenu = applicationMenu
     let shortcut = AnswerHotkey(action: { [weak self] in self?.answer() })
     if !shortcut.setEnabled(true) {

@@ -247,7 +247,7 @@ p {
   white-space: pre-wrap;
   font-size: 13px;
   line-height: 1.65;
-  background: rgba(87, 137, 110, 0.1);
+  background: rgba(128, 128, 136, 0.1);
   padding: 10px 15px;
   border-radius: 14px 14px 3px 14px;
 }
@@ -269,7 +269,7 @@ p {
 }
 .assistant-message pre {
   overflow: auto;
-  background: rgba(42, 72, 57, 0.06);
+  background: rgba(48, 48, 54, 0.06);
   border: 1px solid var(--line);
   border-radius: 10px;
   padding: 15px;
@@ -318,7 +318,7 @@ p {
   background: var(--field);
   border: 1px solid var(--line);
   border-radius: 17px;
-  box-shadow: 0 4px 20px rgba(37, 69, 54, 0.025);
+  box-shadow: 0 4px 20px rgba(42, 42, 48, 0.025);
 }
 textarea {
   display: block;
