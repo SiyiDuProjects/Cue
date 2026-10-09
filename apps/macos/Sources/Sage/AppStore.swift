@@ -5,7 +5,6 @@ import SageCore
 @MainActor final class AppStore {
   static let serviceURL = "https://interview.siyidu.com"
   var onEvent: (JSON) -> Void = { _ in }
-  var recording = ""
   var phase = "idle"
   var sourceID = UserDefaults.standard.string(forKey: "capture.source") ?? "frontmost"
   private let http = HTTPClient()
@@ -24,7 +23,7 @@ import SageCore
   func connect() async throws {
     if preview {
       onEvent([
-        "type": "session_ready", "recording": "preview",
+        "type": "session_ready",
         "chats": [["id": "preview", "title": "新聊天"]], "turns": [], "images": [],
       ])
       return
@@ -83,10 +82,8 @@ import SageCore
   private func event(_ value: JSON) {
     switch value["type"] as? String {
     case "session_ready":
-      recording = value["recording"] as? String ?? ""
       cached = value
       phase = "idle"
-    case "state": recording = value["recording"] as? String ?? recording
     case "started":
       phase = "prepared"
       return  // Publish only after the native devices have actually started.
@@ -208,12 +205,10 @@ import SageCore
     else { throw SageError("连接未就绪或操作无效。") }
     return try await http.request(address, path, method: method, token: keys.device, body: body)
   }
-  func screenshot(_ expected: String) async throws -> JSON {
-    guard !preview, expected == recording, !recording.isEmpty else { throw SageError("采集场次尚未就绪。") }
+  func screenshot() async throws -> JSON {
+    guard !preview else { throw SageError("预览模式不会截图。") }
     var shot = try await capture.screenshot(source: sourceID)
-    guard expected == recording else { throw SageError("采集场次已改变，截图未上传。") }
     shot["request_id"] = UUID().uuidString.lowercased()
-    shot["recording"] = recording
     var result = try await request("/capture/images", method: "POST", body: shot)
     result["image_url"] = shot["image_data"]
     return result

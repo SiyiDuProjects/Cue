@@ -10,7 +10,7 @@ export interface CueBridge {
   command(value: Event): Promise<unknown>;
   request(path: string, method?: string, body?: Event): Promise<any>;
   audio(start: boolean): Promise<unknown>;
-  screenshot(recording: string): Promise<any>;
+  screenshot(): Promise<any>;
   sources(): Promise<any[]>;
   selectSource(id: string): Promise<unknown>;
   uploadMaterials(): Promise<any>;

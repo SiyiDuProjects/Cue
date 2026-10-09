@@ -63,8 +63,7 @@ export default function App() {
   const [connected, setConnected] = useState(false),
     [status, setStatus] = useState("正在连接…"),
     [error, setError] = useState("");
-  const [recording, setRecording] = useState(""),
-    [chats, setChats] = useState<Chat[]>([]),
+  const [chats, setChats] = useState<Chat[]>([]),
     [chat, setChat] = useState(localStorage.getItem("cue.chat") || ""),
     [messages, setMessages] = useState<Message[]>([]);
   const [turns, setTurns] = useState<Event[]>([]),
@@ -88,7 +87,6 @@ export default function App() {
       chat,
       text,
       selected,
-      recording,
       connected,
       audio,
       pending,
@@ -99,7 +97,6 @@ export default function App() {
     chat,
     text,
     selected,
-    recording,
     connected,
     audio,
     pending,
@@ -170,7 +167,6 @@ export default function App() {
       if (e.type === "session_ready" || e.type === "state") {
         setConnected(true);
         setStatus("已连接");
-        setRecording(e.recording);
         setTurns(e.turns || []);
         setImages(e.images || []);
         setChats(e.chats || []);
@@ -264,7 +260,7 @@ export default function App() {
   async function shot() {
     setWorking(true);
     await attempt(async () => {
-      const image = await window.cue.screenshot(recording);
+      const image = await window.cue.screenshot();
       if (!image) return;
       setImages((v) => [...v.filter((i) => i.id !== image.id), image]);
       setSelected((s) => [...s, image.id].slice(-8));
@@ -561,16 +557,6 @@ export default function App() {
               <p className="hint">按 Enter 保存。</p>
             </div>
             <div className="sheet-actions">
-              <Button
-                size="sm"
-                variant="secondary"
-                isDisabled={audio !== "idle" || sending || !connected}
-                onPress={() =>
-                  void attempt(() => command({ type: "new_recording" }))
-                }
-              >
-                新一场转录
-              </Button>
               <Button
                 size="sm"
                 variant="secondary"

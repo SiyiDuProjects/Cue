@@ -5,7 +5,6 @@ window.cue = {
       () =>
         window.cueReceive({
           type: "session_ready",
-          recording: "synthetic",
           chats: [],
           turns: [],
           images: [],

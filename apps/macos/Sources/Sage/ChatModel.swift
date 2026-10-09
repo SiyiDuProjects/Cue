@@ -29,7 +29,6 @@ struct SourceChoice: Identifiable, Hashable {
   @Published var connected = false
   @Published var status = "正在连接…"
   @Published var error = ""
-  @Published private(set) var recording = ""
   @Published private(set) var chats: [ChatItem] = []
   @Published private(set) var chat = UserDefaults.standard.string(forKey: "cue.chat") ?? ""
   @Published private(set) var messages: [JSON] = []
@@ -91,7 +90,6 @@ struct SourceChoice: Identifiable, Hashable {
     case "session_ready", "state":
       connected = true
       status = "已连接"
-      recording = e["recording"] as? String ?? recording
       turns = (e["turns"] as? [JSON] ?? []).compactMap(Self.turn).sorted(by: Self.order)
       images = (e["images"] as? [JSON] ?? []).compactMap(Self.shot)
       chats = (e["chats"] as? [JSON] ?? []).compactMap(Self.chatItem)
@@ -207,7 +205,7 @@ struct SourceChoice: Identifiable, Hashable {
     working = true
     attempt {
       defer { self.working = false }
-      let image = try await self.store.screenshot(self.recording)
+      let image = try await self.store.screenshot()
       guard let id = image["id"] as? String else { return }
       self.images.removeAll { $0.id == id }
       self.images.append(SavedShot(id: id, created: image["created"] as? Double ?? Self.now))
@@ -280,7 +278,6 @@ struct SourceChoice: Identifiable, Hashable {
       try await self.store.command(["type": "rename_chat", "chat": self.chat, "title": value])
     }
   }
-  func newRecording() { attempt { try await self.store.command(["type": "new_recording"]) } }
   func uploadMaterials() { attempt { _ = try await self.store.uploadMaterials() } }
   func importConnection() { attempt { try await self.store.importConnection() } }
   func openWebSettings() {

@@ -236,12 +236,11 @@ if (host) {
       await open();
     },
     pin: host.pin,
-    screenshot: async (recording: string) => {
+    screenshot: async () => {
       const shot = await host.screenshot();
       const result = await host.request("/capture/images", "POST", {
         ...shot,
         request_id: crypto.randomUUID(),
-        recording,
       });
       return { ...result, image_url: shot.image_data };
     },

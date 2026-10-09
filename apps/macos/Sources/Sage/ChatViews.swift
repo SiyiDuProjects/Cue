@@ -190,8 +190,6 @@ private struct SettingsPopover: View {
           .onSubmit { model.rename(title) }
       }
       Section {
-        Button("新一场转录", action: model.newRecording)
-          .disabled(model.audio != "idle" || model.sending || !model.connected)
         Button("更新个人资料…", action: model.uploadMaterials)
         Button("网页设置…", action: model.openWebSettings)
         Button("连接设置…", action: model.importConnection)

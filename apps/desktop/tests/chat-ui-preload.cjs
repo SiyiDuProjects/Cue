@@ -9,7 +9,6 @@ window.cue = {
       () =>
         emit({
           type: "session_ready",
-          recording: "test",
           chats: [{ id: "chat", title: "离线检查" }],
           turns: [],
           images: [],
