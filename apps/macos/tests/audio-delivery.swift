@@ -7,6 +7,8 @@ import SageCore
 @MainActor final class ControlSocket: SocketConnection {
   var maximumMessageSize = 0
   var closeCode = URLSessionWebSocketTask.CloseCode.invalid
+  /// Network latency before `started`; nil replies synchronously.
+  var startedDelay: Duration?
   private var pending: [JSON] = []
   private var receiver: CheckedContinuation<URLSessionWebSocketTask.Message, Error>?
   func resume() {}
@@ -26,7 +28,13 @@ import SageCore
       let value = try JSONSerialization.jsonObject(with: Data(raw.utf8)) as? JSON else { return }
     switch value["type"] as? String {
     case "authenticate": push(["type": "session_ready", "protocol": "cue-chat-v2"])
-    case "start": push(["type": "started"])
+    case "start":
+      if let startedDelay {
+        Task { @MainActor in
+          try await Task.sleep(for: startedDelay)
+          self.push(["type": "started"])
+        }
+      } else { push(["type": "started"]) }
     default: break
     }
   }
@@ -168,12 +176,64 @@ final class SyntheticPCM: @unchecked Sendable {
         try await scenario("menu and drag tracking", mode: .eventTracking)
         try await scenario("modal panel", mode: .modalPanel)
         try await scenario("real overflow", overflow: true)
-        if CommandLine.arguments.count == 1 { try await cancelledStart() }
+        if CommandLine.arguments.count == 1 {
+          try await cancelledStart()
+          try await serverStopThenRestart()
+        }
         print("\(checked) native audio delivery checks passed (synthetic, offline)")
         exit(0)
       } catch { fputs("FAIL \(error)\n", stderr); exit(1) }
     }
     RunLoop.main.run()
+  }
+
+  /// A server-ended recording (upstream failure, replacement) is never drained
+  /// by the client, so its mailbox keeps a tail. The next start's prepared-phase
+  /// drain must not forward that old audio into the new upstreams.
+  @MainActor static func serverStopThenRestart() async throws {
+    let socket = ControlSocket()
+    // With real latency the start loop is asleep when `started` arrives, so the
+    // drain timer runs in prepared before the new mailbox is published.
+    socket.startedDelay = .milliseconds(10)
+    let link = SocketLink(url: URL(string: "wss://example.invalid/capture/socket")!, token: "synthetic", role: "desktop", connectionFactory: { _ in socket })
+    var sessions: [SyntheticSession] = []
+    let capture = CaptureController { sink, _ in
+      let created = SyntheticSession(sink: sink, stopDelay: .milliseconds(60))
+      sessions.append(created)
+      return created
+    }
+    let store = AppStore(capture: capture, connection: link)
+    var received = ["candidate": Data(), "interviewer": Data()]
+    store.onEvent = { event in
+      switch event["type"] as? String {
+      case "pcm":
+        let role = event["role"] as! String
+        received[role]!.append(Data(base64Encoded: event["data"] as! String)!)
+      case "audio_control":
+        if (event["value"] as? JSON)?["type"] as? String == "stop" {
+          socket.push(["type": "stopped", "complete": true])
+        }
+      default: break
+      }
+    }
+    for _ in 0..<100 where !link.ready { try await Task.sleep(for: .milliseconds(10)) }
+    try await store.audio(true)
+    try await Task.sleep(for: .milliseconds(200))
+    socket.push(["type": "stopped", "complete": false])
+    for _ in 0..<100 where store.phase != "idle" { try await Task.sleep(for: .milliseconds(10)) }
+    // Native stop (60 ms) finishes while the old producer keeps writing its tail.
+    try await Task.sleep(for: .milliseconds(200))
+    require(store.phase == "idle" && !capture.isPrepared, "server stop: capture idle without a client drain")
+    received = ["candidate": Data(), "interviewer": Data()]
+    try await store.audio(true)
+    try await Task.sleep(for: .milliseconds(200))
+    try await store.audio(false)
+    require(sessions.count == 2, "server stop then restart: second native session started")
+    for role in ["candidate", "interviewer"] {
+      require(!received[role]!.isEmpty && received[role] == sessions[1].pcm.produced[role],
+        "server stop then restart: \(role) carries only the new recording")
+    }
+    await store.disconnect()
   }
 
   @MainActor static func cancelledStart() async throws {

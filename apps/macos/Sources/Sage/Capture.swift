@@ -360,6 +360,13 @@ final class AudioSink: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Se
     return NativeAudioSession(stream: stream, sink: sink)
   }
   /// Both streams stop together; each socket independently acknowledges after its PCM drains.
+  /// A recording the server ended was never drained by the client, so its
+  /// mailbox can still hold a tail. A new start drops it instead of letting the
+  /// prepared-phase drain forward old audio to new upstreams.
+  func discardFinishedSink() {
+    guard audioSession == nil else { return }
+    sink = nil
+  }
   func finish() async -> Bool {
     epoch = UUID()  // Invalidate a pending permission prompt or stream start as well.
     if let finishTask { return await finishTask.value }

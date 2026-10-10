@@ -182,6 +182,7 @@ import SageCore
     guard let link, link.ready else { throw SageError("连接尚未就绪。") }
     if start {
       guard phase == "idle" else { return }
+      capture.discardFinishedSink()
       let epoch = UUID()
       audioGeneration = epoch
       lastPump = .now
