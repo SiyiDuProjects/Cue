@@ -46,7 +46,16 @@ app
         "const input=document.querySelector('textarea');Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype,'value').set.call(input,'如何处理重复元素？');input.dispatchEvent(new Event('input',{bubbles:true}));",
       );
       await js("document.querySelector('.send-button').click()");
+      // Summary streams openly while thinking, then folds once the answer starts.
+      await wait(
+        "document.querySelector('.reasoning-text')?.textContent.includes('哈希表') && !document.querySelector('.assistant-message .markdown')",
+      );
+      assert.equal(await js("document.querySelector('details.reasoning')"), null);
       await wait("document.querySelector('.assistant-message table')");
+      assert.equal(
+        await js("!!document.querySelector('details.reasoning:not([open]) summary')"),
+        true,
+      );
       assert.equal(await js("window.lastAsk.images[0]"), "shot");
       assert.equal(await js("window.lastAsk.text"), "如何处理重复元素？");
       assert.equal(
@@ -62,6 +71,10 @@ app
       );
       await wait(
         "document.querySelector('.copy') && !document.querySelector('.thinking')",
+      );
+      assert.match(
+        await js("document.querySelector('details.reasoning').textContent"),
+        /思路.*读题.*哈希表/s,
       );
       await js("document.querySelector('.copy').click()");
       assert.equal(await js("window.copied"), "使用哈希表。");
@@ -151,7 +164,7 @@ app
       );
       assert.equal(await js("localStorage.getItem('cue.chat')"), "chat");
       console.log(
-        "PASS chat, screenshot attachment, streaming Markdown/table/math, copy, source restore/failure, silence display, manual reconnect and narrow layout; all network blocked",
+        "PASS chat, screenshot attachment, live then folded reasoning summary, streaming Markdown/table/math, copy, source restore/failure, silence display, manual reconnect and narrow layout; all network blocked",
       );
     } finally {
       win.destroy();

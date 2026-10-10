@@ -32,6 +32,16 @@ window.cue = {
       messages.push(message);
       setTimeout(() => {
         emit({ type: "answer", message: { ...message } });
+        emit({ type: "answer_reasoning", id: v.id, delta: "**读题**：确认重复元素" });
+        setTimeout(
+          () =>
+            emit({
+              type: "answer_reasoning",
+              id: v.id,
+              delta: "\n\n**选择**：哈希表",
+            }),
+          10,
+        );
         setTimeout(() => {
           emit({
             type: "answer_delta",
@@ -39,12 +49,13 @@ window.cue = {
             delta:
               "## 解法\n\n使用 **哈希表**。\n\n|输入|输出|\n|---|---|\n|2|4|\n\n\`\`\`python\nprint(2+2)\n\`\`\`\n\n$O(n)$",
           });
-        }, 30);
+        }, 250);
         setTimeout(() => {
           message.answer = "使用哈希表。";
+          message.reasoning = "**读题**：确认重复元素\n\n**选择**：哈希表";
           message.status = "completed";
           emit({ type: "answer", message: { ...message } });
-        }, 500);
+        }, 700);
       }, 10);
     }
     if (v.type === "new_chat")

@@ -21,6 +21,7 @@ export type Message = {
   status: string;
   detail: string;
   context?: string;
+  reasoning?: string;
 };
 export const busy = (m: Message) => ["preparing", "running"].includes(m.status);
 export const isMac = /Mac/i.test(navigator.userAgent);
@@ -112,6 +113,25 @@ const markdown: Components = {
   img: () => null,
 };
 
+/** Streams while the model thinks; folds away once the answer starts. */
+function Reasoning({ m }: { m: Message }) {
+  if (!m.reasoning) return null;
+  const body = (
+    <div className="reasoning-text">
+      <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdown}>
+        {m.reasoning}
+      </ReactMarkdown>
+    </div>
+  );
+  if (busy(m) && !m.answer) return <div className="reasoning">{body}</div>;
+  return (
+    <details className="reasoning">
+      <summary>思路</summary>
+      {body}
+    </details>
+  );
+}
+
 export function MessageList({ messages }: { messages: Message[] }) {
   if (!messages.length)
     return (
@@ -136,6 +156,7 @@ export function MessageList({ messages }: { messages: Message[] }) {
             )}
           </div>
           <div className="assistant-message">
+            <Reasoning m={m} />
             {m.answer && (
               <div className="markdown">
                 <ReactMarkdown

@@ -27,6 +27,14 @@ export default function Content() {
             m.id === e.id ? { ...m, answer: m.answer + e.delta } : m,
           ),
         );
+      if (e.type === "answer_reasoning")
+        setMessages((ms) =>
+          ms.map((m) =>
+            m.id === e.id
+              ? { ...m, reasoning: (m.reasoning ?? "") + e.delta }
+              : m,
+          ),
+        );
     };
     window.addEventListener("cue:event", listener);
     // Events sent before this listener existed were dropped; ask for the chat.

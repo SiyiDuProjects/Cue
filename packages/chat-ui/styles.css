@@ -298,6 +298,25 @@ kbd {
   font-size: 13px;
   color: var(--muted);
 }
+.reasoning {
+  margin: 0 0 8px;
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--muted);
+}
+.reasoning summary {
+  width: fit-content;
+  cursor: pointer;
+  user-select: none;
+}
+.reasoning-text {
+  margin-top: 4px;
+  padding-left: 10px;
+  border-left: 2px solid var(--separator);
+}
+.reasoning-text p {
+  margin: 0 0 6px;
+}
 .detail {
   margin: 6px 0 0;
   font-size: 12px;

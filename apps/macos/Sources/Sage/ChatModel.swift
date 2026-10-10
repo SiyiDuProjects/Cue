@@ -134,6 +134,11 @@ struct SourceChoice: Identifiable, Hashable {
         let index = messages.firstIndex(where: { $0["id"] as? String == id })
       else { return }
       messages[index]["answer"] = (messages[index]["answer"] as? String ?? "") + delta
+    case "answer_reasoning":
+      guard let id = e["id"] as? String, let delta = e["delta"] as? String,
+        let index = messages.firstIndex(where: { $0["id"] as? String == id })
+      else { return }
+      messages[index]["reasoning"] = (messages[index]["reasoning"] as? String ?? "") + delta
     case "transcript":
       guard let turn = (e["turn"] as? JSON).flatMap(Self.turn) else { return }
       turns.removeAll { $0.id == turn.id }

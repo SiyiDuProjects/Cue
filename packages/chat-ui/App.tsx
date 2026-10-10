@@ -210,6 +210,14 @@ export default function App() {
             m.id === e.id ? { ...m, answer: m.answer + e.delta } : m,
           ),
         );
+      if (e.type === "answer_reasoning")
+        setMessages((ms) =>
+          ms.map((m) =>
+            m.id === e.id
+              ? { ...m, reasoning: (m.reasoning ?? "") + e.delta }
+              : m,
+          ),
+        );
       if (e.type === "transcript")
         setTurns((ts) =>
           [...ts.filter((t) => t.id !== e.turn.id), e.turn].sort(
