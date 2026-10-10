@@ -4,17 +4,6 @@ import SageAppShot
 import SageCore
 import ScreenCaptureKit
 
-struct WindowTextResult: Sendable {
-  var text: String
-  var status: String
-  var detail: String
-  init(text: String = "", status: String, detail: String = "") {
-    self.text = text
-    self.status = status
-    self.detail = detail
-  }
-}
-
 struct CaptureSource: Identifiable, Hashable {
   let id: String
   let name: String
@@ -242,61 +231,25 @@ final class AudioSink: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Se
       if let testScreenshot { return try await testScreenshot(source) }
     #endif
     let requestedApp = previousApp
-    var nativeFailure: Error?
-    if source == "frontmost" {
-      guard let pid = requestedApp, pid != ProcessInfo.processInfo.processIdentifier,
-        let app = NSRunningApplication(processIdentifier: pid), !app.isTerminated
-      else {
-        throw SageError("请先切换到目标应用，再回到 Cue 获取 App Shot，或在更多中选择窗口。")
-      }
-      do {
-        // Cue remembers the last app; ChatGPT resolves its focused window and
-        // returns the image and text together. No second AX/title matching here.
-        let native = try await NativeAppShot.capture(app: app)
-        try Task.checkCancellation()
-        guard !app.isTerminated, let image = native["image_data"] as? String,
-          let title = native["window_title"] as? String, let text = native["text"] as? String
-        else {
-          throw SageError("原生采集期间目标应用已退出或返回内容无效。")
-        }
-        return [
-          "image_data": image, "source_id": "app:\(app.bundleIdentifier ?? String(pid))",
-          "captured_at": native["captured_at"] as? String
-            ?? ISO8601DateFormatter().string(from: Date()),
-          "appshot": [
-            "app_name": app.localizedName ?? "应用",
-            "window_title": String(title.unicodeScalars.prefix(2048)),
-            "text": text, "status": native["status"] as? String ?? "available",
-            "detail": native["detail"] as? String ?? "ChatGPT 原生采集",
-          ],
-        ]
-      } catch {
-        if Task.isCancelled { throw CancellationError() }
-        nativeFailure = error
-      }
-    }
+    try ScreenAccess.require(asking: true)
+    try Task.checkCancellation()
+    let content = try await SCShareableContent.excludingDesktopWindows(
+      true, onScreenWindowsOnly: true)
     var selected = source
     if source == "frontmost" {
       guard let pid = requestedApp, pid != ProcessInfo.processInfo.processIdentifier,
         let windows = CGWindowListCopyWindowInfo(
           [.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [JSON],
-        let window = windows.first(where: {
-          ($0[kCGWindowOwnerPID as String] as? Int32) == pid
-            && ($0[kCGWindowLayer as String] as? Int) == 0
-        }),
-        let id = window[kCGWindowNumber as String] as? UInt32
+        let id = windows.compactMap({ $0[kCGWindowNumber as String] as? UInt32 }).first(where: {
+          id in
+          content.windows.contains {
+            $0.windowID == id && $0.owningApplication?.processID == pid
+              && $0.windowLayer == 0 && !($0.title ?? "").isEmpty
+          }
+        })
       else { throw SageError("请先切换到目标应用，再回到 Cue 获取 App Shot，或在更多中选择窗口。") }
       selected = "window:\(id)"
     }
-    do { try ScreenAccess.require(asking: true) } catch {
-      // App Shot already failed through ChatGPT; report both instead of prompting twice.
-      if let nativeFailure {
-        throw SageError(nativeFailure.localizedDescription + "\n" + error.localizedDescription)
-      }
-      throw error
-    }
-    let content = try await SCShareableContent.excludingDesktopWindows(
-      true, onScreenWindowsOnly: true)
     let window =
       selected.hasPrefix("window:")
       ? content.windows.first { $0.windowID == UInt32(selected.dropFirst(7)) } : nil
@@ -333,71 +286,23 @@ final class AudioSink: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Se
           }
         }
       }
-      var text = WindowTextResult(status: "unavailable", detail: "窗口身份无法唯一确认，已保留原图。")
-      do {
-        if let nativeFailure { throw nativeFailure }
-        guard WindowMatch.isCurrent(target, windows: identities(content.windows)),
-          content.windows.filter({
-            $0.owningApplication?.processID == app.processID && $0.title == window.title
-          }).count == 1,
-          let runningApp = NSRunningApplication(processIdentifier: app.processID)
-        else {
-          throw SageError("窗口身份无法唯一确认，已保留原图。")
+      var text = try await WindowText.capture(target: target, appName: app.applicationName)
+      try Task.checkCancellation()
+      if !text.text.isEmpty, let basis = text.basis {
+        do {
+          let latest = try await SCShareableContent.excludingDesktopWindows(
+            true, onScreenWindowsOnly: true)
+          if !WindowMatch.isCurrent(target, windows: identities(latest.windows), basis: basis) {
+            text = WindowTextResult(status: "unavailable", detail: "读取期间窗口已改变，已丢弃文字并保留原图。")
+          }
+        } catch {
+          text = WindowTextResult(status: "unavailable", detail: "无法复核窗口身份，已丢弃文字并保留原图。")
         }
-        // ChatGPT's API reads the app's current window, not an arbitrary window ID.
-        // Reject a background selection before asking it to capture another window.
-        guard nativeFrontWindow(pid: app.processID) == window.windowID else {
-          throw SageError("请先切到所选应用窗口，再使用 ChatGPT 原生采集；本次已保留所选窗口原图。")
-        }
-        let native = try await NativeAppShot.capture(app: runningApp, title: window.title ?? "")
-        try Task.checkCancellation()
-        let latest = try await SCShareableContent.excludingDesktopWindows(
-          true, onScreenWindowsOnly: true)
-        guard WindowMatch.isCurrent(target, windows: identities(latest.windows)),
-          latest.windows.filter({
-            $0.owningApplication?.processID == app.processID && $0.title == window.title
-          }).count == 1,
-          nativeFrontWindow(pid: app.processID) == window.windowID
-        else {
-          throw SageError("读取期间窗口已改变，已丢弃原生采集结果并保留原图。")
-        }
-        guard let imageData = native["image_data"] as? String,
-          let encoded = imageData.split(separator: ",", maxSplits: 1).last,
-          let bytes = Data(base64Encoded: String(encoded)),
-          let bitmap = NSBitmapImageRep(data: bytes),
-          abs(bitmap.pixelsWide - config.width) <= 2, abs(bitmap.pixelsHigh - config.height) <= 2,
-          let nativeText = native["text"] as? String, !nativeText.isEmpty
-        else {
-          throw SageError("原生采集的窗口尺寸或文字不匹配，已保留所选窗口原图。")
-        }
-        // Keep the native image bytes with the text returned by that same capture.
-        result["image_data"] = imageData
-        result["captured_at"] = native["captured_at"] as? String ?? capturedAt
-        text = WindowTextResult(
-          text: nativeText, status: native["status"] as? String ?? "available",
-          detail: native["detail"] as? String ?? "ChatGPT 原生采集")
-      } catch {
-        if Task.isCancelled { throw CancellationError() }
-        text = WindowTextResult(
-          status: "unavailable", detail: error.localizedDescription + " 原图已保留。")
       }
-      result["appshot"] = [
-        "app_name": String(app.applicationName.unicodeScalars.prefix(512)),
-        "window_title": String((window.title ?? "").unicodeScalars.prefix(2048)), "text": text.text,
-        "status": text.status, "detail": text.detail,
-      ]
+      result["appshot"] = text.payload(app: app.applicationName, title: window.title ?? "")
     }
+    try Task.checkCancellation()
     return result
-  }
-  private func nativeFrontWindow(pid: Int32) -> UInt32? {
-    let windows =
-      CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID)
-      as? [JSON] ?? []
-    return windows.first { item in
-      (item[kCGWindowOwnerPID as String] as? Int32) == pid
-        && (item[kCGWindowLayer as String] as? Int) == 0
-        && !((item[kCGWindowName as String] as? String) ?? "").isEmpty
-    }?[kCGWindowNumber as String] as? UInt32
   }
   func prepare() async throws {
     guard audioSession == nil else { return }

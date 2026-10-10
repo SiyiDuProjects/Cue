@@ -208,6 +208,7 @@ import SageCore
   func screenshot() async throws -> JSON {
     guard !preview else { throw SageError("预览模式不会截图。") }
     var shot = try await capture.screenshot(source: sourceID)
+    try Task.checkCancellation()
     shot["request_id"] = UUID().uuidString.lowercased()
     var result = try await request("/capture/images", method: "POST", body: shot)
     result["image_url"] = shot["image_data"]

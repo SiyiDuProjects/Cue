@@ -2,6 +2,11 @@ import Foundation
 import SageAppShot
 import SageCore
 
+if CommandLine.arguments.contains("--appshot-fixtures") {
+  FileHandle.standardOutput.write(try JSONSerialization.data(withJSONObject: appShotFixtures()))
+  exit(0)
+}
+
 var checked = 0
 func check(_ condition: @autoclosure () -> Bool, _ name: String) {
   guard condition() else {
@@ -80,6 +85,8 @@ check(
     targetWindow, windows: [WindowIdentity(id: 42, pid: 101, bounds: bounds, title: "A")]),
   "another process cannot reuse captured window identity")
 print("\(checked) total offline checks passed")
+
+try runAppShotChecks()
 
 @MainActor final class TestSocket: SocketConnection {
   var maximumMessageSize = 0
