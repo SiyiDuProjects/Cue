@@ -7,7 +7,6 @@ import SageCore
   static let serviceURL = "https://interview.siyidu.com"
   var onEvent: (JSON) -> Void = { _ in }
   var phase = "idle"
-  var sourceID = UserDefaults.standard.string(forKey: "capture.source") ?? "frontmost"
   private let http = HTTPClient()
   private let capture: CaptureController
   private var address: ServerAddress?
@@ -235,39 +234,12 @@ import SageCore
   }
   func screenshot() async throws -> JSON {
     guard !preview else { throw SageError("预览模式不会截图。") }
-    var shot = try await capture.screenshot(source: sourceID)
+    var shot = try await capture.screenshot()
     try Task.checkCancellation()
     shot["request_id"] = UUID().uuidString.lowercased()
     var result = try await request("/capture/images", method: "POST", body: shot)
     result["image_url"] = shot["image_data"]
     return result
-  }
-  func sources() async throws -> [JSON] {
-    var choices: [JSON] = [["id": "frontmost", "name": "App Shot · 最近应用"]]
-    if !ScreenAccess.granted {
-      // Reading state never asks; the UI offers the system settings page instead.
-      choices.append([
-        "id": "unavailable", "name": "屏幕/窗口：需要录屏权限", "disabled": true, "permission": "screen",
-      ])
-    } else {
-      do {
-        choices += try await capture.sources().map { ["id": $0.id, "name": $0.name] }
-      } catch {
-        choices.append(["id": "unavailable", "name": "屏幕/窗口暂时不可用", "disabled": true])
-      }
-    }
-    if !choices.contains(where: { $0["id"] as? String == sourceID }) {
-      choices.append(["id": sourceID, "name": "原截图来源不可用，请重新选择", "disabled": true])
-    }
-    return choices.map { choice in
-      var value = choice
-      value["selected"] = choice["id"] as? String == sourceID
-      return value
-    }
-  }
-  func selectSource(_ id: String) {
-    sourceID = id
-    UserDefaults.standard.set(id, forKey: "capture.source")
   }
   func uploadMaterials() async throws -> JSON {
     let panel = NSOpenPanel()

@@ -16,13 +16,6 @@ struct SavedShot: Identifiable {
   let id: String
   var created: Double
 }
-struct SourceChoice: Identifiable, Hashable {
-  let id: String
-  let name: String
-  let disabled: Bool
-  let needsPermission: Bool
-}
-
 /// Native chat state. It consumes the same server events the answer view
 /// receives; the answer view only renders messages this model sends it.
 @MainActor final class ChatModel: ObservableObject {
@@ -43,9 +36,6 @@ struct SourceChoice: Identifiable, Hashable {
   @Published private(set) var working = false
   @Published private(set) var pending = ""
   @Published var showTranscript = false
-  @Published private(set) var sources: [SourceChoice] = []
-  @Published private(set) var source = ""
-  @Published private(set) var sourceBusy = false
   @Published var effort = UserDefaults.standard.string(forKey: "cue.effort") ?? "" {
     didSet { if persist { defaults.set(effort, forKey: "cue.effort") } }
   }
@@ -255,25 +245,6 @@ struct SourceChoice: Identifiable, Hashable {
         self.error = error.localizedDescription
       }
     }
-  }
-  func loadSources() {
-    sourceBusy = true
-    attempt {
-      defer { self.sourceBusy = false }
-      let choices = try await self.store.sources()
-      self.sources = choices.compactMap { value in
-        guard let id = value["id"] as? String else { return nil }
-        return SourceChoice(
-          id: id, name: value["name"] as? String ?? id,
-          disabled: value["disabled"] as? Bool == true,
-          needsPermission: value["permission"] as? String == "screen")
-      }
-      self.source = choices.first { $0["selected"] as? Bool == true }?["id"] as? String ?? ""
-    }
-  }
-  func selectSource(_ id: String) {
-    store.selectSource(id)
-    source = id
   }
   func newChat() { attempt { try await self.store.command(["type": "new_chat"]) } }
   func rename(_ title: String) {

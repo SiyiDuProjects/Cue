@@ -148,7 +148,6 @@ private struct ChatToolbar: ToolbarContent {
       .help(model.pinned ? "取消置顶" : "置顶")
       Button {
         settings.toggle()
-        if settings { model.loadSources() }
       } label: {
         Label("设置", systemImage: "gearshape")
       }
@@ -171,17 +170,7 @@ private struct SettingsPopover: View {
           Text("深入").tag("high")
           Text("最深入").tag("xhigh")
         }
-        Picker(
-          "截图来源",
-          selection: Binding(get: { model.source }, set: { model.selectSource($0) })
-        ) {
-          if model.source.isEmpty { Text("请选择").tag("") }
-          ForEach(model.sources) { choice in
-            Text(choice.name).tag(choice.id).selectionDisabled(choice.disabled)
-          }
-        }
-        .disabled(model.sourceBusy)
-        if model.sources.contains(where: \.needsPermission) {
+        if !ScreenAccess.granted {
           Button("打开录屏权限设置…", action: model.openPrivacy)
         }
       }
@@ -356,7 +345,7 @@ private struct Composer: View {
         }
         .buttonStyle(.borderless)
         .disabled(!model.connected || model.working)
-        .help("按截图来源截取一张，随下一次提问发送")
+        .help("截取主屏幕，随下一次提问发送")
         Spacer()
         Text("⌘↩").font(.caption).foregroundStyle(.tertiary)
         if model.sending {

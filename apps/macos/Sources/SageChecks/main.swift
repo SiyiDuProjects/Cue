@@ -1,11 +1,5 @@
 import Foundation
-import SageAppShot
 import SageCore
-
-if CommandLine.arguments.contains("--appshot-fixtures") {
-  FileHandle.standardOutput.write(try JSONSerialization.data(withJSONObject: appShotFixtures()))
-  exit(0)
-}
 
 var checked = 0
 func check(_ condition: @autoclosure () -> Bool, _ name: String) {
@@ -58,40 +52,6 @@ check(
   "Sites credentials decode without an API key")
 check((try? SiteCredentials("legacy-token")) == nil, "legacy VPS credential is never sent to Sites")
 print("\(checked) offline checks passed")
-let bounds = CGRect(x: 100, y: 100, width: 400, height: 300)
-check(
-  WindowMatch.unique(bounds: bounds, title: "A", candidates: [(bounds, "A"), (bounds, "B")]) == 0,
-  "window text matches captured window")
-check(
-  WindowMatch.unique(bounds: bounds, title: "A", candidates: [(bounds, "A"), (bounds, "A")]) == nil,
-  "ambiguous window cannot leak sibling text")
-print("\(checked) total offline checks passed")
-
-check(
-  WindowMatch.unique(bounds: bounds, title: "", candidates: [(bounds, "Other window")]) == nil,
-  "missing screenshot title cannot match a different titled window")
-
-let targetWindow = WindowIdentity(id: 42, pid: 100, bounds: bounds, title: "A")
-check(
-  WindowMatch.isCurrent(targetWindow, windows: [targetWindow]),
-  "exact captured window remains eligible")
-check(
-  !WindowMatch.isCurrent(
-    targetWindow, windows: [WindowIdentity(id: 43, pid: 100, bounds: bounds, title: "A")]),
-  "replacement window with identical title and geometry is rejected")
-check(
-  !WindowMatch.isCurrent(
-    targetWindow,
-    windows: [targetWindow, WindowIdentity(id: 43, pid: 100, bounds: bounds, title: "A")]),
-  "ambiguous sibling window suppresses AX text")
-check(
-  !WindowMatch.isCurrent(
-    targetWindow, windows: [WindowIdentity(id: 42, pid: 101, bounds: bounds, title: "A")]),
-  "another process cannot reuse captured window identity")
-print("\(checked) total offline checks passed")
-
-try runAppShotChecks()
-
 @MainActor final class TestSocket: SocketConnection {
   var maximumMessageSize = 0
   var closeCode = URLSessionWebSocketTask.CloseCode.invalid

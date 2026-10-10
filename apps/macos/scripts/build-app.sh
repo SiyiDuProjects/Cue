@@ -25,9 +25,8 @@ swift build --disable-sandbox --cache-path "$MAC_ROOT/.build/cache" -c "$CONFIGU
 BIN_DIR="$(swift build --disable-sandbox --cache-path "$MAC_ROOT/.build/cache" -c "$CONFIGURATION" --show-bin-path)"
 "$BIN_DIR/SageChecks"
 bash "$MAC_ROOT/scripts/check-audio-delivery.sh" "$BIN_DIR"
-"$NODE_BIN" "$MAC_ROOT/tests/appshot-budget.cjs" "$BIN_DIR/SageChecks"
-if nm -u "$BIN_DIR/Sage" | grep '_AXUIElementGetWindow' >/dev/null; then
-  echo 'App Shot must not strongly import the optional AX window ID function.' >&2
+if nm -u "$BIN_DIR/Sage" | grep -E '_AX(UIElement|IsProcessTrusted)' >/dev/null; then
+  echo 'Screenshot capture must not read other apps through accessibility APIs.' >&2
   exit 1
 fi
 # Stage into a fresh directory; a failed build never replaces a working app.

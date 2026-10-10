@@ -83,7 +83,7 @@ app
       assert.equal(await js("document.querySelector('#effort').value"), "");
       assert.equal(
         await js("document.querySelector('#source').value"),
-        "frontmost",
+        "screen:1",
       );
       assert.equal(
         await js(
@@ -107,16 +107,16 @@ app
         await js("document.querySelector('#source').value"),
         "screen:0",
       );
-      await choose("frontmost");
+      await choose("screen:1");
       assert.equal(
         await js("document.querySelector('#source').value"),
-        "frontmost",
+        "screen:1",
       );
       await js("window.rejectSource=true");
       await choose("screen:0");
       assert.equal(
         await js("document.querySelector('#source').value"),
-        "frontmost",
+        "screen:1",
       );
       await js("document.querySelector('[aria-label=\"设置\"]').click()");
       assert.equal(await js("window.sourceReads"), 1);
@@ -126,7 +126,7 @@ app
       );
       assert.equal(
         await js("document.querySelector('#source').value"),
-        "frontmost",
+        "screen:1",
       );
       await win.setSize(440, 650);
       assert.equal(

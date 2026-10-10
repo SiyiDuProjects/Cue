@@ -1,7 +1,7 @@
 const emit = (value) =>
   window.dispatchEvent(new CustomEvent("cue:event", { detail: value }));
 const messages = [];
-let source = "frontmost";
+let source = "screen:1";
 window.sourceReads = 0;
 window.cue = {
   connect: async () =>
@@ -74,7 +74,7 @@ window.cue = {
     window.sourceReads++;
     return [
       { id: "screen:0", name: "主显示器" },
-      { id: "frontmost", name: "App Shot · 最近应用" },
+      { id: "screen:1", name: "第二显示器" },
       {
         id: "unavailable",
         name: "录屏权限未开启",

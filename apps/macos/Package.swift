@@ -7,8 +7,7 @@ let package = Package(
     products: [.executable(name: "Sage", targets: ["Sage"]), .executable(name: "SageChecks", targets: ["SageChecks"])],
     targets: [
         .target(name: "SageCore"),
-        .target(name: "SageAppShot", dependencies: ["SageCore"]),
-        .executableTarget(name: "Sage", dependencies: ["SageCore", "SageAppShot"]),
-        .executableTarget(name: "SageChecks", dependencies: ["SageCore", "SageAppShot"]),
+        .executableTarget(name: "Sage", dependencies: ["SageCore"]),
+        .executableTarget(name: "SageChecks", dependencies: ["SageCore"]),
     ]
 )

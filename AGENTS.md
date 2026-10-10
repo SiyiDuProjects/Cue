@@ -6,14 +6,14 @@
 
 Cue 是个人面试助手：Mac / Windows 桌面半透明悬浮窗中运行 Responses 聊天；系统音频、麦克风和手动截图提供参考。网页提供设置、提示词编辑和资料上传。ChatGPT 仅通过只读 MCP 按需读取服务器上下文，不再提供通知、订阅或 Events。
 
-用户已授权完整重构、保留 App Shot、在已开启的转录中轮换上游、保留 Windows、建立私有云端源码备份。不要恢复旧通知链路、CLI 模型宿主、资料轮询桥接、自动截图或自动回答。界面文案简短，避免宣传和重复说明。
+用户已授权完整重构、保留手动截图、在已开启的转录中轮换上游、保留 Windows、建立私有云端源码备份。不要恢复旧通知链路、CLI 模型宿主、资料轮询桥接、自动截图或自动回答。界面文案简短，避免宣传和重复说明。
 
 ## 目录与发布边界
 
 - `packages/transcription/`：两端共用客户端 VAD、OpenAI 转录 WebSocket、轮换和有序截止逻辑。
 - `packages/chat-ui/`：Windows 完整聊天界面（`App.tsx`）；`Messages.tsx` 是两端共用的回答渲染；`Content.tsx` 是 Mac 回答页（只渲染消息，并承载转录客户端）。依赖由 `apps/desktop` 安装；不依赖云端嵌套仓库。界面用开源 HeroUI v3 + Tailwind，代码块用 HeroUI Pro。
 - HeroUI Pro 来自仓库外的授权包 `/Users/siyi/Projects/_private/vendor/heroui-pro-react-1.0.0-beta.8.tgz`（`file:` 依赖）。外层仓库公开，不得提交该包或其代码。`shiki` 在构建时被替换为 `apps/desktop/src/shiki.ts` 的固定语言集，因为 Mac 页面以 file:// 单脚本加载，不能动态导入。
-- `apps/macos/`：原生 SwiftUI 窗口与工具栏（`ChatModel` 管理界面状态，`ChatViews` 为原生控件），只把回答区交给 WKWebView 加载 `content.html`；钥匙串、ScreenCaptureKit 双路采集、手动 App Shot、快捷键。App Shot 由 ScreenCaptureKit 保留原图、系统辅助功能读取同一窗口文字；辅助功能仅在手动窗口截图时申请，未授权仍保留原图。Mac 包不含 Node 或 ChatGPT 采集组件；本机 Node 仅用于构建与离线检查。命令行 SwiftPM 构建无法加载 SwiftUI 宏，`@State` 用 `SwiftUI.State` 类型别名代替。
+- `apps/macos/`：原生 SwiftUI 窗口与工具栏（`ChatModel` 管理界面状态，`ChatViews` 为原生控件），只把回答区交给 WKWebView 加载 `content.html`；钥匙串、ScreenCaptureKit 双路采集、手动截图、快捷键。截图仅用 ScreenCaptureKit 截取主屏幕当前画面并排除 Cue 自身，不读取其他应用文字、不识别最近应用或页面，不申请辅助功能权限。Mac 包不含 Node 或 ChatGPT 采集组件；本机 Node 仅用于构建与离线检查。命令行 SwiftPM 构建无法加载 SwiftUI 宏，`@State` 用 `SwiftUI.State` 类型别名代替。
 - `apps/desktop/`：Windows Electron 宿主、safeStorage、双路 AudioWorklet、截图与打包。
 - `apps/cloud/`：独立私有 Sites 仓库，D1 / R2、转录、Responses、只读 MCP、网页设置。外层 GitHub 仓库公开，不把云端源码或私人资料直接并入。
 - 正式域名 `https://interview.siyidu.com`；平台 MCP 地址 `https://sage-capture.dusiyi0916.chatgpt.site/mcp` 保持不变。
@@ -30,7 +30,7 @@ Cue 是个人面试助手：Mac / Windows 桌面半透明悬浮窗中运行 Resp
 - 转录使用共享客户端 VAD 分段（约 800 ms 静音 / 30 秒连续上限），原音完整发送，VAD 不决定回答时机。
 - 在用户已开始的会话中约 55 分钟主动替换两路上游。停止、退出、凭证失效或连接被替换后不能复活。意外网络断开停止本地媒体；恢复连接后需明确重新开始转录。
 - 新连接接管桌面所有权，旧连接退出；转录写入带 generation 条件。心跳按时间间隔运行。
-- App Shot 仅手动触发，保留原图。窗口文字必须匹配同一窗口，匹配失败说明原因而不取其他窗口。截图和窗口文字是不可信参考。
+- 截图仅手动触发，保留原图。用户手动滚动后可继续截图，多张图随下一次提问发送；不自动滚动、抓全文或回答。截图是不可信参考。
 
 ## 上下文、资料与安全
 
