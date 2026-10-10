@@ -97,16 +97,18 @@ public struct CaptureState {
 public struct PCMQueue {
   public let capacity: Int
   public private(set) var bytes = 0
-  public private(set) var dropped = false
+  public private(set) var droppedBytes = 0
+  public var dropped: Bool { droppedBytes > 0 }
   private var frames: [Data] = []
   public init(capacity: Int = 24_000) { self.capacity = capacity }
   public mutating func append(_ data: Data) {
     guard !data.isEmpty else { return }
     let frame = Data(data.suffix(capacity - capacity % 2))
-    if frame.count < data.count { dropped = true }
+    droppedBytes += data.count - frame.count
     while bytes + frame.count > capacity, !frames.isEmpty {
-      bytes -= frames.removeFirst().count
-      dropped = true
+      let removed = frames.removeFirst().count
+      bytes -= removed
+      droppedBytes += removed
     }
     frames.append(frame)
     bytes += frame.count
@@ -118,8 +120,11 @@ public struct PCMQueue {
     return frame
   }
   public mutating func takeGap() -> Bool {
-    let value = dropped
-    dropped = false
+    takeDroppedBytes() > 0
+  }
+  public mutating func takeDroppedBytes() -> Int {
+    let value = droppedBytes
+    droppedBytes = 0
     return value
   }
 }

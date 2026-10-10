@@ -22,4 +22,6 @@
 
 在 `apps/desktop` 安装依赖后运行 `npm run test:capture`、`npm run build` 和 `npm run test:ui`。Mac 执行 `bash apps/macos/scripts/check-offline.sh`，打包执行 `bash apps/macos/scripts/build-app.sh`。Windows 包在桌面目录执行 `npm run package:windows`，输出 `releases/windows`。
 
+Mac 本地固定证书可保持应用签名条件，但钥匙串对这种签名仍按构建指纹授权，更新后可能再次要求输入登录钥匙串密码。不能将辅助功能权限保留等同于钥匙串跨版本免确认；后者需要 Apple 签发的开发者身份及迁移后的实际升级验收。已有证书可通过 `CUE_SIGN_IDENTITY` 指定。
+
 云端在其目录执行 `npm test`、`npm run build`。合成网页上传测试用桌面 Electron 运行 `apps/cloud/tests/settings-ui.cjs`。离线测试不调用真实模型或录制媒体。产品边界见 [AGENTS.md](AGENTS.md)。

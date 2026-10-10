@@ -42,6 +42,10 @@ check(queue.bytes == 8 && queue.takeGap(), "bounded queue reports audio gap")
 check(
   queue.pop() == Data([5, 6, 7, 8]) && queue.pop() == Data([9, 10, 11, 12]),
   "drops oldest frames and preserves tail order")
+queue.append(Data(repeating: 1, count: 12))
+queue.append(Data(repeating: 2, count: 4))
+check(queue.takeDroppedBytes() == 12, "gap diagnostic counts oversized and evicted PCM bytes")
+check(queue.takeDroppedBytes() == 0 && !queue.dropped, "gap diagnostic is consumed once")
 var state = CaptureState()
 state.merge(["id": "t", "speaker": "candidate", "text": "old", "revision": 1])
 state.merge(["id": "t", "speaker": "candidate", "text": "corrected", "revision": 2])

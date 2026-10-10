@@ -24,6 +24,7 @@ cd "$MAC_ROOT"
 swift build --disable-sandbox --cache-path "$MAC_ROOT/.build/cache" -c "$CONFIGURATION"
 BIN_DIR="$(swift build --disable-sandbox --cache-path "$MAC_ROOT/.build/cache" -c "$CONFIGURATION" --show-bin-path)"
 "$BIN_DIR/SageChecks"
+bash "$MAC_ROOT/scripts/check-audio-delivery.sh" "$BIN_DIR"
 "$NODE_BIN" "$MAC_ROOT/tests/appshot-budget.cjs" "$BIN_DIR/SageChecks"
 if nm -u "$BIN_DIR/Sage" | grep '_AXUIElementGetWindow' >/dev/null; then
   echo 'App Shot must not strongly import the optional AX window ID function.' >&2
@@ -57,6 +58,9 @@ fi
 mv "$APP" "$MAC_ROOT/output/Cue.app"
 if [[ "$SIGN_IDENTITY" == "-" ]]; then
   echo "Built $MAC_ROOT/output/Cue.app (ad-hoc: changed builds may require macOS permission again)."
+elif [[ -z "$SIGN_IDENTITY" ]]; then
+  echo "Built $MAC_ROOT/output/Cue.app with the fixed local certificate."
+  echo "Local signing does not preserve Keychain partition authorization across changed builds; a new build may prompt again."
 else
   echo "Built $MAC_ROOT/output/Cue.app with the configured stable signing identity."
 fi

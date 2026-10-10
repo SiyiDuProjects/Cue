@@ -108,13 +108,13 @@ final class AudioSink: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Se
     lastError = "音频格式转换失败，请重新开始转录。"
     lock.unlock()
   }
-  func takeBoth() -> [(role: String, frames: [Data], gap: Bool)] {
+  func takeBoth() -> [(role: String, frames: [Data], droppedBytes: Int)] {
     lock.lock()
     defer { lock.unlock() }
     return ["interviewer", "candidate"].map { role in
       var frames: [Data] = []
       while let frame = boxes[role]?.pop() { frames.append(frame) }
-      return (role, frames, boxes[role]?.takeGap() ?? false)
+      return (role, frames, boxes[role]?.takeDroppedBytes() ?? 0)
     }
   }
   func error() -> String? {
@@ -166,11 +166,11 @@ final class AudioSink: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Se
   private var activationObserver: NSObjectProtocol?
   private var audioSession: (any AudioCaptureSession)?
   private var epoch = UUID()
-  private let factory: ((@escaping () -> Bool) async throws -> any AudioCaptureSession)?
+  private let factory: ((AudioSink, @escaping () -> Bool) async throws -> any AudioCaptureSession)?
   private(set) var sink: AudioSink?
   private var finishTask: Task<Bool, Never>?
   var isPrepared: Bool { audioSession != nil }
-  init(factory: ((@escaping () -> Bool) async throws -> any AudioCaptureSession)? = nil) {
+  init(factory: ((AudioSink, @escaping () -> Bool) async throws -> any AudioCaptureSession)? = nil) {
     self.factory = factory
     previousApp = NSWorkspace.shared.frontmostApplication?.processIdentifier
     activationObserver = NSWorkspace.shared.notificationCenter.addObserver(
@@ -311,22 +311,26 @@ final class AudioSink: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Se
     if let finishTask { _ = await finishTask.value }
     guard epoch == ticket else { throw CancellationError() }
     finishTask = nil
+    // Publish the mailbox before startCapture can produce its first samples.
+    // The caller already has ready upstreams and drains in the prepared phase.
+    let sink = AudioSink()
+    self.sink = sink
     let current = { [weak self] in self?.epoch == ticket }
     let session: any AudioCaptureSession
     if let factory {
-      session = try await factory(current)
+      session = try await factory(sink, current)
     } else {
-      session = try await makeSession(current: current)
+      session = try await makeSession(sink: sink, current: current)
     }
     guard current() else {
       try? await session.stop()
       await session.sink.finish()
       throw CancellationError()
     }
-    sink = session.sink
+    self.sink = session.sink
     audioSession = session
   }
-  private func makeSession(current: @escaping () -> Bool) async throws -> any AudioCaptureSession {
+  private func makeSession(sink: AudioSink, current: @escaping () -> Bool) async throws -> any AudioCaptureSession {
     let authorized = await AVCaptureDevice.requestAccess(for: .audio)
     guard current() else { throw CancellationError() }
     guard authorized else { throw SageError("请在系统设置中允许 Cue 使用麦克风。") }
@@ -344,7 +348,6 @@ final class AudioSink: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Se
     config.sampleRate = 24_000
     config.channelCount = 1
     config.excludesCurrentProcessAudio = true
-    let sink = AudioSink()
     let stream = SCStream(filter: filter, configuration: config, delegate: sink)
     // Keep ScreenCaptureKit's tiny video track alive; the sink discards screen frames.
     try stream.addStreamOutput(sink, type: .screen, sampleHandlerQueue: sink.queue)

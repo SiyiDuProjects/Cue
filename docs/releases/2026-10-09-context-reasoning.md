@@ -1,6 +1,6 @@
 # Cue 0.4.1 build 21：插件最新优先读取与推理摘要
 
-**源码已推送；云端未部署，Mac build 21 已构建未安装，Windows 未打包。** 没有调用真实模型，没有开启麦克风、系统音频或转录。
+**源码已推送；云端已通过 Sites 发布版本 22，Mac build 21 已安装，Windows 未打包。** 发布与安装验收未调用回答模型；用户亲自开始、说出合成测试句并停止转录。测试句和最新截图已在同一次无参数 `read_context` 调用中返回，但客户端出现本地音频缺口提示，不能据此认定音频无丢失。
 
 ## 改动
 
@@ -17,8 +17,19 @@
 - 桌面采集测试 31 项通过，1 项 Windows 专用检查跳过；Windows 构建和 Mac 回答页构建通过。界面冒烟测试覆盖摘要先展开、回答开始后折叠，并截图人工查看了两种状态。
 - Mac 离线检查 103 项及 8 组上传预算检查通过。build 21 Release 构建签名验证通过，签名身份与 build 20 相同：`identifier "com.siyidu.sage.mac" and certificate leaf = H"d72bccf64b7a2e699fadaf3df2b094f0f6139ca7"`。
 
+## 发布与安装验收（2026-10-09）
+
+- Sites 版本 22 从精确提交 `1b084ca0f77b0ddfec08b571fab4504528dc0015` 构建并发布成功；环境修订仍为 2。部署后复核仅所有者可访问，无其他用户、组或外部访问者。
+- 部署 ID：`appgdep_6ac99b5dc7d081919870d9becf703b49`。线上地址：<https://interview.siyidu.com>；平台 MCP 地址保持不变。
+- `/Applications/Cue.app` 已更新为 0.4.1 build 21，重新启动后连接成功。build 20 的两个可回滚副本保存在忽略的 `artifacts/releases/20261009-cue-build21-install/`；安装后签名验证通过，二进制 SHA-256 为 `ca9d8f64e794436e2825d56d351326d6d12dbbb7b00a400adef93d13a17f59e6`。
+- 发布后的首次无参数 `read_context` 调用约 1.8 秒返回最新截图，`newest_first: true`。当时最近一小时转录为空。测试首次使用“最近应用”选中了当时的聊天窗口，随后明确指定 TextEdit 合成文档重新采集，不将该初次采集记为合成窗口验收。
+- build 21 自身 App Shot 成功上传合成文档原图与同窗口文字，校验码 `COMET-B21-7043`；无需重新授权。TextEdit 仍因部分可选辅助功能属性不可读而标记 `partial`，正文完整保留。
+- 用户说完并停止后，再以空参数调用 `read_context`，第一页同时返回最新合成截图及完整测试句“这是Build二十一测试，十七加二十五等于四十二。”，水位 472，无需翻页。截图 ID：`64a969b5-27b3-408e-8c3e-3d9f95b1aa3b`。
+- 本地音频缺口警告确实出现。当前代码仅在原生 `PCMQueue` 超容量丢帧时产生此提示；每路容量为半秒 PCM。现有证据不能确定阻塞环节、发生时刻、影响时长或是否丢失了有效语音，不能将完整测试句等同于无损音频验收。
+- 发布、安装和读取回执保存在忽略的 `artifacts/releases/20261009-cue-context-reasoning-cloud-receipt.json` 与 `artifacts/releases/20261009-cue-build21-install/receipt.json`。
+
 ## 待完成
 
-- 通过 Sites 从 `1b084ca` 发布云端，保持仅所有者可访问。发布后用 ChatGPT 实际调用一次 `read_context`，确认第一页即包含最新截图和最近转录。
-- 安装 `apps/macos/output/Cue.app`（build 21）。真实回答需确认能看到摘要；若账户不支持摘要，确认已自动退回为不带摘要的回答。
+- 本地音频缓冲溢出已由 build 22 修复，用户在场短测未再出现缺口提示；原因、回归检查及验收边界见 [build 22 记录](2026-10-09-audio-gap.md)。
+- 真实回答需确认能看到摘要；若账户不支持摘要，确认已自动退回为不带摘要的回答。本次没有调用回答模型，不将离线界面检查记为此项通过。
 - 本次不改变转录长测、真实双路音频和 Windows 真机验收的状态。

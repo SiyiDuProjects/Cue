@@ -1,4 +1,5 @@
 import AppKit
+import OSLog
 import SageCore
 
 /// Device credentials stay native; PCM and ephemeral ASR tokens enter the local WebView.
@@ -8,18 +9,25 @@ import SageCore
   var phase = "idle"
   var sourceID = UserDefaults.standard.string(forKey: "capture.source") ?? "frontmost"
   private let http = HTTPClient()
-  private let capture = CaptureController()
+  private let capture: CaptureController
   private var address: ServerAddress?
   private var keys: SiteCredentials?
   private var link: SocketLink?
   private var timer: Timer?
+  private var lastPump = ContinuousClock.now
+  private let audioLog = Logger(subsystem: "com.siyidu.sage.mac", category: "AudioDelivery")
   private var audioGeneration = UUID()
   private var connectionGeneration = UUID()
   private var connecting = false
   private var closing = false
   private var cached: JSON?
   let preview: Bool
-  init(preview: Bool = false) { self.preview = preview }
+  init(preview: Bool = false, capture: CaptureController? = nil,
+       connection: SocketLink? = nil) {
+    self.preview = preview
+    self.capture = capture ?? CaptureController()
+    if let connection { attach(connection) }
+  }
   func connect() async throws {
     if preview {
       onEvent([
@@ -59,6 +67,9 @@ import SageCore
     let next = SocketLink(
       url: try address.socket(interview: "current", role: "interviewer"), token: keys.device,
       role: "desktop", siteToken: keys.site)
+    attach(next)
+  }
+  private func attach(_ next: SocketLink) {
     next.onEvent = { [weak self] event in self?.event(event) }
     next.onState = { [weak self] ready, detail in
       guard let self else { return }
@@ -75,9 +86,13 @@ import SageCore
     link = next
     next.start()
     timer?.invalidate()
-    timer = Timer.scheduledTimer(withTimeInterval: 0.02, repeats: true) { [weak self] _ in
-      Task { @MainActor in self?.pump() }
+    let timer = Timer(timeInterval: 0.02, repeats: true) { [weak self] _ in
+      // AppKit keeps common-mode timers running while tracking menus/drags.
+      // Run inline on the main run loop; an extra Task can wait behind tracking.
+      MainActor.assumeIsolated { self?.pump() }
     }
+    self.timer = timer
+    RunLoop.main.add(timer, forMode: .common)
   }
   private func event(_ value: JSON) {
     switch value["type"] as? String {
@@ -100,13 +115,24 @@ import SageCore
     onEvent(value)
   }
   private func pump(force: Bool = false) {
-    guard force || phase == "active", let sink = capture.sink else { return }
+    // Upstreams are ready in prepared; native capture may already be producing
+    // while startCapture/stopCapture is suspended. Drain until the final barrier.
+    guard force || ["prepared", "active", "stopping"].contains(phase), let sink = capture.sink else { return }
+    let now = ContinuousClock.now
+    let elapsed = lastPump.duration(to: now).components
+    let delayMS = Double(elapsed.seconds) * 1000 + Double(elapsed.attoseconds) / 1e15
+    lastPump = now
     for batch in sink.takeBoth() {
       let role = batch.role
       for frame in batch.frames {
         onEvent(["type": "pcm", "role": role, "data": frame.base64EncodedString()])
       }
-      if batch.gap { onEvent(["type": "error", "detail": "本地音频出现缺口，请检查转录。"]) }
+      if batch.droppedBytes > 0 {
+        let missingMS = Double(batch.droppedBytes) / 48
+        audioLog.error("PCM overflow role=\(role, privacy: .public) phase=\(self.phase, privacy: .public) dropped_ms=\(missingMS) drain_interval_ms=\(delayMS)")
+        let name = role == "candidate" ? "麦克风" : "系统"
+        onEvent(["type": "error", "detail": "\(name)音频出现缺口，请检查转录。"])
+      }
     }
     if let error = sink.error() {
       onEvent(["type": "error", "detail": error])
@@ -158,6 +184,7 @@ import SageCore
       guard phase == "idle" else { return }
       let epoch = UUID()
       audioGeneration = epoch
+      lastPump = .now
       phase = "starting"
       do {
         guard audioGeneration == epoch else { return }
