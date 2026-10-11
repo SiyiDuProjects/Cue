@@ -23,3 +23,27 @@ User decisions: the remote is the Cue panel inside ChatGPT (sidebar app and conv
 
 - Installed `/Applications/Cue.app` 0.4.1 build 27; build 25 kept in ignored `artifacts/acceptance/20261010-chatgpt-panel/` with the preview, panel and settings captures.
 - Cloud changes committed and pushed to the private Cue-cloud repository; Sites deployment is pending and must be done with the Sites tooling from that commit. After deploying, reconnect the Cue app in ChatGPT so it reloads the tool list.
+
+## 2026-10-11 follow-up: receipt fixes, Sites v24 and Mac build 28
+
+This section supersedes the deployment and installed-build status above. The user authorized deployment after requesting fixes and regression tests for three review findings.
+
+### Correctness fixes
+
+- Commands bind to the desktop generation observed by the panel. The database verifies the current owner when claiming a command; a final owner check prevents a replaced connection from receiving it during the heartbeat interval.
+- Before sending the ChatGPT message, the panel requests `prepare`: the desktop drains both PCM streams through its ordered control queue, fixes the transcription cutoff, and waits for the corresponding text to persist. This does not start recording or call Responses.
+- Screenshot and other command results require completion receipts. A screenshot succeeds only after upload acknowledgement; pending actions block repeated panel questions, and failed or unknown outcomes are shown without automatic retries. Remote state protocol version 2 requires updated desktop clients.
+
+### Release evidence
+
+- Sites source and private GitHub cloud source: `ea4ea2151532fb3355f7050062fae97c417bd8ea`. The official source workflow built and validated the archive from that exact pushed commit.
+- Sites version **24**, version ID `appgprj_6ac3050911388191a096e3850daec725~appgver_9d817509fcfc8191bb5f59d8badf18d8`; deployment `appgdep_6acb3823279c8191aae55f2a70ebd225` returned **succeeded** at `2026-10-11T07:18:04.692491+00:00`. The receipt migration is deployed. The existing project, custom domain, MCP endpoint and owner-only access were retained.
+- Mac **0.4.1 build 28** was signed with the existing local identity, verified and installed at `/Applications/Cue.app`, then launched. Executable SHA-256: `7f588a386932abeeee6a335c102563987827fcb7ff526c1163a2f644fd6775b6`. Previous build 27 is backed up in ignored `artifacts/acceptance/20261011-panel-fixes/Cue-build27-1791703218.app`.
+- Cloud: **36 tests passed**, build and artifact validation passed. Desktop capture/transcription: **34 passed, 1 Windows-only skipped**. Both UI builds and UI checks passed. Mac offline **23 + 71** checks passed, including native completion/failure handling. The panel SDK host test exercises the real MCP handler and database code with a simulated desktop and delayed tail transcriptions; it remains a simulated host test.
+- After deployment, the existing authenticated Cue connection successfully called `list_materials` and returned the five existing materials. This verifies a live read-only MCP operation, not panel registration or control execution.
+
+### Remaining acceptance
+
+- The current chat still exposes the cached pre-panel tool catalogue. Refresh/reconnect the existing Cue plugin in ChatGPT to load the new tools; opening and using the panel in the real ChatGPT host remains unverified. The existing plugin identity was retained. Its app-owned description still has the old wording; available metadata tools do not support editing that field.
+- Build 28 is running, but no new `remote_state` report was observed during release checks, so its authenticated connection and actual remote operations remain unverified. A new build may require the user to grant Keychain access again; no automatic recording, screenshot or paid-model check was performed.
+- Windows packaging and real-device behavior, real microphone/system audio, real screenshot capture, and long-session stability remain unverified. The prior decision to omit an hour-long live test remains in force.

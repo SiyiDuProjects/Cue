@@ -104,12 +104,15 @@ export default function App() {
     chat = useRef(""),
     // Set by a server that relays the ChatGPT panel; older ones never are.
     relay = useRef(false),
+    remoteGeneration = useRef(""),
+    remoteBusy = useRef(false),
+    shooting = useRef(false),
     reported = useRef(""),
     // The latest handlers, for panel commands arriving in the event listener.
     actions = useRef<{
       toggleAudio: (source?: string) => Promise<void>;
-      shot: () => Promise<void>;
-    }>({ toggleAudio: async () => {}, shot: async () => {} }),
+      shot: () => Promise<string>;
+    }>({ toggleAudio: async () => {}, shot: async () => "" }),
     current = useRef({
       text,
       selected,
@@ -188,17 +191,81 @@ export default function App() {
       setError(String(e));
     }
   }
-  async function shot() {
+  async function captureShot() {
+    if (shooting.current) throw Error("截图尚未完成。");
+    shooting.current = true;
     setWorking(true);
-    await attempt(async () => {
+    try {
       const image = await window.cue.screenshot();
-      if (!image) return;
+      if (!image?.id) throw Error("截图未完成。");
       setImages((v) => [...v.filter((i) => i.id !== image.id), image]);
-      setSelected((s) => [...s, image.id].slice(-8));
+      current.current.selected = [...current.current.selected, image.id].slice(
+        -8,
+      );
+      setSelected(current.current.selected);
       if (image.image_url)
         setPreviews((p) => ({ ...p, [image.id]: image.image_url }));
-    });
-    setWorking(false);
+      return image.id as string;
+    } finally {
+      shooting.current = false;
+      setWorking(false);
+    }
+  }
+  async function shot() {
+    await attempt(captureShot);
+  }
+  async function runRemote(value: Event) {
+    const { id, type, generation, expires } = value;
+    if (!id || !generation || generation !== remoteGeneration.current) return;
+    let locked = false;
+    try {
+      if (!current.current.connected || !current.current.allowRemote)
+        throw Error("电脑上已关闭遥控或连接已断开。");
+      if (!(expires > Date.now())) throw Error("指令已过期，没有执行。");
+      if (remoteBusy.current || shooting.current)
+        throw Error("电脑正在完成上一个操作。");
+      remoteBusy.current = locked = true;
+      const phase = current.current.audio;
+      if (["starting", "stopping"].includes(phase))
+        throw Error("请等待音频就绪。");
+      let image: string | undefined;
+      if (type === "prepare") {
+        await command({
+          type: "remote_prepare",
+          id,
+          generation,
+          images: current.current.selected,
+        });
+        return; // The server confirms persisted tail transcriptions.
+      } else if (type === "shot") image = await actions.current.shot();
+      else if (
+        (type === "start" && phase === "idle") ||
+        (type === "stop" && phase === "active")
+      )
+        await actions.current.toggleAudio(type === "start" ? "remote" : "");
+      else if (!["start", "stop"].includes(type)) throw Error("遥控指令无效。");
+      if (remoteGeneration.current === generation && current.current.connected)
+        await command({
+          type: "remote_result",
+          id,
+          generation,
+          ok: true,
+          image,
+        });
+    } catch (e) {
+      const detail = e instanceof Error ? e.message : String(e);
+      setError(detail);
+      if (remoteGeneration.current === generation && current.current.connected)
+        await command({
+          type: "remote_result",
+          id,
+          generation,
+          ok: false,
+          detail,
+        }).catch(() => {});
+    } finally {
+      if (locked) remoteBusy.current = false;
+    }
   }
   useEffect(() => {
     const listener = (event: globalThis.Event) => {
@@ -213,7 +280,8 @@ export default function App() {
           setSince(0);
           setPending("");
           setAudioSource("");
-          relay.current = e.remote === true;
+          relay.current = e.remote === true && !!e.generation;
+          remoteGeneration.current = e.generation ?? "";
           reported.current = "";
           // The server lists chats newest first.
           if (e.chats?.[0]?.id) use(e.chats[0].id);
@@ -309,16 +377,9 @@ export default function App() {
       if (e.type === "shot_requested") void shot();
       if (e.type === "remote") setRemoteOpen(e.connected === true);
       // A panel button runs exactly what this window's button runs.
-      if (e.type === "remote_command" && current.current.allowRemote) {
-        const { type } = e.command ?? {},
-          phase = current.current.audio;
-        if (
-          (type === "start" && phase === "idle") ||
-          (type === "stop" && phase === "active")
-        )
-          void actions.current.toggleAudio(type === "start" ? "remote" : "");
-        if (type === "shot") void actions.current.shot();
-      }
+      if (e.type === "remote_command") void runRemote(e.command ?? {});
+      if (["disconnected", "replaced"].includes(e.type))
+        remoteGeneration.current = "";
     };
     window.addEventListener("cue:event", listener);
     void reconnect();
@@ -339,6 +400,7 @@ export default function App() {
     if (!connected || !relay.current) return;
     const report = {
       type: "remote_state",
+      version: 2,
       allow: allowRemote,
       phase: audio,
       since,
@@ -385,8 +447,8 @@ export default function App() {
     captionText = joinCaptions(captions.map((c) => c.text)),
     // Beyond half the screen the answer scrolls inside the card.
     limit = Math.round(screen.availHeight * 0.5);
-  async function toggleAudio(source = "") {
-    if (audioBusy) return;
+  async function changeAudio(source = "") {
+    if (audioBusy) throw Error("请等待音频就绪。");
     const start = audio === "idle";
     if (start) setAudioSource(source);
     setAudio(start ? "starting" : "stopping");
@@ -394,8 +456,11 @@ export default function App() {
       await window.cue.audio(start);
     } catch (e) {
       setAudio("idle");
-      setError(String(e));
+      throw e;
     }
+  }
+  async function toggleAudio() {
+    await attempt(() => changeAudio());
   }
   async function preview(id: string) {
     if (previews[id]) return;
@@ -407,7 +472,7 @@ export default function App() {
       }));
     });
   }
-  actions.current = { toggleAudio, shot };
+  actions.current = { toggleAudio: changeAudio, shot: captureShot };
   /** The native menu returns a choice; hiding, quitting and links stay native. */
   async function more() {
     const choice = await attempt(() =>

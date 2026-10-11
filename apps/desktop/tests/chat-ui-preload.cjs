@@ -10,6 +10,7 @@ window.cue = {
         emit({
           type: "session_ready",
           remote: true,
+          generation: "test-desktop",
           chats: [{ id: "chat", title: "离线检查" }],
           turns: [],
           images: [],
@@ -18,6 +19,9 @@ window.cue = {
     ),
   command: async (v) => {
     if (v.type === "history") window.lastHistory = v;
+    if (v.type === "remote_result")
+      window.remoteResults = [...(window.remoteResults || []), v];
+    if (v.type === "remote_prepare") window.lastPrepare = v;
     if (v.type === "remote_state")
       window.remoteStates = [...(window.remoteStates || []), v];
     if (v.type === "history")
@@ -36,7 +40,11 @@ window.cue = {
       messages.push(message);
       setTimeout(() => {
         emit({ type: "answer", message: { ...message } });
-        emit({ type: "answer_reasoning", id: v.id, delta: "**读题**：确认重复元素" });
+        emit({
+          type: "answer_reasoning",
+          id: v.id,
+          delta: "**读题**：确认重复元素",
+        });
         setTimeout(
           () =>
             emit({
@@ -67,12 +75,17 @@ window.cue = {
   },
   audio: async (start) =>
     emit({ type: start ? "started" : "stopped", complete: true }),
-  screenshot: async () => ({
-    id: "shot",
-    created: Date.now(),
-    image_url:
-      "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jv3cAAAAASUVORK5CYII=",
-  }),
+  screenshot: async () => {
+    window.shotCalls = (window.shotCalls || 0) + 1;
+    if (window.holdShot) await new Promise((r) => (window.finishShot = r));
+    if (window.failShot) throw Error("录屏权限未开启");
+    return {
+      id: "shot",
+      created: Date.now(),
+      image_url:
+        "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jv3cAAAAASUVORK5CYII=",
+    };
+  },
   request: async () => ({}),
   sources: async () => {
     window.sourceReads++;

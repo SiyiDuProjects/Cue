@@ -57,6 +57,19 @@ app.whenReady().then(async () => {
       ),
       true,
     );
+    await run(
+      "for(const role of ['interviewer','candidate'])window.cueReceive({type:'pcm',role,data:btoa('\\0'.repeat(9600))});window.cueReceive({type:'audio_control',value:{type:'remote_prepare',id:'panel',generation:'g',images:['shot']}})",
+    );
+    assert.deepEqual(
+      await run("window.directControls.slice(-3).map(e=>e.type)"),
+      ["asr_commit", "asr_commit", "remote_prepare"],
+    );
+    assert.deepEqual(await run("window.directControls.at(-1)"), {
+      type: "remote_prepare",
+      id: "panel",
+      generation: "g",
+      images: ["shot"],
+    });
     // Captions: every interviewer partial reaches the overlay at once, while
     // the server still gets one coalesced partial; the candidate has none.
     await run(`(() => {

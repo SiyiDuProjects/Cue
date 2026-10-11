@@ -7,8 +7,10 @@ import SageCore
   static let serviceURL = "https://interview.siyidu.com"
   var onEvent: (JSON) -> Void = { _ in }
   var phase = "idle"
+  private var stopComplete = false
   private let http = HTTPClient()
   private let capture: CaptureController
+  private let screenshotProvider: (() async throws -> JSON)?
   private var address: ServerAddress?
   private var keys: SiteCredentials?
   private var link: SocketLink?
@@ -21,10 +23,13 @@ import SageCore
   private var closing = false
   private var cached: JSON?
   let preview: Bool
-  init(preview: Bool = false, capture: CaptureController? = nil,
-       connection: SocketLink? = nil) {
+  init(
+    preview: Bool = false, capture: CaptureController? = nil,
+    connection: SocketLink? = nil, screenshot: (() async throws -> JSON)? = nil
+  ) {
     self.preview = preview
     self.capture = capture ?? CaptureController()
+    self.screenshotProvider = screenshot
     if let connection { attach(connection) }
   }
   func connect() async throws {
@@ -102,6 +107,7 @@ import SageCore
       phase = "prepared"
       return  // Publish only after the native devices have actually started.
     case "stopped":
+      stopComplete = value["complete"] as? Bool == true
       audioGeneration = UUID()
       phase = "idle"
       Task { _ = await self.capture.finish() }
@@ -116,7 +122,8 @@ import SageCore
   private func pump(force: Bool = false) {
     // Upstreams are ready in prepared; native capture may already be producing
     // while startCapture/stopCapture is suspended. Drain until the final barrier.
-    guard force || ["prepared", "active", "stopping"].contains(phase), let sink = capture.sink else { return }
+    guard force || ["prepared", "active", "stopping"].contains(phase), let sink = capture.sink
+    else { return }
     let now = ContinuousClock.now
     let elapsed = lastPump.duration(to: now).components
     let delayMS = Double(elapsed.seconds) * 1000 + Double(elapsed.attoseconds) / 1e15
@@ -128,7 +135,9 @@ import SageCore
       }
       if batch.droppedBytes > 0 {
         let missingMS = Double(batch.droppedBytes) / 48
-        audioLog.error("PCM overflow role=\(role, privacy: .public) phase=\(self.phase, privacy: .public) dropped_ms=\(missingMS) drain_interval_ms=\(delayMS)")
+        audioLog.error(
+          "PCM overflow role=\(role, privacy: .public) phase=\(self.phase, privacy: .public) dropped_ms=\(missingMS) drain_interval_ms=\(delayMS)"
+        )
         let name = role == "candidate" ? "麦克风" : "系统"
         onEvent(["type": "error", "detail": "\(name)音频出现缺口，请检查转录。"])
       }
@@ -146,7 +155,8 @@ import SageCore
     if preview {
       if value["type"] as? String == "history" {
         // A synthetic exchange so --preview shows real answer layout offline.
-        let answer = "## 思路\n\n用 **哈希表** 记录出现过的数，一次遍历。\n\n```python\ndef two_sum(nums, target):\n    seen = {}\n    for i, x in enumerate(nums):\n        if target - x in seen:\n            return [seen[target - x], i]\n        seen[x] = i\n```\n\n时间 $O(n)$，空间 $O(n)$。"
+        let answer =
+          "## 思路\n\n用 **哈希表** 记录出现过的数，一次遍历。\n\n```python\ndef two_sum(nums, target):\n    seen = {}\n    for i, x in enumerate(nums):\n        if target - x in seen:\n            return [seen[target - x], i]\n        seen[x] = i\n```\n\n时间 $O(n)$，空间 $O(n)$。"
         onEvent([
           "type": "history", "chat": "preview",
           "messages": [
@@ -157,7 +167,7 @@ import SageCore
             [
               "id": "preview", "chat": "preview", "text": "两数之和怎么做？", "answer": answer,
               "status": "completed", "detail": "", "context": "{}",
-            ]
+            ],
           ],
         ])
       }
@@ -168,7 +178,7 @@ import SageCore
       try link.enqueue(message)
       return
     }
-    if value["type"] as? String == "ask" {
+    if ["ask", "remote_prepare"].contains(value["type"] as? String ?? "") {
       guard !["starting", "prepared", "stopping"].contains(phase) else {
         throw SageError("请等待音频就绪。")
       }
@@ -184,22 +194,22 @@ import SageCore
     guard !preview else { throw SageError("预览模式不会采集声音。") }
     guard let link, link.ready else { throw SageError("连接尚未就绪。") }
     if start {
-      guard phase == "idle" else { return }
+      guard phase == "idle" else { throw SageError("转录已开启或正在收尾。") }
       capture.discardFinishedSink()
       let epoch = UUID()
       audioGeneration = epoch
       lastPump = .now
       phase = "starting"
       do {
-        guard audioGeneration == epoch else { return }
+        guard audioGeneration == epoch else { throw SageError("转录启动已取消。") }
         try await link.send(["type": "start"])
         for _ in 0..<300 {
-          guard audioGeneration == epoch else { return }
+          guard audioGeneration == epoch else { throw SageError("转录启动已取消。") }
           if phase == "prepared" {
             try await capture.prepare()
             guard audioGeneration == epoch else {
               _ = await capture.finish()
-              return
+              throw SageError("转录启动已取消。")
             }
             phase = "active"
             onEvent(["type": "started"])
@@ -209,13 +219,14 @@ import SageCore
         }
         throw SageError("转录启动超时。")
       } catch {
-        try? await audio(false)
+        if audioGeneration == epoch { try? await audio(false) }
         throw error
       }
     } else {
-      if phase == "stopping" { return }
+      if phase == "stopping" { throw SageError("转录正在收尾。") }
       audioGeneration = UUID()
       phase = "stopping"
+      stopComplete = false
       let complete = await capture.finish()
       pump(force: true)
       onEvent(["type": "audio_control", "value": ["type": "stop"]])
@@ -223,8 +234,9 @@ import SageCore
         if phase == "idle" { break }
         try await Task.sleep(for: .milliseconds(50))
       }
-      if phase != "idle" || !complete { onEvent(["type": "error", "detail": "音频尾句未全部确认。"]) }
+      let confirmed = phase == "idle" && complete && stopComplete && link.ready
       phase = "idle"
+      if !confirmed { throw SageError("音频尾句未全部确认。") }
     }
   }
   func request(_ path: String, method: String = "GET", body: JSON? = nil) async throws -> JSON {
@@ -237,6 +249,7 @@ import SageCore
     return try await http.request(address, path, method: method, token: keys.device, body: body)
   }
   func screenshot() async throws -> JSON {
+    if let screenshotProvider { return try await screenshotProvider() }
     guard !preview else { throw SageError("预览模式不会截图。") }
     var shot = try await capture.screenshot()
     try Task.checkCancellation()

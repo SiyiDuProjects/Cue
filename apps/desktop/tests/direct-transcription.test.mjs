@@ -65,41 +65,44 @@ function fixture() {
   };
   return { direct, sent, failures, detectors, open };
 }
-test("PCM only reaches OpenAI; both commits precede ask and later audio", async () => {
-  const { direct, sent, open, detectors } = fixture();
-  const a = await open("interviewer", "a"),
-    b = await open("candidate", "b");
-  direct.pcm("interviewer", new ArrayBuffer(4800));
-  direct.pcm("candidate", new ArrayBuffer(4800));
-  direct.control({ type: "ask", id: "request" });
-  direct.pcm("interviewer", new ArrayBuffer(4800));
-  direct.control({ type: "stop" });
-  assert.deepEqual(
-    sent.map((v) => v.type),
-    [
-      "asr_ready",
-      "asr_ready",
-      "asr_commit",
-      "asr_commit",
-      "ask",
-      "asr_commit",
-      "stop",
-    ],
-  );
-  assert(
-    sent.every((v) => !Object.hasOwn(v, "audio") && !Object.hasOwn(v, "token")),
-  );
-  assert.equal(
-    a.sent.filter((v) => v.type === "input_audio_buffer.commit").length,
-    2,
-  );
-  assert.equal(
-    b.sent.filter((v) => v.type === "input_audio_buffer.commit").length,
-    1,
-  );
-  assert.notEqual(detectors[0], detectors[1]);
-  direct.reset();
-});
+for (const control of ["ask", "remote_prepare"])
+  test(`PCM only reaches OpenAI; both commits precede ${control} and later audio`, async () => {
+    const { direct, sent, open, detectors } = fixture();
+    const a = await open("interviewer", "a"),
+      b = await open("candidate", "b");
+    direct.pcm("interviewer", new ArrayBuffer(4800));
+    direct.pcm("candidate", new ArrayBuffer(4800));
+    direct.control({ type: control, id: "request" });
+    direct.pcm("interviewer", new ArrayBuffer(4800));
+    direct.control({ type: "stop" });
+    assert.deepEqual(
+      sent.map((v) => v.type),
+      [
+        "asr_ready",
+        "asr_ready",
+        "asr_commit",
+        "asr_commit",
+        control,
+        "asr_commit",
+        "stop",
+      ],
+    );
+    assert(
+      sent.every(
+        (v) => !Object.hasOwn(v, "audio") && !Object.hasOwn(v, "token"),
+      ),
+    );
+    assert.equal(
+      a.sent.filter((v) => v.type === "input_audio_buffer.commit").length,
+      2,
+    );
+    assert.equal(
+      b.sent.filter((v) => v.type === "input_audio_buffer.commit").length,
+      1,
+    );
+    assert.notEqual(detectors[0], detectors[1]);
+    direct.reset();
+  });
 test("handover commits old input before activating replacement and keeps its tail open", async () => {
   const { direct, sent, open } = fixture();
   const old = await open("candidate", "old");

@@ -57,7 +57,10 @@ app
         await js("[window.lastHistory.chat, window.lastHistory.scope]"),
         ["chat", "recent"],
       );
-      assert.equal(await js("document.body.textContent.includes('聊天')"), false);
+      assert.equal(
+        await js("document.body.textContent.includes('聊天')"),
+        false,
+      );
       // Starts as the bar only; the window follows the content size.
       assert.equal(await js("document.querySelector('.card')"), null);
       await wait("window.lastSize");
@@ -79,10 +82,15 @@ app
       await wait(
         "document.querySelector('.reasoning-text')?.textContent.includes('哈希表') && !document.querySelector('.assistant-message .markdown')",
       );
-      assert.equal(await js("document.querySelector('details.reasoning')"), null);
+      assert.equal(
+        await js("document.querySelector('details.reasoning')"),
+        null,
+      );
       await wait("document.querySelector('.assistant-message table')");
       assert.equal(
-        await js("!!document.querySelector('details.reasoning:not([open]) summary')"),
+        await js(
+          "!!document.querySelector('details.reasoning:not([open]) summary')",
+        ),
         true,
       );
       assert.equal(await js("window.lastAsk.images[0]"), "shot");
@@ -107,7 +115,10 @@ app
       await wait(
         "document.querySelector('.pager')?.textContent.includes('2 / 2') && document.querySelector('.copy')",
       );
-      assert.equal(await js("document.querySelectorAll('.exchange').length"), 1);
+      assert.equal(
+        await js("document.querySelectorAll('.exchange').length"),
+        1,
+      );
       await click('[aria-label="上一条"]');
       await wait(
         "document.querySelector('.user-message').textContent.includes('重复元素')",
@@ -116,19 +127,32 @@ app
       await js("window.nextMenu={effort:'high'}");
       await click('[aria-label="更多"]');
       await wait("localStorage.getItem('cue.effort')==='high'");
-      assert.deepEqual(await js("window.menuState"), { effort: "", remote: true });
+      assert.deepEqual(await js("window.menuState"), {
+        effort: "",
+        remote: true,
+      });
       await js("window.nextMenu={source:'screen:0'}");
       await click('[aria-label="更多"]');
       await wait("window.selectedSource==='screen:0'");
       await js("window.rejectSource=true;window.nextMenu={source:'screen:1'}");
       await click('[aria-label="更多"]');
-      await wait("document.querySelector('.notice')?.textContent.includes('来源已关闭')");
+      await wait(
+        "document.querySelector('.notice')?.textContent.includes('来源已关闭')",
+      );
       // Interviewer captions show only while transcribing.
       await click(".record-button");
       await wait("document.querySelector('.captions.waiting')");
-      await event({ type: "caption", item: "i1", text: "好的，我们先从项目开始。" });
+      await event({
+        type: "caption",
+        item: "i1",
+        text: "好的，我们先从项目开始。",
+      });
       await event({ type: "caption", item: "i2", text: "缓存一致性" });
-      await event({ type: "caption", item: "i2", text: "缓存一致性怎么保证？" });
+      await event({
+        type: "caption",
+        item: "i2",
+        text: "缓存一致性怎么保证？",
+      });
       await wait(
         "document.querySelector('.captions p').textContent==='好的，我们先从项目开始。缓存一致性怎么保证？'",
       );
@@ -149,19 +173,91 @@ app
       assert.equal(await js("window.remoteStates.at(-1).allow"), true);
       await event({ type: "remote", connected: true });
       await wait("document.querySelector('.remote-mark')");
-      await event({ type: "remote_command", command: { id: "r1", type: "start" } });
+      await event({
+        type: "remote_command",
+        command: {
+          id: "r1",
+          type: "start",
+          generation: "test-desktop",
+          expires: Date.now() + 15000,
+        },
+      });
       await wait("document.querySelector('.source')?.textContent==='面板'");
       await wait(
         "window.remoteStates.at(-1).phase==='active' && window.remoteStates.at(-1).source==='remote'",
       );
-      await event({ type: "remote_command", command: { id: "r2", type: "stop" } });
+      await event({
+        type: "remote_command",
+        command: {
+          id: "r2",
+          type: "stop",
+          generation: "test-desktop",
+          expires: Date.now() + 15000,
+        },
+      });
       await wait("!document.querySelector('.clock')");
+      await wait("window.remoteResults?.some(r=>r.id==='r2'&&r.ok)");
+      assert.equal(
+        await js("window.remoteResults.some(r=>r.id==='r1'&&r.ok)"),
+        true,
+      );
+      assert.equal(await js("window.remoteStates.at(-1).version"), 2);
+      const remote = (id, type, extra = {}) =>
+        event({
+          type: "remote_command",
+          command: {
+            id,
+            type,
+            generation: "test-desktop",
+            expires: Date.now() + 15000,
+            ...extra,
+          },
+        });
+      const beforeShots = await js("window.shotCalls");
+      await remote("stale", "shot", { generation: "old-desktop" });
+      await remote("expired", "shot", { expires: 0 });
+      await wait("window.remoteResults.some(r=>r.id==='expired'&&!r.ok)");
+      assert.equal(await js("window.shotCalls"), beforeShots);
+      await js("window.holdShot=true");
+      await remote("delayed", "shot");
+      await wait("window.finishShot");
+      assert.equal(
+        await js("window.remoteResults.some(r=>r.id==='delayed')"),
+        false,
+      );
+      await remote("blocked", "prepare");
+      await wait("window.remoteResults.some(r=>r.id==='blocked'&&!r.ok)");
+      await js("window.holdShot=false;window.finishShot()");
+      await wait(
+        "window.remoteResults.some(r=>r.id==='delayed'&&r.ok&&r.image==='shot')",
+      );
+      await js("window.failShot=true");
+      await remote("failure", "shot");
+      await wait(
+        "window.remoteResults.some(r=>r.id==='failure'&&!r.ok&&r.detail.includes('录屏权限'))",
+      );
+      await js("window.failShot=false");
+      await remote("prepare", "prepare");
+      await wait("window.lastPrepare?.id==='prepare'");
+      assert.ok((await js("window.lastPrepare.images")).includes("shot"));
+      assert.equal(
+        await js("window.remoteResults.some(r=>r.id==='prepare'&&r.ok)"),
+        false,
+      );
       await js("window.nextMenu={remote:false}");
       await click('[aria-label="更多"]');
       await wait("window.remoteStates.at(-1).allow===false");
       assert.equal(await js("window.menuState.remote"), true);
-      await event({ type: "remote_command", command: { id: "r3", type: "start" } });
-      await new Promise((r) => setTimeout(r, 200));
+      await event({
+        type: "remote_command",
+        command: {
+          id: "r3",
+          type: "start",
+          generation: "test-desktop",
+          expires: Date.now() + 15000,
+        },
+      });
+      await wait("window.remoteResults.some(r=>r.id==='r3'&&!r.ok)");
       assert.equal(await js("!!document.querySelector('.clock')"), false);
       assert.equal(await js("document.querySelector('.remote-mark')"), null);
       // Transcript view inside the card.
@@ -186,7 +282,9 @@ app
         true,
       );
       await click('[aria-label="收起"]');
-      await wait("!document.querySelector('.card') && window.lastSize.height<120");
+      await wait(
+        "!document.querySelector('.card') && window.lastSize.height<120",
+      );
       await event({ type: "replaced", detail: "连接已被替换" });
       await wait("document.querySelector('.reconnect')");
       assert.equal(

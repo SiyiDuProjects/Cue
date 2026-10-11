@@ -9,6 +9,7 @@ import SageCore
   var closeCode = URLSessionWebSocketTask.CloseCode.invalid
   /// Network latency before `started`; nil replies synchronously.
   var startedDelay: Duration?
+  var sent: [JSON] = []
   private var pending: [JSON] = []
   private var receiver: CheckedContinuation<URLSessionWebSocketTask.Message, Error>?
   func resume() {}
@@ -26,6 +27,7 @@ import SageCore
   func send(_ message: URLSessionWebSocketTask.Message) async throws {
     guard case .string(let raw) = message,
       let value = try JSONSerialization.jsonObject(with: Data(raw.utf8)) as? JSON else { return }
+    sent.append(value)
     switch value["type"] as? String {
     case "authenticate": push(["type": "session_ready", "protocol": "cue-chat-v2"])
     case "start":
@@ -117,6 +119,7 @@ final class SyntheticPCM: @unchecked Sendable {
     var errors: [String] = []
     var stoppedBytes = 0
     var askBytes = 0
+    var prepareBytes = 0
     store.onEvent = { event in
       switch event["type"] as? String {
       case "pcm":
@@ -128,6 +131,8 @@ final class SyntheticPCM: @unchecked Sendable {
         if value["type"] as? String == "stop" {
           stoppedBytes = received.values.reduce(0) { $0 + $1.count }
           socket.push(["type": "stopped", "complete": true])
+        } else if value["type"] as? String == "remote_prepare" {
+          prepareBytes = received.values.reduce(0) { $0 + $1.count }
         } else if value["type"] as? String == "ask" {
           askBytes = received.values.reduce(0) { $0 + $1.count }
         }
@@ -149,6 +154,8 @@ final class SyntheticPCM: @unchecked Sendable {
       while Date() < end { _ = RunLoop.main.run(mode: mode, before: end) }
       keepAlive.invalidate()
     } else { try await Task.sleep(for: .milliseconds(200)) }
+    try await store.command(["type": "remote_prepare", "id": "panel", "generation": "synthetic", "images": []])
+    require(prepareBytes > 0, "\(name): PCM precedes panel preparation marker")
     try await store.command(["type": "ask", "id": "synthetic"])
     require(askBytes > 0, "\(name): PCM precedes ask marker")
     try await store.audio(false)
@@ -179,12 +186,90 @@ final class SyntheticPCM: @unchecked Sendable {
         if CommandLine.arguments.count == 1 {
           try await cancelledStart()
           try await serverStopThenRestart()
+          try await remoteReceipts()
         }
         print("\(checked) native audio delivery checks passed (synthetic, offline)")
         exit(0)
       } catch { fputs("FAIL \(error)\n", stderr); exit(1) }
     }
     RunLoop.main.run()
+  }
+
+  @MainActor static func remoteReceipts() async throws {
+    let socket = ControlSocket()
+    let link = SocketLink(url: URL(string: "wss://example.invalid/capture/socket")!, token: "synthetic", role: "desktop", connectionFactory: { _ in socket })
+    var shotCalls = 0, failShot = false
+    var finishShot: CheckedContinuation<JSON, Error>?
+    let store = AppStore(capture: CaptureController { sink, _ in
+      SyntheticSession(sink: sink, stopDelay: .zero)
+    }, connection: link, screenshot: {
+      shotCalls += 1
+      if failShot { throw SageError("录屏权限未开启") }
+      return try await withCheckedThrowingContinuation { finishShot = $0 }
+    })
+    let domain = "cue-test-" + UUID().uuidString
+    let defaults = UserDefaults(suiteName: domain)!
+    defer { defaults.removePersistentDomain(forName: domain) }
+    let model = ChatModel(store: store, defaults: defaults)
+    model.allowRemote = true
+    var prepared: JSON?
+    var stopComplete = true
+    store.onEvent = { event in
+      if event["type"] as? String == "audio_control", let value = event["value"] as? JSON {
+        if value["type"] as? String == "remote_prepare" { prepared = value }
+        if value["type"] as? String == "stop" { socket.push(["type": "stopped", "complete": stopComplete]) }
+      } else { model.handle(event) }
+    }
+    func wait(_ condition: () -> Bool) async throws {
+      for _ in 0..<200 {
+        if condition() { return }
+        try await Task.sleep(for: .milliseconds(10))
+      }
+      throw SageError("Native remote test timed out")
+    }
+    try await wait { link.ready }
+    model.handle(["type": "session_ready", "remote": true, "generation": "native-test", "chats": [["id": "chat"]]])
+    func command(_ id: String, _ type: String, generation: String = "native-test", expires: Double = Date().timeIntervalSince1970 * 1000 + 15000) {
+      model.handle(["type": "remote_command", "command": ["id": id, "type": type, "generation": generation, "expires": expires]])
+    }
+    func receipt(_ id: String) -> JSON? { socket.sent.first { $0["type"] as? String == "remote_result" && $0["id"] as? String == id } }
+    command("old", "shot", generation: "old")
+    command("expired", "shot", expires: 0)
+    try await wait { receipt("expired") != nil }
+    require(shotCalls == 0 && receipt("expired")?["ok"] as? Bool == false, "native remote: stale and expired commands do not capture")
+    command("shot", "shot")
+    try await wait { finishShot != nil }
+    require(receipt("shot") == nil, "native remote: no screenshot success before upload completes")
+    command("busy", "prepare")
+    try await wait { receipt("busy") != nil }
+    require(receipt("busy")?["ok"] as? Bool == false, "native remote: pending screenshot blocks preparation")
+    finishShot!.resume(returning: ["id": "synthetic-shot", "created": Date().timeIntervalSince1970 * 1000])
+    try await wait { receipt("shot") != nil }
+    require(receipt("shot")?["ok"] as? Bool == true && receipt("shot")?["image"] as? String == "synthetic-shot", "native remote: success identifies the saved screenshot")
+    failShot = true
+    command("failure", "shot")
+    try await wait { receipt("failure") != nil }
+    require(receipt("failure")?["ok"] as? Bool == false && (receipt("failure")?["detail"] as? String ?? "").contains("录屏权限"), "native remote: screenshot failure is acknowledged")
+    command("prepare", "prepare")
+    try await wait { prepared != nil }
+    require(prepared?["images"] as? [String] == ["synthetic-shot"] && receipt("prepare") == nil, "native remote: preparation goes through ordered audio and awaits server completion")
+    command("start", "start")
+    try await wait { receipt("start") != nil }
+    require(receipt("start")?["ok"] as? Bool == true && model.audio == "active", "native remote: start confirmed after synthetic devices start")
+    command("stop", "stop")
+    try await wait { receipt("stop") != nil }
+    require(receipt("stop")?["ok"] as? Bool == true && model.audio == "idle", "native remote: stop confirmed after drain")
+    command("start-again", "start")
+    try await wait { receipt("start-again") != nil }
+    stopComplete = false
+    command("stop-failed", "stop")
+    try await wait { receipt("stop-failed") != nil }
+    require(receipt("stop-failed")?["ok"] as? Bool == false, "native remote: incomplete stop reports failure")
+    model.allowRemote = false
+    command("disabled", "shot")
+    try await wait { receipt("disabled") != nil }
+    require(receipt("disabled")?["ok"] as? Bool == false && shotCalls == 2, "native remote: disabled control reports failure without capture")
+    await store.disconnect()
   }
 
   /// A server-ended recording (upstream failure, replacement) is never drained

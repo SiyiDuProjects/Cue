@@ -27,6 +27,66 @@ function timers() {
   };
 }
 
+for (const type of ["ask", "remote_prepare"])
+test(`Windows ${type} flushes both worklets before its marker and holds later PCM`, async () => {
+  const events = [], calls = [], handles = new Map();
+  let stopComplete = true;
+  class Socket {
+    static OPEN = 1;
+    static CONNECTING = 0;
+    constructor() {
+      this.readyState = 0; this.bufferedAmount = 0;
+      queueMicrotask(() => { this.readyState = 1; this.onopen(); });
+    }
+    send(raw) {
+      const value = JSON.parse(raw);
+      if (value.type === "authenticate") this.emit({ type: "session_ready", protocol: "cue-chat-v2" });
+      if (value.type === "start") this.emit({ type: "started" });
+      if (value.type === "stop") this.emit({ type: "stopped", complete: stopComplete });
+    }
+    emit(value) { this.onmessage({ data: JSON.stringify(value) }); }
+    close() { this.readyState = 3; }
+  }
+  const window = { sageCaptureHost: { origin: "https://synthetic.invalid", connect: async () => {} },
+    setInterval: () => 1, setTimeout, addEventListener() {} };
+  const bytes = (n) => new Int16Array([n]).buffer;
+  compile("src/captureClient.ts", { window, WebSocket: Socket, setTimeout,
+    setInterval: () => 1, clearInterval() {}, clearTimeout() {},
+    require(name) {
+      if (name.endsWith("audioCapture")) return {
+        requestCaptureStream: async (role) => ({ role, getTracks: () => [] }),
+        startLocalAudioCapture: ({ stream, onChunk }) => {
+          const h = { onChunk, stop() {}, finish: async () => true,
+            flush: () => new Promise((resolve) => { h.flushTail = (n) => { onChunk(bytes(n)); resolve(); }; }) };
+          handles.set(stream.role, h); return h;
+        },
+      };
+      if (name.endsWith("bridge")) return { receive: (e) => events.push(e) };
+      if (name.endsWith("directTranscription")) return { directTranscription: (send) => ({
+        handle: () => false, reset() {},
+        pcm: (role, data) => calls.push(`${role}:${new Int16Array(data)[0]}`),
+        control: (value) => { calls.push(value.type); send(value); },
+      }) };
+      throw Error(name);
+    },
+  });
+  await window.cue.connect();
+  await window.cue.audio(true);
+  const mark = window.cue.command({ type, id: "question", images: [] });
+  handles.get("interviewer").flushTail(1);
+  await new Promise(setImmediate);
+  handles.get("interviewer").onChunk(bytes(3));
+  assert.deepEqual(calls, ["interviewer:1"]);
+  handles.get("candidate").flushTail(2);
+  await mark;
+  assert.deepEqual(calls, ["interviewer:1", "candidate:2", type, "interviewer:3"]);
+  await window.cue.audio(false);
+  assert.equal(events.at(-1).type, "stopped");
+  await window.cue.audio(true);
+  stopComplete = false;
+  await assert.rejects(window.cue.audio(false), /尾句未全部确认/);
+});
+
 function audioFixture({ addModule = () => Promise.resolve() } = {}) {
   let now = 0;
   class Track extends EventTarget {

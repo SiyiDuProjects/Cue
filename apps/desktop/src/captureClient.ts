@@ -19,6 +19,7 @@ if (host) {
     retry: number | undefined,
     lastMessage = 0;
   let stopping: Promise<void> | undefined,
+    stopComplete = false,
     marking = false;
   const handles = new Map<string, AudioCaptureHandle>(),
     held = new Map<string, ArrayBuffer[]>(),
@@ -116,6 +117,7 @@ if (host) {
       }
       if (value.type === "started") phase = "active";
       if (value.type === "stopped") {
+        stopComplete = value.complete === true;
         endLocal();
         phase = "idle";
       }
@@ -156,6 +158,7 @@ if (host) {
     if (stopping) return stopping;
     generation++;
     phase = "stopping";
+    stopComplete = false;
     stopping = (async () => {
       let complete = true;
       for (const h of handles.values())
@@ -165,7 +168,8 @@ if (host) {
         direct.control({ type: "stop" });
         await wait(() => phase === "idle", 12000);
       }
-      if (!complete) report("本地音频尾帧未全部确认。");
+      if (!complete || !stopComplete || !ready)
+        throw Error("音频尾句未全部确认。");
     })().finally(() => {
       endLocal();
       stopping = undefined;
@@ -206,9 +210,12 @@ if (host) {
     }
   }
   async function command(value: Event) {
-    if (value.type === "ask" && ["starting", "stopping"].includes(phase))
+    if (
+      ["ask", "remote_prepare"].includes(value.type) &&
+      ["starting", "stopping"].includes(phase)
+    )
       throw Error("请等待音频就绪。");
-    if (value.type === "ask" && handles.size) {
+    if (["ask", "remote_prepare"].includes(value.type) && handles.size) {
       if (marking) throw Error("正在准备上一轮问题。");
       marking = true;
       try {

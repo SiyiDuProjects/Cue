@@ -17,5 +17,6 @@ swiftc -parse-as-library -module-cache-path "$MAC_ROOT/.build/modules/clang" \
   -I "$MODULES" "${OBJECTS[@]}" \
   "$MAC_ROOT/Sources/Sage/AppStore.swift" "$MAC_ROOT/Sources/Sage/Capture.swift" \
   "$MAC_ROOT/Sources/Sage/LocalServices.swift" \
+  "$MAC_ROOT/Sources/Sage/ChatModel.swift" \
   "$MAC_ROOT/tests/audio-delivery.swift" -o "$CHECK_DIR/check"
 "$CHECK_DIR/check"

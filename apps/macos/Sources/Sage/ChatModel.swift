@@ -45,7 +45,8 @@ struct Caption: Identifiable {
   @Published var imagePreview: String?
   /// The answer card under the control bar; asking opens it.
   @Published var expanded = false
-  @Published var captionsOn = UserDefaults.standard.object(forKey: "cue.captions") as? Bool ?? true {
+  @Published var captionsOn = UserDefaults.standard.object(forKey: "cue.captions") as? Bool ?? true
+  {
     didSet { if persist { defaults.set(captionsOn, forKey: "cue.captions") } }
   }
   @Published private(set) var captions: [Caption] = []
@@ -60,6 +61,8 @@ struct Caption: Identifiable {
   @Published private(set) var audioSource = ""
   /// Set by a server that relays the panel; older servers never are.
   private var relay = false
+  private var remoteGeneration = ""
+  private var remoteBusy = false
   private var reported = ""
   private var reporter: AnyCancellable?
 
@@ -70,16 +73,18 @@ struct Caption: Identifiable {
   var resize: (CGSize) -> Void = { _ in }
   var openTranscript: () -> Void = {}
   var hide: () -> Void = {}
-  init(store: AppStore) {
+  init(store: AppStore, defaults: UserDefaults = .standard) {
     self.store = store
+    self.defaults = defaults
     // Any change may alter what the panel shows; send it once things settle.
-    reporter = objectWillChange
+    reporter =
+      objectWillChange
       .debounce(for: .milliseconds(300), scheduler: RunLoop.main)
       .sink { [weak self] _ in self?.reportRemote() }
   }
   /// Preview mode shares the installed app's defaults domain; never write it.
   private var persist: Bool { !store.preview }
-  private let defaults = UserDefaults.standard
+  private let defaults: UserDefaults
 
   var sending: Bool { !pending.isEmpty || messages.contains(where: Self.busy) }
   var audioBusy: Bool { audio == "starting" || audio == "stopping" }
@@ -125,7 +130,8 @@ struct Caption: Identifiable {
         audioSince = nil
         pending = ""
         audioSource = ""
-        relay = e["remote"] as? Bool == true
+        remoteGeneration = e["generation"] as? String ?? ""
+        relay = e["remote"] as? Bool == true && !remoteGeneration.isEmpty
         reported = ""
         // The server lists chats newest first.
         if let id = (e["chats"] as? [JSON])?.first?["id"] as? String {
@@ -185,14 +191,9 @@ struct Caption: Identifiable {
     case "remote": remoteOpen = e["connected"] as? Bool == true
     // A panel button runs exactly what this window's button runs.
     case "remote_command":
-      guard allowRemote, let command = e["command"] as? JSON else { return }
-      switch command["type"] as? String {
-      case "start" where audio == "idle": toggleAudio(source: "remote")
-      case "stop" where audio == "active": toggleAudio()
-      case "shot": shot()
-      default: break
-      }
+      if let command = e["command"] as? JSON { runRemote(command) }
     case "disconnected", "replaced":
+      remoteGeneration = ""
       connected = false
       remoteOpen = false
       audio = "idle"
@@ -214,11 +215,52 @@ struct Caption: Identifiable {
     }
   }
   func sendRender() { render(["type": "render", "chat": chat, "messages": messages]) }
+  private func runRemote(_ value: JSON) {
+    guard let id = value["id"] as? String,
+      let generation = value["generation"] as? String,
+      !generation.isEmpty, generation == remoteGeneration
+    else { return }
+    Task {
+      var locked = false
+      defer { if locked { remoteBusy = false } }
+      var result: JSON = ["type": "remote_result", "id": id, "generation": generation]
+      do {
+        guard connected, allowRemote, generation == remoteGeneration else {
+          throw SageError("电脑上已关闭遥控或连接已断开。")
+        }
+        guard let expires = value["expires"] as? Double, expires > Self.now else {
+          throw SageError("指令已过期，没有执行。")
+        }
+        guard !remoteBusy, !working else { throw SageError("电脑正在完成上一个操作。") }
+        remoteBusy = true
+        locked = true
+        guard !audioBusy else { throw SageError("请等待音频就绪。") }
+        switch value["type"] as? String {
+        case "prepare":
+          try await store.command([
+            "type": "remote_prepare", "id": id,
+            "generation": generation, "images": selected,
+          ])
+          return  // The server confirms that both tails have been saved.
+        case "shot": result["image"] = try await captureShot()
+        case "start": if audio == "idle" { try await changeAudio(source: "remote") }
+        case "stop": if audio == "active" { try await changeAudio(source: "") }
+        default: throw SageError("遥控指令无效。")
+        }
+        result["ok"] = true
+      } catch {
+        self.error = error.localizedDescription
+        result["ok"] = false
+        result["detail"] = String(self.error.prefix(300))
+      }
+      if connected && generation == remoteGeneration { try? await store.command(result) }
+    }
+  }
   /// What the ChatGPT panel shows about this computer; sent when it changes.
   private func reportRemote() {
     guard connected, relay else { return }
     let value: JSON = [
-      "type": "remote_state", "allow": allowRemote, "phase": audio,
+      "type": "remote_state", "version": 2, "allow": allowRemote, "phase": audio,
       "since": Int((audioSince?.timeIntervalSince1970 ?? 0) * 1000), "selected": selected,
       "error": String(error.prefix(300)), "source": audio == "active" ? audioSource : "",
     ]
@@ -281,19 +323,21 @@ struct Caption: Identifiable {
     attempt { try await self.store.command(["type": "cancel", "id": id]) }
   }
   func shot() {
-    guard !working else { return }
+    attempt { _ = try await self.captureShot() }
+  }
+  private func captureShot() async throws -> String {
+    guard !working else { throw SageError("截图尚未完成。") }
     working = true
-    attempt {
-      defer { self.working = false }
-      let image = try await self.store.screenshot()
-      guard let id = image["id"] as? String else { return }
-      self.images.removeAll { $0.id == id }
-      self.images.append(SavedShot(id: id, created: image["created"] as? Double ?? Self.now))
-      self.selected = Array((self.selected + [id]).suffix(8))
-      if let url = image["image_url"] as? String, let picture = Self.image(dataURL: url) {
-        self.previews[id] = picture
-      }
+    defer { working = false }
+    let image = try await self.store.screenshot()
+    guard let id = image["id"] as? String else { throw SageError("截图未完成。") }
+    self.images.removeAll { $0.id == id }
+    self.images.append(SavedShot(id: id, created: image["created"] as? Double ?? Self.now))
+    self.selected = Array((self.selected + [id]).suffix(8))
+    if let url = image["image_url"] as? String, let picture = Self.image(dataURL: url) {
+      self.previews[id] = picture
     }
+    return id
   }
   func toggleSelected(_ id: String) {
     if selected.contains(id) {
@@ -322,16 +366,18 @@ struct Caption: Identifiable {
   }
   func toggleAudio() { toggleAudio(source: "") }
   func toggleAudio(source: String) {
-    guard !audioBusy else { return }
+    attempt { try await self.changeAudio(source: source) }
+  }
+  private func changeAudio(source: String) async throws {
+    guard !audioBusy else { throw SageError("请等待音频就绪。") }
     let start = audio == "idle"
     if start { audioSource = source }
     audio = start ? "starting" : "stopping"
-    Task {
-      do { try await store.audio(start) } catch {
-        audio = "idle"
-        self.error = error.localizedDescription
-      }
+    do { try await store.audio(start) } catch {
+      audio = "idle"
+      throw error
     }
+    guard connected, audio == (start ? "active" : "idle") else { throw SageError("转录操作未完成。") }
   }
   func uploadMaterials() { attempt { _ = try await self.store.uploadMaterials() } }
   func importConnection() { attempt { try await self.store.importConnection() } }
