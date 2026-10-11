@@ -143,6 +143,12 @@ private struct ControlBar: View {
         .frame(width: 8, height: 8)
         .frame(width: 26, height: 30)
         .overlay(DragHandle(tip: model.status))
+      if model.remoteOpen && model.allowRemote {
+        Image(systemName: "iphone.radiowaves.left.and.right")
+          .foregroundStyle(Color.accentColor)
+          .frame(width: 24, height: 30)
+          .help("ChatGPT 中的 Cue 面板已打开，可遥控此电脑")
+      }
       AudioButton(model: model)
       Button {
         model.captionsOn.toggle()
@@ -207,6 +213,9 @@ private struct AudioButton: View {
           TimelineView(.periodic(from: since, by: 1)) { context in
             Text(Self.clock(context.date.timeIntervalSince(since))).monospacedDigit()
           }
+          if model.audioSource == "remote" {
+            Text("面板").font(.caption2).foregroundStyle(.secondary)
+          }
         }
       } else {
         Label("转录", systemImage: "waveform")
@@ -236,6 +245,7 @@ private struct MoreMenu: View {
       }
       .pickerStyle(.menu)
       Button("转录与截图…", action: model.openTranscript)
+      Toggle("允许 ChatGPT 遥控", isOn: $model.allowRemote)
       Divider()
       Button("更新个人资料…", action: model.uploadMaterials)
       Button("网页设置…", action: model.openWebSettings)

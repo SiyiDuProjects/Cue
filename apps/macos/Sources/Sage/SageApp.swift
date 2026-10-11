@@ -94,6 +94,7 @@ import ScreenCaptureKit
           try? await Task.sleep(for: .milliseconds(100))
         }
         chat?.model.handle(["type": "started"])
+        chat?.model.handle(["type": "remote", "connected": true])
         for (item, text) in [
           ("preview-1", "好的，我们先从项目开始。"),
           ("preview-2", "你能讲讲上一个项目里，缓存和数据库的一致性是怎么保证的吗？"),

@@ -8,6 +8,7 @@ import {
   CaretDown,
   CaretUp,
   Check,
+  DeviceMobile,
   DotsThree,
   Stop,
   Subtitles,
@@ -87,6 +88,13 @@ export default function App() {
     ),
     [captions, setCaptions] = useState<{ item: string; text: string }[]>([]),
     [, tick] = useState(0);
+  // The Cue panel in ChatGPT: whether it may control this computer, whether
+  // it is open now, and whether the current recording was started from it.
+  const [allowRemote, setAllowRemote] = useState(
+      localStorage.getItem("cue.remote") !== "off",
+    ),
+    [remoteOpen, setRemoteOpen] = useState(false),
+    [audioSource, setAudioSource] = useState("");
   const root = useRef<HTMLDivElement>(null),
     list = useRef<HTMLDivElement>(null),
     input = useRef<HTMLTextAreaElement>(null),
@@ -94,6 +102,14 @@ export default function App() {
     // Answers are one timeline, the last hour, like transcripts. This is the
     // server row new answers are stored under: the newest chat, never shown.
     chat = useRef(""),
+    // Set by a server that relays the ChatGPT panel; older ones never are.
+    relay = useRef(false),
+    reported = useRef(""),
+    // The latest handlers, for panel commands arriving in the event listener.
+    actions = useRef<{
+      toggleAudio: (source?: string) => Promise<void>;
+      shot: () => Promise<void>;
+    }>({ toggleAudio: async () => {}, shot: async () => {} }),
     current = useRef({
       text,
       selected,
@@ -102,6 +118,7 @@ export default function App() {
       pending,
       messages,
       effort,
+      allowRemote,
     });
   current.current = {
     text,
@@ -111,6 +128,7 @@ export default function App() {
     pending,
     messages,
     effort,
+    allowRemote,
   };
   const attempt = async (fn: () => Promise<any>) => {
     try {
@@ -194,6 +212,9 @@ export default function App() {
           setAudio("idle");
           setSince(0);
           setPending("");
+          setAudioSource("");
+          relay.current = e.remote === true;
+          reported.current = "";
           // The server lists chats newest first.
           if (e.chats?.[0]?.id) use(e.chats[0].id);
           else void attempt(() => command({ type: "new_chat" }));
@@ -259,6 +280,7 @@ export default function App() {
       if (e.type === "stopped") {
         setAudio("idle");
         setSince(0);
+        setAudioSource("");
         if (!e.complete) setError("音频尾句未全部确认，请检查转录。");
       }
       if (e.type === "disconnected" || e.type === "replaced") {
@@ -285,6 +307,18 @@ export default function App() {
       }
       if (e.type === "answer_requested") void ask();
       if (e.type === "shot_requested") void shot();
+      if (e.type === "remote") setRemoteOpen(e.connected === true);
+      // A panel button runs exactly what this window's button runs.
+      if (e.type === "remote_command" && current.current.allowRemote) {
+        const { type } = e.command ?? {},
+          phase = current.current.audio;
+        if (
+          (type === "start" && phase === "idle") ||
+          (type === "stop" && phase === "active")
+        )
+          void actions.current.toggleAudio(type === "start" ? "remote" : "");
+        if (type === "shot") void actions.current.shot();
+      }
     };
     window.addEventListener("cue:event", listener);
     void reconnect();
@@ -297,6 +331,26 @@ export default function App() {
   useEffect(() => {
     localStorage.setItem("cue.effort", effort);
   }, [effort]);
+  useEffect(() => {
+    localStorage.setItem("cue.remote", allowRemote ? "on" : "off");
+  }, [allowRemote]);
+  useEffect(() => {
+    // What the ChatGPT panel shows about this computer; sent on change.
+    if (!connected || !relay.current) return;
+    const report = {
+      type: "remote_state",
+      allow: allowRemote,
+      phase: audio,
+      since,
+      selected,
+      error: error.slice(0, 300),
+      source: audio === "active" ? audioSource : "",
+    };
+    const key = JSON.stringify(report);
+    if (key === reported.current) return;
+    reported.current = key;
+    void command(report).catch(() => (reported.current = ""));
+  }, [connected, allowRemote, audio, since, selected, error, audioSource]);
   useEffect(() => {
     localStorage.setItem("cue.captions", captionsOn ? "on" : "off");
   }, [captionsOn]);
@@ -331,9 +385,10 @@ export default function App() {
     captionText = joinCaptions(captions.map((c) => c.text)),
     // Beyond half the screen the answer scrolls inside the card.
     limit = Math.round(screen.availHeight * 0.5);
-  async function toggleAudio() {
+  async function toggleAudio(source = "") {
     if (audioBusy) return;
     const start = audio === "idle";
+    if (start) setAudioSource(source);
     setAudio(start ? "starting" : "stopping");
     try {
       await window.cue.audio(start);
@@ -352,11 +407,15 @@ export default function App() {
       }));
     });
   }
+  actions.current = { toggleAudio, shot };
   /** The native menu returns a choice; hiding, quitting and links stay native. */
   async function more() {
-    const choice = await attempt(() => window.cue.menu!({ effort }));
+    const choice = await attempt(() =>
+      window.cue.menu!({ effort, remote: allowRemote }),
+    );
     if (!choice) return;
     if (typeof choice.effort === "string") setEffort(choice.effort);
+    else if (typeof choice.remote === "boolean") setAllowRemote(choice.remote);
     else if (choice.source)
       void attempt(() => window.cue.selectSource(choice.source));
     else if (choice.action === "transcript") {
@@ -382,6 +441,14 @@ export default function App() {
         <span className="connection sr-only" role="status">
           {status}
         </span>
+        {remoteOpen && allowRemote && (
+          <span
+            className="remote-mark"
+            title="ChatGPT 中的 Cue 面板已打开，可遥控此电脑"
+          >
+            <DeviceMobile />
+          </span>
+        )}
         <Tip label={audio === "active" ? "停止转录" : "开始转录"}>
           <Button
             size="sm"
@@ -399,6 +466,9 @@ export default function App() {
               <>
                 <span className="record-dot" aria-hidden="true" />
                 <span className="clock">{clock(Date.now() - since)}</span>
+                {audioSource === "remote" && (
+                  <span className="source">面板</span>
+                )}
               </>
             ) : (
               <>

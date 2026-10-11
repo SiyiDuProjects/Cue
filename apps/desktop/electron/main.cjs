@@ -187,6 +187,12 @@ function configure() {
           })),
         },
         { label: "转录与截图", click: pick({ action: "transcript" }) },
+        {
+          label: "允许 ChatGPT 遥控",
+          type: "checkbox",
+          checked: state?.remote !== false,
+          click: pick({ remote: state?.remote === false }),
+        },
         { type: "separator" },
         { label: "更新个人资料…", click: pick({ action: "materials" }) },
         {

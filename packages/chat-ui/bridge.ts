@@ -24,7 +24,7 @@ export interface CueBridge {
   /** Windows overlay: take keyboard focus only while typing. */
   focus?(on: boolean): Promise<unknown>;
   /** Windows overlay: native menu; resolves to the choice or null. */
-  menu?(state: { effort: string }): Promise<any>;
+  menu?(state: { effort: string; remote: boolean }): Promise<any>;
 }
 declare global {
   interface Window {

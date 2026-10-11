@@ -116,7 +116,7 @@ app
       await js("window.nextMenu={effort:'high'}");
       await click('[aria-label="更多"]');
       await wait("localStorage.getItem('cue.effort')==='high'");
-      assert.deepEqual(await js("window.menuState"), { effort: "" });
+      assert.deepEqual(await js("window.menuState"), { effort: "", remote: true });
       await js("window.nextMenu={source:'screen:0'}");
       await click('[aria-label="更多"]');
       await wait("window.selectedSource==='screen:0'");
@@ -143,6 +143,27 @@ app
       );
       await click(".record-button");
       await wait("!document.querySelector('.captions')");
+      // ChatGPT panel: this window reports its status, and a panel button runs
+      // the same action as the button here, unless remote control is off.
+      await wait("window.remoteStates?.at(-1)?.phase==='idle'");
+      assert.equal(await js("window.remoteStates.at(-1).allow"), true);
+      await event({ type: "remote", connected: true });
+      await wait("document.querySelector('.remote-mark')");
+      await event({ type: "remote_command", command: { id: "r1", type: "start" } });
+      await wait("document.querySelector('.source')?.textContent==='面板'");
+      await wait(
+        "window.remoteStates.at(-1).phase==='active' && window.remoteStates.at(-1).source==='remote'",
+      );
+      await event({ type: "remote_command", command: { id: "r2", type: "stop" } });
+      await wait("!document.querySelector('.clock')");
+      await js("window.nextMenu={remote:false}");
+      await click('[aria-label="更多"]');
+      await wait("window.remoteStates.at(-1).allow===false");
+      assert.equal(await js("window.menuState.remote"), true);
+      await event({ type: "remote_command", command: { id: "r3", type: "start" } });
+      await new Promise((r) => setTimeout(r, 200));
+      assert.equal(await js("!!document.querySelector('.clock')"), false);
+      assert.equal(await js("document.querySelector('.remote-mark')"), null);
       // Transcript view inside the card.
       for (const turn of [
         { id: "silence", text: "", status: "final" },
@@ -181,7 +202,7 @@ app
         true,
       );
       console.log(
-        "PASS overlay: hidden newest chat and recent history, content-sized window, focus only for typing, screenshot attachment, streaming reasoning/Markdown/table/math, copy, one exchange with paging, native menu depth/source/failure, interviewer captions, transcript view and manual reconnect; all network blocked",
+        "PASS overlay: hidden newest chat and recent history, ChatGPT panel status/commands/switch, content-sized window, focus only for typing, screenshot attachment, streaming reasoning/Markdown/table/math, copy, one exchange with paging, native menu depth/source/failure, interviewer captions, transcript view and manual reconnect; all network blocked",
       );
     } finally {
       win.destroy();

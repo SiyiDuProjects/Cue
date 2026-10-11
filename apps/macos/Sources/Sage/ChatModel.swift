@@ -1,4 +1,5 @@
 import AppKit
+import Combine
 import SageCore
 
 struct TranscriptTurn: Identifiable {
@@ -50,6 +51,17 @@ struct Caption: Identifiable {
   @Published private(set) var captions: [Caption] = []
   /// Height of the answer page's content, reported by the page.
   @Published var answerHeight: CGFloat = 0
+  /// The Cue panel in ChatGPT: whether it may control this computer, whether
+  /// it is open now, and whether the current recording was started from it.
+  @Published var allowRemote = UserDefaults.standard.object(forKey: "cue.remote") as? Bool ?? true {
+    didSet { if persist { defaults.set(allowRemote, forKey: "cue.remote") } }
+  }
+  @Published private(set) var remoteOpen = false
+  @Published private(set) var audioSource = ""
+  /// Set by a server that relays the panel; older servers never are.
+  private var relay = false
+  private var reported = ""
+  private var reporter: AnyCancellable?
 
   let store: AppStore
   /// Sends a value to the answer view only.
@@ -58,7 +70,13 @@ struct Caption: Identifiable {
   var resize: (CGSize) -> Void = { _ in }
   var openTranscript: () -> Void = {}
   var hide: () -> Void = {}
-  init(store: AppStore) { self.store = store }
+  init(store: AppStore) {
+    self.store = store
+    // Any change may alter what the panel shows; send it once things settle.
+    reporter = objectWillChange
+      .debounce(for: .milliseconds(300), scheduler: RunLoop.main)
+      .sink { [weak self] _ in self?.reportRemote() }
+  }
   /// Preview mode shares the installed app's defaults domain; never write it.
   private var persist: Bool { !store.preview }
   private let defaults = UserDefaults.standard
@@ -106,6 +124,9 @@ struct Caption: Identifiable {
         audio = "idle"
         audioSince = nil
         pending = ""
+        audioSource = ""
+        relay = e["remote"] as? Bool == true
+        reported = ""
         // The server lists chats newest first.
         if let id = (e["chats"] as? [JSON])?.first?["id"] as? String {
           use(id)
@@ -159,9 +180,21 @@ struct Caption: Identifiable {
     case "stopped":
       audio = "idle"
       audioSince = nil
+      audioSource = ""
       if e["complete"] as? Bool == false { error = "音频尾句未全部确认，请检查转录。" }
+    case "remote": remoteOpen = e["connected"] as? Bool == true
+    // A panel button runs exactly what this window's button runs.
+    case "remote_command":
+      guard allowRemote, let command = e["command"] as? JSON else { return }
+      switch command["type"] as? String {
+      case "start" where audio == "idle": toggleAudio(source: "remote")
+      case "stop" where audio == "active": toggleAudio()
+      case "shot": shot()
+      default: break
+      }
     case "disconnected", "replaced":
       connected = false
+      remoteOpen = false
       audio = "idle"
       audioSince = nil
       status = e["detail"] as? String ?? "连接中断"
@@ -181,6 +214,22 @@ struct Caption: Identifiable {
     }
   }
   func sendRender() { render(["type": "render", "chat": chat, "messages": messages]) }
+  /// What the ChatGPT panel shows about this computer; sent when it changes.
+  private func reportRemote() {
+    guard connected, relay else { return }
+    let value: JSON = [
+      "type": "remote_state", "allow": allowRemote, "phase": audio,
+      "since": Int((audioSince?.timeIntervalSince1970 ?? 0) * 1000), "selected": selected,
+      "error": String(error.prefix(300)), "source": audio == "active" ? audioSource : "",
+    ]
+    guard let data = try? JSONSerialization.data(withJSONObject: value, options: [.sortedKeys]),
+      let key = String(data: data, encoding: .utf8), key != reported
+    else { return }
+    reported = key
+    Task {
+      do { try await store.command(value) } catch { reported = "" }
+    }
+  }
   /// Live interviewer caption. Display only: it never reaches the server and
   /// keeps the last few utterances so a fresh one has context above it.
   func caption(_ value: JSON) {
@@ -271,9 +320,11 @@ struct Caption: Identifiable {
       self.selected.removeAll { $0 == id }
     }
   }
-  func toggleAudio() {
+  func toggleAudio() { toggleAudio(source: "") }
+  func toggleAudio(source: String) {
     guard !audioBusy else { return }
     let start = audio == "idle"
+    if start { audioSource = source }
     audio = start ? "starting" : "stopping"
     Task {
       do { try await store.audio(start) } catch {

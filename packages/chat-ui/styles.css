@@ -63,6 +63,16 @@ body:has(.overlay) {
 .answer-button {
   padding-inline: 12px;
 }
+.source {
+  font-size: 11px;
+  color: var(--muted);
+}
+.remote-mark {
+  display: grid;
+  place-items: center;
+  width: 26px;
+  color: var(--accent);
+}
 .clock,
 .shot-count {
   font-variant-numeric: tabular-nums;

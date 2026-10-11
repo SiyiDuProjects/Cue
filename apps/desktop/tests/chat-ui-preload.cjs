@@ -9,6 +9,7 @@ window.cue = {
       () =>
         emit({
           type: "session_ready",
+          remote: true,
           chats: [{ id: "chat", title: "离线检查" }],
           turns: [],
           images: [],
@@ -17,6 +18,8 @@ window.cue = {
     ),
   command: async (v) => {
     if (v.type === "history") window.lastHistory = v;
+    if (v.type === "remote_state")
+      window.remoteStates = [...(window.remoteStates || []), v];
     if (v.type === "history")
       setTimeout(() => emit({ type: "history", chat: v.chat, messages }), 0);
     if (v.type === "ask") {
