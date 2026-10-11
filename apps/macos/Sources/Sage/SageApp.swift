@@ -1,4 +1,5 @@
 import AppKit
+import Carbon
 import SageCore
 import ScreenCaptureKit
 
@@ -25,14 +26,15 @@ import ScreenCaptureKit
   private let store = AppStore(preview: CommandLine.arguments.contains("--preview"))
   private var chat: ChatWindow?
   private var status: NSStatusItem?
-  private var hotkey: AnswerHotkey?
+  private let hotkeys = GlobalHotkeys()
   func applicationDidFinishLaunching(_ notification: Notification) {
     chat = ChatWindow(store: store)
     status = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
     status?.button?.title = "Cue"
     let menu = NSMenu()
     for (title, action) in [
-      ("打开 Cue", #selector(show)), ("回答", #selector(answer)), ("退出 Cue", #selector(quit)),
+      ("显示或隐藏 Cue", #selector(toggle)), ("回答", #selector(answer)), ("截图", #selector(shot)),
+      ("转录与截图…", #selector(transcript)), ("退出 Cue", #selector(quit)),
     ] {
       let item = NSMenuItem(title: title, action: action, keyEquivalent: "")
       item.target = self
@@ -62,11 +64,18 @@ import ScreenCaptureKit
     editItem.submenu = editActions
     applicationMenu.addItem(editItem)
     NSApp.mainMenu = applicationMenu
-    let shortcut = AnswerHotkey(action: { [weak self] in self?.answer() })
-    if !shortcut.setEnabled(true) {
-      store.onEvent(["type": "error", "detail": "全局快捷键被占用，仍可使用窗口中的回答按钮。"])
+    // A preview must not take the installed app's shortcuts.
+    let taken = store.preview ? [] : hotkeys.register([
+      .init(code: kVK_Return, name: "⌃⌥⌘↩ 回答") { [weak self] in self?.answer() },
+      .init(code: kVK_ANSI_S, name: "⌃⌥⌘S 截图") { [weak self] in self?.shot() },
+      .init(code: kVK_ANSI_Backslash, name: "⌃⌥⌘\\ 显示或隐藏") { [weak self] in self?.toggle() },
+    ])
+    if !taken.isEmpty {
+      store.onEvent([
+        "type": "error", "detail": "快捷键被占用：\(taken.joined(separator: "、"))，仍可使用浮窗按钮。",
+      ])
     }
-    hotkey = shortcut
+    if store.preview { chat?.model.expanded = true }
     chat?.show()
     if let chat { Task { await chat.model.reconnect() } }
     if let i = CommandLine.arguments.firstIndex(of: "--render-preview"),
@@ -77,6 +86,25 @@ import ScreenCaptureKit
         for _ in 0..<100 {
           if chat?.model.connected == true { break }
           try? await Task.sleep(for: .milliseconds(100))
+        }
+        // Synthetic captions travel the real page-to-native bridge once the
+        // page has loaded. Preview never captures audio; only the displayed
+        // state is set.
+        for _ in 0..<100 where chat?.web.isLoading != false {
+          try? await Task.sleep(for: .milliseconds(100))
+        }
+        chat?.model.handle(["type": "started"])
+        for (item, text) in [
+          ("preview-1", "好的，我们先从项目开始。"),
+          ("preview-2", "你能讲讲上一个项目里，缓存和数据库的一致性是怎么保证的吗？"),
+        ] {
+          do {
+            _ = try await chat?.web.callAsyncJavaScript(
+              "await window.cue.caption({item, text})", arguments: ["item": item, "text": text],
+              contentWorld: .page)
+          } catch {
+            fputs("Preview caption failed: \(error)\n", stderr)
+          }
         }
         try? await Task.sleep(for: .milliseconds(1200))
         guard let window = chat?.window,
@@ -117,8 +145,15 @@ import ScreenCaptureKit
     view.cacheDisplay(in: view.bounds, to: rep)
     return rep.representation(using: .png, properties: [:])
   }
-  @objc private func show() { chat?.show() }
-  @objc private func answer() { chat?.model.ask() }
+  private func show() { chat?.show() }
+  @objc private func toggle() { chat?.toggle() }
+  /// Answering shows the overlay; capturing leaves it as it is.
+  @objc private func answer() {
+    chat?.show()
+    chat?.model.ask()
+  }
+  @objc private func shot() { chat?.model.shot() }
+  @objc private func transcript() { chat?.model.openTranscript() }
   @objc private func quit() { NSApp.terminate(nil) }
   func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows: Bool) -> Bool {
     show()

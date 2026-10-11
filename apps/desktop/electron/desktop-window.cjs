@@ -1,18 +1,19 @@
-// Use the operating system's title bar, resize handles, shadow and corners.
-// Opening the code pane only changes the page layout, not native window bounds.
+// A frameless, transparent overlay sized by the page to its content. It never
+// takes focus on click; the page asks for focus only while its text box is
+// used. Hidden from the taskbar; the tray and shortcuts bring it back.
 const DESKTOP_WINDOW_OPTIONS = {
-  width: 1100,
-  height: 780,
-  minWidth: 620,
-  minHeight: 440,
-  frame: true,
-  // An opaque window keeps the native Windows frame and resize behavior; the
-  // page paints the theme background. main.cjs picks the matching color.
-  transparent: false,
-  resizable: true,
-  minimizable: true,
-  maximizable: true,
-  hasShadow: true,
+  width: 460,
+  height: 64,
+  frame: false,
+  transparent: true,
+  backgroundColor: "#00000000",
+  resizable: false,
+  minimizable: false,
+  maximizable: false,
+  fullscreenable: false,
+  hasShadow: false,
+  skipTaskbar: true,
+  focusable: false,
   show: false,
   alwaysOnTop: true,
 };

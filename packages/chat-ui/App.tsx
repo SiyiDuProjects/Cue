@@ -1,90 +1,100 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
-import { Button, Dropdown, Label, Spinner, Tooltip } from "@heroui/react";
+import { Button, Spinner } from "@heroui/react";
 import {
   ArrowClockwise,
-  ArrowSquareOut,
+  ArrowLeft,
   ArrowUp,
+  Camera,
   CaretDown,
+  CaretUp,
   Check,
-  GearSix,
-  Images,
-  Plus,
-  PushPin,
-  PushPinSlash,
+  DotsThree,
   Stop,
   Subtitles,
   Waveform,
   X,
 } from "@phosphor-icons/react";
 import { type Event } from "./bridge";
-import { MessageList, busy, shortcut, type Message } from "./Messages";
+import { OneExchange, busy, shortcut, type Message } from "./Messages";
 import "./styles.css";
 
 const time = (value: number) =>
-  new Date(value).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
-
-/** Icon-only actions always carry a tooltip and an accessible name. */
-function IconAction({
-  label,
-  onPress,
-  isDisabled,
-  pressed,
-  className,
-  children,
-}: {
-  label: string;
-  onPress: () => void;
-  isDisabled?: boolean;
-  pressed?: boolean;
-  className?: string;
-  children: ReactNode;
-}) {
-  return (
-    <Tooltip delay={400}>
-      <Button
-        isIconOnly
-        size="sm"
-        variant={pressed ? "secondary" : "ghost"}
-        aria-label={label}
-        aria-pressed={pressed}
-        isDisabled={isDisabled}
-        className={className}
-        onPress={onPress}
-      >
-        {children}
-      </Button>
-      <Tooltip.Content>{label}</Tooltip.Content>
-    </Tooltip>
+  new Date(value).toLocaleTimeString([], {
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+const clock = (ms: number) => {
+  const s = Math.max(0, Math.floor(ms / 1000)),
+    pad = (n: number) => String(n).padStart(2, "0");
+  return s >= 3600
+    ? `${Math.floor(s / 3600)}:${pad(Math.floor(s / 60) % 60)}:${pad(s % 60)}`
+    : `${pad(Math.floor(s / 60))}:${pad(s % 60)}`;
+};
+/** The answers the next question sees; one still running always stays. */
+const lastHour = (ms: Message[]) =>
+  ms.filter(
+    (m: Message & { created?: number }) =>
+      busy(m) || (m.created ?? Date.now()) >= Date.now() - 3600000,
   );
-}
+/** Chinese and Japanese run sentences together; other scripts use a space. */
+const joinCaptions = (parts: string[]) =>
+  parts
+    .map((t) => t.trim())
+    .filter(Boolean)
+    .reduce(
+      (line, next) =>
+        !line
+          ? next
+          : line +
+            (line.charCodeAt(line.length - 1) >= 0x2e80 ? "" : " ") +
+            next,
+      "",
+    );
 
-type Chat = { id: string; title: string };
+/** Native tooltip: an in-page one would be clipped by the window edge. */
+const Tip = ({ label, children }: { label: string; children: ReactNode }) => (
+  <span className="tip" title={label}>
+    {children}
+  </span>
+);
+
+/**
+ * Windows overlay: a control bar, then notices, interviewer captions and the
+ * answer card. The host sizes the frameless window to this element, keeps
+ * it out of focus until the text box is used, and shows the menu natively
+ * so nothing is clipped by the window edge.
+ */
 export default function App() {
   const [connected, setConnected] = useState(false),
     [status, setStatus] = useState("正在连接…"),
     [error, setError] = useState("");
-  const [chats, setChats] = useState<Chat[]>([]),
-    [chat, setChat] = useState(localStorage.getItem("cue.chat") || ""),
-    [messages, setMessages] = useState<Message[]>([]);
-  const [turns, setTurns] = useState<Event[]>([]),
+  const [messages, setMessages] = useState<Message[]>([]),
+    [turns, setTurns] = useState<Event[]>([]),
     [images, setImages] = useState<Event[]>([]),
     [selected, setSelected] = useState<string[]>([]),
     [previews, setPreviews] = useState<Record<string, string>>({});
-  const [text, setText] = useState(""),
+  const [text, setText] = useState(localStorage.getItem("cue.draft") || ""),
     [audio, setAudio] = useState("idle"),
+    [since, setSince] = useState(0),
     [working, setWorking] = useState(false),
-    [pending, setPending] = useState("");
-  const [panel, setPanel] = useState(""),
-    [sources, setSources] = useState<Event[]>([]),
-    [source, setSource] = useState(""),
-    [sourceBusy, setSourceBusy] = useState(false),
-    [effort, setEffort] = useState(localStorage.getItem("cue.effort") || ""),
-    [pinned, setPinned] = useState(true),
-    [imagePreview, setImagePreview] = useState("");
-  const list = useRef<HTMLDivElement>(null),
+    [pending, setPending] = useState(""),
+    [effort, setEffort] = useState(localStorage.getItem("cue.effort") || "");
+  const [expanded, setExpanded] = useState(false),
+    // "answer", "transcript" or "image:<id>" inside the card.
+    [view, setView] = useState("answer"),
+    [captionsOn, setCaptionsOn] = useState(
+      localStorage.getItem("cue.captions") !== "off",
+    ),
+    [captions, setCaptions] = useState<{ item: string; text: string }[]>([]),
+    [, tick] = useState(0);
+  const root = useRef<HTMLDivElement>(null),
+    list = useRef<HTMLDivElement>(null),
+    input = useRef<HTMLTextAreaElement>(null),
     follow = useRef(true),
+    // Answers are one timeline, the last hour, like transcripts. This is the
+    // server row new answers are stored under: the newest chat, never shown.
+    chat = useRef(""),
     current = useRef({
-      chat,
       text,
       selected,
       connected,
@@ -94,7 +104,6 @@ export default function App() {
       effort,
     });
   current.current = {
-    chat,
     text,
     selected,
     connected,
@@ -125,19 +134,17 @@ export default function App() {
       setError(e instanceof Error ? e.message : String(e));
     }
   }
-  function choose(id: string) {
-    current.current.chat = id;
-    setChat(id);
-    localStorage.setItem("cue.chat", id);
-    setText(localStorage.getItem("cue.draft." + id) || "");
+  function use(id: string) {
+    chat.current = id;
     setMessages([]);
     follow.current = true;
-    void attempt(() => command({ type: "history", chat: id }));
+    void attempt(() => command({ type: "history", chat: id, scope: "recent" }));
   }
   async function ask() {
     const s = current.current;
     if (
       !s.connected ||
+      !chat.current ||
       s.pending ||
       s.messages.some(busy) ||
       ["starting", "stopping"].includes(s.audio)
@@ -147,11 +154,13 @@ export default function App() {
     current.current.pending = id;
     setPending(id);
     setError("");
+    setExpanded(true);
+    setView("answer");
     try {
       await command({
         type: "ask",
         id,
-        chat: s.chat,
+        chat: chat.current,
         text: s.text,
         images: s.selected,
         effort: s.effort || undefined,
@@ -161,6 +170,18 @@ export default function App() {
       setError(String(e));
     }
   }
+  async function shot() {
+    setWorking(true);
+    await attempt(async () => {
+      const image = await window.cue.screenshot();
+      if (!image) return;
+      setImages((v) => [...v.filter((i) => i.id !== image.id), image]);
+      setSelected((s) => [...s, image.id].slice(-8));
+      if (image.image_url)
+        setPreviews((p) => ({ ...p, [image.id]: image.image_url }));
+    });
+    setWorking(false);
+  }
   useEffect(() => {
     const listener = (event: globalThis.Event) => {
       const e = (event as CustomEvent).detail as Event;
@@ -169,30 +190,29 @@ export default function App() {
         setStatus("已连接");
         setTurns(e.turns || []);
         setImages(e.images || []);
-        setChats(e.chats || []);
         if (e.type === "session_ready") {
           setAudio("idle");
+          setSince(0);
           setPending("");
-          const id =
-            e.chats?.find((c: Chat) => c.id === current.current.chat)?.id ??
-            e.chats?.[0]?.id;
-          if (id) choose(id);
+          // The server lists chats newest first.
+          if (e.chats?.[0]?.id) use(e.chats[0].id);
           else void attempt(() => command({ type: "new_chat" }));
         }
       }
-      if (e.type === "chat_created") {
-        setChats((c) => [e.chat, ...c]);
-        choose(e.chat.id);
-      }
-      if (e.type === "history" && e.chat === current.current.chat) {
-        setMessages(e.messages);
+      if (e.type === "chat_created") use(e.chat.id);
+      // A server without the timeline answers for the chat instead.
+      if (
+        e.type === "history" &&
+        (e.scope === "recent" || e.chat === chat.current)
+      ) {
+        setMessages(lastHour(e.messages));
         setPending("");
       }
-      if (e.type === "answer" && e.message.chat === current.current.chat) {
+      if (e.type === "answer") {
         if (e.message.id === current.current.pending) {
           if (current.current.text === e.message.text) {
             setText("");
-            localStorage.removeItem("cue.draft." + e.message.chat);
+            localStorage.removeItem("cue.draft");
           }
           const used = JSON.parse(e.message.context || "{}").images || [];
           setSelected((s) => s.filter((id) => !used.includes(id)));
@@ -201,7 +221,7 @@ export default function App() {
         setMessages((ms) =>
           ms.some((m) => m.id === e.message.id)
             ? ms.map((m) => (m.id === e.message.id ? e.message : m))
-            : [...ms, e.message],
+            : lastHour([...ms, e.message]),
         );
       }
       if (e.type === "answer_delta")
@@ -224,14 +244,27 @@ export default function App() {
             (a, b) => a.created - b.created || a.id.localeCompare(b.id),
           ),
         );
-      if (e.type === "started") setAudio("active");
+      // Display only: from the local transcription stream, never the server.
+      if (e.type === "caption" && current.current.audio !== "idle")
+        setCaptions((cs) =>
+          cs.some((c) => c.item === e.item)
+            ? cs.map((c) => (c.item === e.item ? { ...c, text: e.text } : c))
+            : [...cs, { item: e.item, text: e.text }].slice(-3),
+        );
+      if (e.type === "started") {
+        setAudio("active");
+        setSince(Date.now());
+        setCaptions([]);
+      }
       if (e.type === "stopped") {
         setAudio("idle");
+        setSince(0);
         if (!e.complete) setError("音频尾句未全部确认，请检查转录。");
       }
       if (e.type === "disconnected" || e.type === "replaced") {
         setConnected(false);
         setAudio("idle");
+        setSince(0);
         setStatus(e.detail || "连接中断");
         setPending("");
         setMessages((ms) =>
@@ -251,6 +284,7 @@ export default function App() {
         if (!e.id || e.id === current.current.pending) setPending("");
       }
       if (e.type === "answer_requested") void ask();
+      if (e.type === "shot_requested") void shot();
     };
     window.addEventListener("cue:event", listener);
     void reconnect();
@@ -263,22 +297,42 @@ export default function App() {
   useEffect(() => {
     localStorage.setItem("cue.effort", effort);
   }, [effort]);
-  const active = messages.find(busy),
-    sending = !!active || !!pending;
-  async function shot() {
-    setWorking(true);
-    await attempt(async () => {
-      const image = await window.cue.screenshot();
-      if (!image) return;
-      setImages((v) => [...v.filter((i) => i.id !== image.id), image]);
-      setSelected((s) => [...s, image.id].slice(-8));
-      if (image.image_url)
-        setPreviews((p) => ({ ...p, [image.id]: image.image_url }));
+  useEffect(() => {
+    localStorage.setItem("cue.captions", captionsOn ? "on" : "off");
+  }, [captionsOn]);
+  useEffect(() => {
+    if (audio !== "active") return;
+    const timer = setInterval(() => tick((n) => n + 1), 1000);
+    return () => clearInterval(timer);
+  }, [audio]);
+  useEffect(() => {
+    // The host sizes the window to this element.
+    const el = root.current!;
+    const observer = new ResizeObserver(() => {
+      const box = el.getBoundingClientRect();
+      void window.cue.resize?.({
+        width: Math.ceil(box.width),
+        height: Math.ceil(box.height),
+      });
     });
-    setWorking(false);
-  }
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, []);
+  useEffect(() => {
+    // Grow with the draft up to a few lines, then scroll.
+    const el = input.current;
+    if (!el) return;
+    el.style.height = "auto";
+    el.style.height = Math.min(el.scrollHeight, 120) + "px";
+  }, [text, expanded, view]);
+  const active = messages.find(busy),
+    sending = !!active || !!pending,
+    audioBusy = ["starting", "stopping"].includes(audio),
+    captionText = joinCaptions(captions.map((c) => c.text)),
+    // Beyond half the screen the answer scrolls inside the card.
+    limit = Math.round(screen.availHeight * 0.5);
   async function toggleAudio() {
-    if (audio === "starting" || audio === "stopping") return;
+    if (audioBusy) return;
     const start = audio === "idle";
     setAudio(start ? "starting" : "stopping");
     try {
@@ -287,26 +341,6 @@ export default function App() {
       setAudio("idle");
       setError(String(e));
     }
-  }
-  async function showPanel(name: string) {
-    setPanel(panel === name ? "" : name);
-    if (name === "settings" && panel !== name) {
-      setSourceBusy(true);
-      await attempt(async () => {
-        const choices = await window.cue.sources();
-        setSources(choices);
-        setSource(choices.find((choice) => choice.selected)?.id || "");
-      });
-      setSourceBusy(false);
-    }
-  }
-  async function selectSource(id: string) {
-    setSourceBusy(true);
-    await attempt(async () => {
-      await window.cue.selectSource(id);
-      setSource(id);
-    });
-    setSourceBusy(false);
   }
   async function preview(id: string) {
     if (previews[id]) return;
@@ -317,153 +351,146 @@ export default function App() {
         [id]: "data:" + v.mimeType + ";base64," + v.data,
       }));
     });
-  }  const input = useRef<HTMLTextAreaElement>(null);
-  useEffect(() => {
-    // Grow with the draft up to a few lines; the message list keeps the rest.
-    const el = input.current;
-    if (!el) return;
-    el.style.height = "auto";
-    el.style.height = Math.min(el.scrollHeight, 168) + "px";
-  }, [text]);
-  useEffect(() => {
-    if (!panel) return;
-    const close = (e: KeyboardEvent) => {
-      if (e.key === "Escape") setPanel("");
-    };
-    window.addEventListener("keydown", close);
-    return () => window.removeEventListener("keydown", close);
-  }, [panel]);
-  const chatTitle = chats.find((c) => c.id === chat)?.title || "聊天";
-  const audioBusy = ["starting", "stopping"].includes(audio);
+  }
+  /** The native menu returns a choice; hiding, quitting and links stay native. */
+  async function more() {
+    const choice = await attempt(() => window.cue.menu!({ effort }));
+    if (!choice) return;
+    if (typeof choice.effort === "string") setEffort(choice.effort);
+    else if (choice.source)
+      void attempt(() => window.cue.selectSource(choice.source));
+    else if (choice.action === "transcript") {
+      setExpanded(true);
+      setView("transcript");
+    } else if (choice.action === "materials")
+      void attempt(() => window.cue.uploadMaterials());
+    else if (choice.action === "connection")
+      void attempt(() => window.cue.importConnection());
+    else if (choice.action === "privacy")
+      void attempt(() => window.cue.openPrivacy!());
+  }
+  const image = view.startsWith("image:") ? view.slice(6) : "";
 
   return (
-    <div className="cue-app">
-      {imagePreview && (
-        <div
-          className="image-preview"
-          role="dialog"
-          aria-modal="true"
-          aria-label="截图预览"
-          onClick={() => setImagePreview("")}
-          onKeyDown={(e) => {
-            if (e.key === "Escape") setImagePreview("");
-          }}
-        >
-          <Button
-            isIconOnly
-            variant="secondary"
-            aria-label="关闭预览"
-            className="image-preview-close"
-            autoFocus
-            onPress={() => setImagePreview("")}
-          >
-            <X />
-          </Button>
-          {previews[imagePreview] ? (
-            <img src={previews[imagePreview]} alt="截图原图" />
-          ) : (
-            <Spinner size="sm" color="current" />
-          )}
-        </div>
-      )}
-      <header className="topbar">
+    <div className="overlay" ref={root}>
+      <header className="bar glass">
         <span
           className={"status-dot " + (connected ? "online" : "")}
+          title={status}
           aria-hidden="true"
         />
         <span className="connection sr-only" role="status">
           {status}
         </span>
-        <Dropdown>
+        <Tip label={audio === "active" ? "停止转录" : "开始转录"}>
           <Button
-            variant="ghost"
             size="sm"
-            className="chat-trigger"
-            aria-label="切换聊天"
-            isDisabled={sending || !chats.length}
+            variant="ghost"
+            className="record-button"
+            isDisabled={!connected || audioBusy}
+            onPress={() => void toggleAudio()}
           >
-            <span className="truncate">{chatTitle}</span>
-            <CaretDown className="text-muted" />
+            {audioBusy ? (
+              <>
+                <Spinner size="sm" color="current" />
+                {audio === "starting" ? "开启中" : "收尾中"}
+              </>
+            ) : audio === "active" ? (
+              <>
+                <span className="record-dot" aria-hidden="true" />
+                <span className="clock">{clock(Date.now() - since)}</span>
+              </>
+            ) : (
+              <>
+                <Waveform />
+                转录
+              </>
+            )}
           </Button>
-          <Dropdown.Popover placement="bottom start" className="chat-menu">
-            <Dropdown.Menu aria-label="聊天">
-              {chats.map((c) => (
-                <Dropdown.Item
-                  key={c.id}
-                  id={c.id}
-                  textValue={c.title}
-                  onAction={() => choose(c.id)}
-                >
-                  <Label className="truncate">{c.title}</Label>
-                  {c.id === chat && <Check className="ml-auto text-accent" />}
-                </Dropdown.Item>
-              ))}
-            </Dropdown.Menu>
-          </Dropdown.Popover>
-        </Dropdown>
-        <IconAction
-          label="新聊天"
-          isDisabled={!connected || sending}
-          onPress={() => void attempt(() => command({ type: "new_chat" }))}
-        >
-          <Plus />
-        </IconAction>
-        <span className="flex-1" />
-        <Button
-          size="sm"
-          variant={audio === "active" ? "danger-soft" : "ghost"}
-          className={"record-button " + (audio === "active" ? "recording" : "")}
-          isDisabled={!connected || audioBusy}
-          onPress={() => void toggleAudio()}
-        >
-          {audioBusy ? (
-            <Spinner size="sm" color="current" />
-          ) : audio === "active" ? (
-            <span className="record-dot" aria-hidden="true" />
-          ) : (
-            <Waveform />
-          )}
-          {audio === "active"
-            ? "停止转录"
-            : audio === "starting"
-              ? "开启中"
-              : audio === "stopping"
-                ? "收尾中"
-                : "开始转录"}
-        </Button>
-        <IconAction
-          label="转录"
-          pressed={panel === "transcript"}
-          className="transcript-toggle"
-          onPress={() => void showPanel("transcript")}
-        >
-          <Subtitles />
-          {visibleTurns.length > 0 && (
-            <span className="count-badge">{visibleTurns.length}</span>
-          )}
-        </IconAction>
-        <IconAction
-          label={pinned ? "取消置顶" : "置顶"}
-          className={pinned ? "pin-on" : ""}
-          onPress={() =>
-            void attempt(async () => {
-              await window.cue.pin(!pinned);
-              setPinned(!pinned);
-            })
-          }
-        >
-          {pinned ? <PushPin weight="fill" /> : <PushPinSlash />}
-        </IconAction>
-        <IconAction
-          label="设置"
-          pressed={panel === "settings"}
-          onPress={() => void showPanel("settings")}
-        >
-          <GearSix />
-        </IconAction>
+        </Tip>
+        <Tip label={captionsOn ? "关闭面试官字幕" : "显示面试官字幕"}>
+          <Button
+            isIconOnly
+            size="sm"
+            variant="ghost"
+            aria-label={captionsOn ? "关闭面试官字幕" : "显示面试官字幕"}
+            aria-pressed={captionsOn}
+            onPress={() => setCaptionsOn(!captionsOn)}
+          >
+            <Subtitles weight={captionsOn ? "fill" : "regular"} />
+          </Button>
+        </Tip>
+        <Tip label={"截图（Ctrl+Alt+S），随下一次提问发送"}>
+          <Button
+            size="sm"
+            variant="ghost"
+            className="shot-button"
+            aria-label="截图"
+            isDisabled={!connected || working}
+            onPress={() => void shot()}
+          >
+            {working ? <Spinner size="sm" color="current" /> : <Camera />}
+            {selected.length > 0 && (
+              <span className="shot-count">{selected.length}</span>
+            )}
+          </Button>
+        </Tip>
+        {sending ? (
+          <Tip label={"停止生成"}>
+            <Button
+              size="sm"
+              variant="secondary"
+              className="answer-button"
+              onPress={() =>
+                void attempt(() =>
+                  command({ type: "cancel", id: active?.id || pending }),
+                )
+              }
+            >
+              <Stop weight="fill" />
+              停止
+            </Button>
+          </Tip>
+        ) : (
+          <Tip label={"回答当前问题（Ctrl+Alt+Enter）"}>
+            <Button
+              size="sm"
+              variant="primary"
+              className="answer-button"
+              isDisabled={!connected || working || audioBusy}
+              onPress={() => void ask()}
+            >
+              <ArrowUp weight="bold" />
+              回答
+            </Button>
+          </Tip>
+        )}
+        <span className="separator" aria-hidden="true" />
+        <Tip label={"更多"}>
+          <Button
+            isIconOnly
+            size="sm"
+            variant="ghost"
+            aria-label="更多"
+            onPress={() => void more()}
+          >
+            <DotsThree weight="bold" />
+          </Button>
+        </Tip>
+        <Tip label={expanded ? "收起" : "展开"}>
+          <Button
+            isIconOnly
+            size="sm"
+            variant="ghost"
+            aria-label={expanded ? "收起" : "展开"}
+            onPress={() => setExpanded(!expanded)}
+          >
+            {expanded ? <CaretUp /> : <CaretDown />}
+          </Button>
+        </Tip>
       </header>
       {!connected && status !== "正在连接…" && (
-        <div className="banner" role="status">
+        <div className="banner glass" role="status">
           <span>{status}</span>
           <Button
             size="sm"
@@ -477,7 +504,7 @@ export default function App() {
         </div>
       )}
       {error && (
-        <div className="notice" role="alert">
+        <div className="notice glass" role="alert">
           <span>{error}</span>
           <Button
             isIconOnly
@@ -490,304 +517,252 @@ export default function App() {
           </Button>
         </div>
       )}
-      {panel === "settings" && (
-        <>
-          <div
-            className="sheet-backdrop"
-            aria-hidden="true"
-            onClick={() => setPanel("")}
-          />
-          <section className="settings-sheet" aria-label="设置">
-            <div className="field">
-              <label htmlFor="effort">回答深度</label>
-              <select
-                id="effort"
-                value={effort}
-                onChange={(e) => setEffort(e.target.value)}
-              >
-                <option value="">跟随网页设置</option>
-                <option value="low">快速</option>
-                <option value="medium">均衡</option>
-                <option value="high">深入</option>
-                <option value="xhigh">最深入</option>
-              </select>
-              <p className="hint">越深入，通常越慢。</p>
-            </div>
-            <div className="field">
-              <label htmlFor="source">截图来源</label>
-              <select
-                id="source"
-                value={source}
-                disabled={sourceBusy}
-                onChange={(e) => void selectSource(e.target.value)}
-              >
-                {!source && (
-                  <option value="" disabled>
-                    请选择截图来源
-                  </option>
+      {captionsOn && audio === "active" && (
+        <div
+          className={"captions glass" + (captionText ? "" : " waiting")}
+          aria-label="面试官字幕"
+        >
+          <p>{captionText || "等待面试官说话…"}</p>
+        </div>
+      )}
+      {expanded && (
+        <section className="card glass" aria-label="回答">
+          {view === "transcript" ? (
+            <div className="transcript" style={{ maxHeight: limit }}>
+              <div className="column">
+                <div className="card-head">
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    onPress={() => setView("answer")}
+                  >
+                    <ArrowLeft />
+                    回答
+                  </Button>
+                  <span className="hint">最近一小时 · 两路分开记录</span>
+                </div>
+                {!visibleTurns.length && (
+                  <p className="empty-note">还没有转录。</p>
                 )}
-                {sources.map((s) => (
-                  <option key={s.id} value={s.id} disabled={s.disabled}>
-                    {s.name || s.title}
-                  </option>
+                {visibleTurns.map((t) => (
+                  <div className="turn" key={t.id}>
+                    <div className="turn-meta">
+                      <span
+                        className={
+                          "speaker " +
+                          (t.speaker === "candidate" ? "me" : "them")
+                        }
+                      >
+                        {t.speaker === "candidate" ? "我" : "对方"}
+                      </span>
+                      <span>{time(t.created)}</span>
+                      {t.status === "partial" && <span>转录中</span>}
+                      {t.status === "interrupted" && <span>未完整确认</span>}
+                    </div>
+                    <p>{t.text || "…"}</p>
+                  </div>
                 ))}
-              </select>
-              {sources.some((s) => s.permission === "screen") && (
+                {images.length > 0 && (
+                  <>
+                    <div className="section-title">
+                      <h2>截图</h2>
+                      <span className="hint">点选后随下一次提问发送</span>
+                    </div>
+                    <div className="image-library">
+                      {images.map((i) => (
+                        <div className="saved-image" key={i.id}>
+                          <button
+                            className="thumb"
+                            aria-pressed={selected.includes(i.id)}
+                            onClick={() => {
+                              setSelected((s) =>
+                                s.includes(i.id)
+                                  ? s.filter((id) => id !== i.id)
+                                  : [...s, i.id].slice(-8),
+                              );
+                              void preview(i.id);
+                            }}
+                          >
+                            {previews[i.id] ? (
+                              <img src={previews[i.id]} alt="手动截图" />
+                            ) : (
+                              <span>{time(i.created)}</span>
+                            )}
+                            {selected.includes(i.id) && (
+                              <span className="thumb-check">
+                                <Check weight="bold" />
+                              </span>
+                            )}
+                          </button>
+                          <div className="image-actions">
+                            <Button
+                              size="sm"
+                              variant="ghost"
+                              onPress={() => {
+                                void preview(i.id);
+                                setView("image:" + i.id);
+                              }}
+                            >
+                              查看
+                            </Button>
+                            <Button
+                              size="sm"
+                              variant="ghost"
+                              isDisabled={sending}
+                              onPress={() =>
+                                void attempt(async () => {
+                                  await window.cue.request(
+                                    "/capture/images/" + i.id,
+                                    "DELETE",
+                                  );
+                                  setImages((v) =>
+                                    v.filter((x) => x.id !== i.id),
+                                  );
+                                  setSelected((v) =>
+                                    v.filter((x) => x !== i.id),
+                                  );
+                                })
+                              }
+                            >
+                              移除
+                            </Button>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </>
+                )}
+              </div>
+            </div>
+          ) : image ? (
+            <div className="image-full" style={{ maxHeight: limit }}>
+              <div className="card-head">
                 <Button
                   size="sm"
-                  variant="secondary"
-                  className="self-start"
-                  onPress={() => void attempt(() => window.cue.openPrivacy!())}
+                  variant="ghost"
+                  onPress={() => setView("transcript")}
                 >
-                  打开录屏权限设置
-                  <ArrowSquareOut />
+                  <ArrowLeft />
+                  返回
                 </Button>
+              </div>
+              {previews[image] ? (
+                <img src={previews[image]} alt="截图原图" />
+              ) : (
+                <Spinner size="sm" color="current" />
               )}
             </div>
-            <div className="field">
-              <label htmlFor="chat-title">聊天名称</label>
-              <input
-                id="chat-title"
-                key={chat}
-                defaultValue={chatTitle}
-                maxLength={100}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter" && e.currentTarget.value.trim())
-                    void attempt(() =>
-                      command({
-                        type: "rename_chat",
-                        chat,
-                        title: e.currentTarget.value,
-                      }),
-                    );
+          ) : (
+            <>
+              <div
+                className="conversation exchange-view"
+                ref={list}
+                style={{ maxHeight: limit }}
+                onScroll={() => {
+                  const el = list.current!;
+                  follow.current =
+                    el.scrollHeight - el.scrollTop - el.clientHeight < 70;
                 }}
-              />
-              <p className="hint">按 Enter 保存。</p>
-            </div>
-            <div className="sheet-actions">
-              <Button
-                size="sm"
-                variant="secondary"
-                onPress={() => void attempt(() => window.cue.uploadMaterials())}
               >
-                更新资料
-              </Button>
-              <Button
-                size="sm"
-                variant="ghost"
-                onPress={() => void attempt(() => window.cue.openSettings())}
-              >
-                网页设置
-                <ArrowSquareOut />
-              </Button>
-              <Button
-                size="sm"
-                variant="ghost"
-                onPress={() =>
-                  void attempt(() => window.cue.importConnection())
-                }
-              >
-                连接设置
-              </Button>
-            </div>
-          </section>
-        </>
-      )}
-      {panel === "transcript" ? (
-        <section className="transcript" aria-label="转录">
-          <div className="column">
-            <div className="section-title">
-              <h2>转录</h2>
-              <span className="hint">最近一小时 · 电脑音频与麦克风分开记录</span>
-            </div>
-            {!visibleTurns.length && <p className="empty-note">还没有转录。</p>}
-            {visibleTurns.map((t) => (
-              <div className="turn" key={t.id}>
-                <div className="turn-meta">
-                  <span
-                    className={
-                      "speaker " + (t.speaker === "candidate" ? "me" : "them")
-                    }
-                  >
-                    {t.speaker === "candidate" ? "我" : "对方"}
-                  </span>
-                  <span>{time(t.created)}</span>
-                  {t.status === "partial" && <span>转录中</span>}
-                  {t.status === "interrupted" && <span>未完整确认</span>}
+                <div className="column">
+                  <OneExchange
+                    messages={messages}
+                    onTurn={(newest) => {
+                      follow.current = newest;
+                      if (list.current) list.current.scrollTop = 0;
+                    }}
+                  />
                 </div>
-                <p>{t.text || "…"}</p>
               </div>
-            ))}
-            {images.length > 0 && (
-              <>
-                <div className="section-title">
-                  <h2>截图</h2>
-                  <span className="hint">点选后随下一次提问发送</span>
-                </div>
-                <div className="image-library">
-                  {images.map((i) => (
-                    <div className="saved-image" key={i.id}>
-                      <button
-                        className="thumb"
-                        aria-pressed={selected.includes(i.id)}
-                        onClick={() => {
-                          setSelected((s) =>
-                            s.includes(i.id)
-                              ? s.filter((id) => id !== i.id)
-                              : [...s, i.id].slice(-8),
-                          );
-                          void preview(i.id);
-                        }}
-                      >
-                        {previews[i.id] ? (
-                          <img src={previews[i.id]} alt="手动截图" />
+              <div className="composer">
+                {selected.length > 0 && (
+                  <div className="attachments">
+                    {selected.map((id, index) => (
+                      <div className="attachment" key={id}>
+                        {previews[id] ? (
+                          <img src={previews[id]} alt={"截图 " + (index + 1)} />
                         ) : (
-                          <span>{time(i.created)}</span>
+                          <span>截图 {index + 1}</span>
                         )}
-                        {selected.includes(i.id) && (
-                          <span className="thumb-check">
-                            <Check weight="bold" />
-                          </span>
-                        )}
-                      </button>
-                      <div className="image-actions">
-                        <Button
-                          size="sm"
-                          variant="ghost"
-                          onPress={() => {
-                            void preview(i.id);
-                            setImagePreview(i.id);
-                          }}
-                        >
-                          查看
-                        </Button>
-                        <Button
-                          size="sm"
-                          variant="ghost"
-                          isDisabled={sending}
-                          onPress={() =>
-                            void attempt(async () => {
-                              await window.cue.request(
-                                "/capture/images/" + i.id,
-                                "DELETE",
-                              );
-                              setImages((v) => v.filter((x) => x.id !== i.id));
-                              setSelected((v) => v.filter((x) => x !== i.id));
-                            })
+                        <button
+                          aria-label="移除附件"
+                          onClick={() =>
+                            setSelected((s) => s.filter((x) => x !== id))
                           }
                         >
-                          移除
-                        </Button>
+                          <X weight="bold" />
+                        </button>
                       </div>
-                    </div>
-                  ))}
-                </div>
-              </>
-            )}
-          </div>
-        </section>
-      ) : (
-        <div
-          className="conversation"
-          ref={list}
-          onScroll={() => {
-            const el = list.current!;
-            follow.current =
-              el.scrollHeight - el.scrollTop - el.clientHeight < 70;
-          }}
-          aria-label="聊天记录"
-        >
-          <div className="column">
-            <MessageList messages={messages} />
-          </div>
-        </div>
-      )}
-      <footer className="composer-dock">
-        <div className="composer">
-          {selected.length > 0 && (
-            <div className="attachments">
-              {selected.map((id, index) => (
-                <div className="attachment" key={id}>
-                  {previews[id] ? (
-                    <img src={previews[id]} alt={"截图 " + (index + 1)} />
+                    ))}
+                  </div>
+                )}
+                <div className="composer-row">
+                  <textarea
+                    ref={input}
+                    rows={1}
+                    aria-label="追问或补充"
+                    placeholder="追问或补充…"
+                    value={text}
+                    // The window takes keyboard focus only for typing here.
+                    onPointerDown={() => void window.cue.focus?.(true)}
+                    onBlur={() => void window.cue.focus?.(false)}
+                    onChange={(e) => {
+                      setText(e.target.value);
+                      localStorage.setItem("cue.draft", e.target.value);
+                    }}
+                    onKeyDown={(e) => {
+                      if (e.key === "Escape") {
+                        setExpanded(false);
+                        e.currentTarget.blur();
+                      }
+                      if (
+                        e.key === "Enter" &&
+                        (e.metaKey || e.ctrlKey) &&
+                        !e.nativeEvent.isComposing
+                      ) {
+                        e.preventDefault();
+                        void ask();
+                      }
+                    }}
+                  />
+                  <kbd className="shortcut-hint">{shortcut}</kbd>
+                  {sending ? (
+                    <Button
+                      isIconOnly
+                      size="sm"
+                      variant="secondary"
+                      className="send-button"
+                      aria-label="停止生成"
+                      onPress={() =>
+                        void attempt(() =>
+                          command({
+                            type: "cancel",
+                            id: active?.id || pending,
+                          }),
+                        )
+                      }
+                    >
+                      <Stop weight="fill" />
+                    </Button>
                   ) : (
-                    <span>截图 {index + 1}</span>
+                    <Button
+                      isIconOnly
+                      size="sm"
+                      variant="primary"
+                      className="send-button"
+                      aria-label="回答"
+                      isDisabled={!connected || working || audioBusy}
+                      onPress={() => void ask()}
+                    >
+                      <ArrowUp weight="bold" />
+                    </Button>
                   )}
-                  <button
-                    aria-label="移除附件"
-                    onClick={() =>
-                      setSelected((s) => s.filter((x) => x !== id))
-                    }
-                  >
-                    <X weight="bold" />
-                  </button>
                 </div>
-              ))}
-            </div>
+              </div>
+            </>
           )}
-          <textarea
-            ref={input}
-            rows={1}
-            aria-label="补充问题"
-            placeholder="补充问题，或直接回答当前问题…"
-            value={text}
-            onChange={(e) => {
-              setText(e.target.value);
-              localStorage.setItem("cue.draft." + chat, e.target.value);
-            }}
-            onKeyDown={(e) => {
-              if (
-                e.key === "Enter" &&
-                (e.metaKey || e.ctrlKey) &&
-                !e.nativeEvent.isComposing
-              ) {
-                e.preventDefault();
-                void ask();
-              }
-            }}
-          />
-          <div className="composer-actions">
-            <Button
-              size="sm"
-              variant="ghost"
-              className="shot-button"
-              isDisabled={!connected || working}
-              onPress={() => void shot()}
-            >
-              {working ? <Spinner size="sm" color="current" /> : <Images />}
-              截图
-            </Button>
-            <span className="flex-1" />
-            <kbd className="shortcut-hint">{shortcut}</kbd>
-            {sending ? (
-              <Button
-                size="sm"
-                variant="secondary"
-                className="send-button"
-                onPress={() =>
-                  void attempt(() =>
-                    command({ type: "cancel", id: active?.id || pending }),
-                  )
-                }
-              >
-                <Stop weight="fill" />
-                停止
-              </Button>
-            ) : (
-              <Button
-                size="sm"
-                variant="primary"
-                className="send-button"
-                isDisabled={!connected || !chat || working || audioBusy}
-                onPress={() => void ask()}
-              >
-                <ArrowUp weight="bold" />
-                回答
-              </Button>
-            )}
-          </div>
-        </div>
-      </footer>
+        </section>
+      )}
     </div>
   );
 }

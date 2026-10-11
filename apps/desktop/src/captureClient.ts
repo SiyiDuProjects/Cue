@@ -25,10 +25,17 @@ if (host) {
     holding = new Set<string>();
   const queue: string[] = [];
   const report = (detail: string) => receive({ type: "error", detail });
-  const direct = directTranscription(send, (detail) => {
-    report(detail);
-    void stop().catch(() => endLocal());
-  });
+  const direct = directTranscription(
+    send,
+    (detail) => {
+      report(detail);
+      void stop().catch(() => endLocal());
+    },
+    // Interviewer captions stay in this window, never sent to the server.
+    ({ role, item, text }) => {
+      if (role === "interviewer") receive({ type: "caption", item, text });
+    },
+  );
   const wait = async (test: () => boolean, ms: number) => {
     const until = Date.now() + ms;
     while (!test()) {
@@ -235,7 +242,9 @@ if (host) {
       await host.importConnection();
       await open();
     },
-    pin: host.pin,
+    resize: host.resize,
+    focus: host.focus,
+    menu: host.menu,
     screenshot: async () => {
       const shot = await host.screenshot();
       const result = await host.request("/capture/images", "POST", {
@@ -248,6 +257,9 @@ if (host) {
   (window as any).sageCapture = { audio };
   window.addEventListener("sage:answer-requested", () =>
     receive({ type: "answer_requested" }),
+  );
+  window.addEventListener("sage:shot-requested", () =>
+    receive({ type: "shot_requested" }),
   );
   window.addEventListener("beforeunload", () => {
     stopped = true;

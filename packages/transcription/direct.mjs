@@ -6,9 +6,10 @@ export class DirectTranscription {
     send,
     makeVAD,
     fail,
+    caption,
     WebSocket: Socket = globalThis.WebSocket,
   }) {
-    Object.assign(this, { send, makeVAD, fail, Socket });
+    Object.assign(this, { send, makeVAD, fail, caption, Socket });
     this.channels = new Map();
     this.active = new Map();
     this.epoch = 0;
@@ -117,6 +118,7 @@ export class DirectTranscription {
               "";
             if (text.length > 30000) throw Error("Transcript too large");
             channel.text.set(event.item_id, text);
+            this.show(channel, event.item_id, text);
             // Coalesce partial text to one update/second/channel item. Final
             // events and ordered commit markers are always sent immediately.
             if (Date.now() - (channel.published.get(event.item_id) || 0) < 1000)
@@ -127,6 +129,11 @@ export class DirectTranscription {
             delete safe.delta;
           }
           this.send({ type: "asr_event", stream: channel.id, event: safe });
+          if (
+            event.type.endsWith(".completed") &&
+            typeof event.transcript === "string"
+          )
+            this.show(channel, event.item_id, event.transcript);
           if (
             event.type.endsWith(".completed") ||
             event.type.endsWith(".failed")
@@ -149,6 +156,13 @@ export class DirectTranscription {
     };
     ws.addEventListener("error", () => closed({ code: "error" }));
     ws.addEventListener("close", closed);
+  }
+  // Local live captions: every partial, never throttled and never sent to
+  // the Cue server. A display failure must not stop transcription.
+  show(channel, item, text) {
+    try {
+      this.caption?.({ role: channel.role, item, text });
+    } catch {}
   }
   pcm(role, buffer) {
     const channel = this.active.get(role);

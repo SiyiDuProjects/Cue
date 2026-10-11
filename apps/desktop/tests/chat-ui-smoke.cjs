@@ -15,7 +15,7 @@ app
     );
     const win = new BrowserWindow({
       width: 640,
-      height: 780,
+      height: 900,
       show: false,
       webPreferences: {
         preload: path.join(__dirname, "chat-ui-preload.cjs"),
@@ -23,7 +23,12 @@ app
         nodeIntegration: false,
       },
     });
-    const js = (code) => win.webContents.executeJavaScript(code);
+    const js = (code) =>
+      win.webContents.executeJavaScript(code).catch((error) => {
+        throw Error("Page script failed: " + code.slice(0, 160), {
+          cause: error,
+        });
+      });
     const wait = async (code) => {
       for (let i = 0; i < 100; i++) {
         if (await js("!!(" + code + ")")) return;
@@ -31,21 +36,45 @@ app
       }
       throw Error("UI timed out: " + code);
     };
+    const click = (selector) =>
+      js(`document.querySelector(${JSON.stringify(selector)}).click()`);
+    const event = (detail) =>
+      js(
+        `window.dispatchEvent(new CustomEvent('cue:event',{detail:${JSON.stringify(detail)}}))`,
+      );
+    const type = (text) =>
+      js(
+        `{const input=document.querySelector('textarea');Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype,'value').set.call(input,${JSON.stringify(text)});input.dispatchEvent(new Event('input',{bubbles:true}));}`,
+      );
     try {
       await win.loadFile(path.join(__dirname, "../dist/index.html"));
       await wait(
         "document.querySelector('.connection')?.textContent==='已连接'",
       );
-      assert.equal(
-        await js("document.querySelector('.wordmark').textContent"),
-        "Cue",
+      // One timeline: no chat controls; the newest chat is used silently.
+      await wait("window.lastHistory");
+      assert.deepEqual(
+        await js("[window.lastHistory.chat, window.lastHistory.scope]"),
+        ["chat", "recent"],
       );
-      await js("document.querySelector('.shot-button').click()");
-      await wait("document.querySelector('.attachments img')");
+      assert.equal(await js("document.body.textContent.includes('聊天')"), false);
+      // Starts as the bar only; the window follows the content size.
+      assert.equal(await js("document.querySelector('.card')"), null);
+      await wait("window.lastSize");
+      const collapsed = await js("window.lastSize");
+      assert.ok(collapsed.width < 560 && collapsed.height < 90, collapsed);
+      await click(".shot-button");
+      await wait("document.querySelector('.shot-count')?.textContent==='1'");
+      await click('[aria-label="展开"]');
+      await wait("document.querySelector('.card .attachments img')");
+      await wait("window.lastSize.width>=560");
+      // Typing asks the host for focus; clicks elsewhere never do.
       await js(
-        "const input=document.querySelector('textarea');Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype,'value').set.call(input,'如何处理重复元素？');input.dispatchEvent(new Event('input',{bubbles:true}));",
+        "document.querySelector('textarea').dispatchEvent(new PointerEvent('pointerdown',{bubbles:true}))",
       );
-      await js("document.querySelector('.send-button').click()");
+      assert.deepEqual(await js("window.focusCalls"), [true]);
+      await type("如何处理重复元素？");
+      await click(".send-button");
       // Summary streams openly while thinking, then folds once the answer starts.
       await wait(
         "document.querySelector('.reasoning-text')?.textContent.includes('哈希表') && !document.querySelector('.assistant-message .markdown')",
@@ -58,16 +87,10 @@ app
       );
       assert.equal(await js("window.lastAsk.images[0]"), "shot");
       assert.equal(await js("window.lastAsk.text"), "如何处理重复元素？");
+      assert.equal(await js("window.lastAsk.chat"), "chat");
       assert.equal(
         await js("document.querySelectorAll('.katex').length>0"),
         true,
-      );
-      fs.mkdirSync(path.join(__dirname, "../../../artifacts"), {
-        recursive: true,
-      });
-      fs.writeFileSync(
-        path.join(__dirname, "../../../artifacts/cue-chat-ui.png"),
-        (await win.webContents.capturePage()).toPNG(),
       );
       await wait(
         "document.querySelector('.copy') && !document.querySelector('.thinking')",
@@ -76,85 +99,80 @@ app
         await js("document.querySelector('details.reasoning').textContent"),
         /思路.*读题.*哈希表/s,
       );
-      await js("document.querySelector('.copy').click()");
+      await click(".copy");
       assert.equal(await js("window.copied"), "使用哈希表。");
-      await js("document.querySelector('[aria-label=\"设置\"]').click()");
-      await wait("document.querySelector('#source option')");
-      assert.equal(await js("document.querySelector('#effort').value"), "");
-      assert.equal(
-        await js("document.querySelector('#source').value"),
-        "screen:1",
-      );
-      assert.equal(
-        await js(
-          "document.querySelector('#source option[value=unavailable]').disabled",
-        ),
-        true,
-      );
-      // Missing access is shown as a link to System Settings, never requested here.
-      await js(
-        "[...document.querySelectorAll('button')].find(b=>b.textContent.includes('录屏权限')).click()",
-      );
-      await wait("window.privacyOpened === 1");
-      const choose = async (id) => {
-        await js(
-          `document.querySelector('#source').value=${JSON.stringify(id)};document.querySelector('#source').dispatchEvent(new Event('change',{bubbles:true}));`,
-        );
-        await wait("!document.querySelector('#source').disabled");
-      };
-      await choose("screen:0");
-      assert.equal(
-        await js("document.querySelector('#source').value"),
-        "screen:0",
-      );
-      await choose("screen:1");
-      assert.equal(
-        await js("document.querySelector('#source').value"),
-        "screen:1",
-      );
-      await js("window.rejectSource=true");
-      await choose("screen:0");
-      assert.equal(
-        await js("document.querySelector('#source').value"),
-        "screen:1",
-      );
-      await js("document.querySelector('[aria-label=\"设置\"]').click()");
-      assert.equal(await js("window.sourceReads"), 1);
-      await js("document.querySelector('[aria-label=\"设置\"]').click()");
+      // A second question from the bar; the card shows one exchange at a time.
+      await type("还有别的做法吗？");
+      await click(".answer-button");
       await wait(
-        "window.sourceReads===2 && !document.querySelector('#source').disabled",
+        "document.querySelector('.pager')?.textContent.includes('2 / 2') && document.querySelector('.copy')",
       );
-      assert.equal(
-        await js("document.querySelector('#source').value"),
-        "screen:1",
+      assert.equal(await js("document.querySelectorAll('.exchange').length"), 1);
+      await click('[aria-label="上一条"]');
+      await wait(
+        "document.querySelector('.user-message').textContent.includes('重复元素')",
       );
-      await win.setSize(440, 650);
-      assert.equal(
-        await js("document.documentElement.scrollWidth<=innerWidth"),
-        true,
+      // Native menu choices: depth, screenshot source and its failure.
+      await js("window.nextMenu={effort:'high'}");
+      await click('[aria-label="更多"]');
+      await wait("localStorage.getItem('cue.effort')==='high'");
+      assert.deepEqual(await js("window.menuState"), { effort: "" });
+      await js("window.nextMenu={source:'screen:0'}");
+      await click('[aria-label="更多"]');
+      await wait("window.selectedSource==='screen:0'");
+      await js("window.rejectSource=true;window.nextMenu={source:'screen:1'}");
+      await click('[aria-label="更多"]');
+      await wait("document.querySelector('.notice')?.textContent.includes('来源已关闭')");
+      // Interviewer captions show only while transcribing.
+      await click(".record-button");
+      await wait("document.querySelector('.captions.waiting')");
+      await event({ type: "caption", item: "i1", text: "好的，我们先从项目开始。" });
+      await event({ type: "caption", item: "i2", text: "缓存一致性" });
+      await event({ type: "caption", item: "i2", text: "缓存一致性怎么保证？" });
+      await wait(
+        "document.querySelector('.captions p').textContent==='好的，我们先从项目开始。缓存一致性怎么保证？'",
       );
-      await js(`
-        for (const turn of [
-          {id:'silence',text:'',status:'final'},
-          {id:'speech',text:'测试转录',status:'final'},
-          {id:'interrupted',text:'',status:'interrupted'},
-        ]) window.dispatchEvent(new CustomEvent('cue:event',{detail:{type:'transcript',turn:{...turn,speaker:'interviewer',created:1}}}));
-        document.querySelector('[aria-label="转录"]').click();
-      `);
+      await wait("document.querySelector('.clock')");
+      fs.mkdirSync(path.join(__dirname, "../../../artifacts"), {
+        recursive: true,
+      });
+      await win.setSize(640, 900);
+      fs.writeFileSync(
+        path.join(__dirname, "../../../artifacts/cue-chat-ui.png"),
+        (await win.webContents.capturePage()).toPNG(),
+      );
+      await click(".record-button");
+      await wait("!document.querySelector('.captions')");
+      // Transcript view inside the card.
+      for (const turn of [
+        { id: "silence", text: "", status: "final" },
+        { id: "speech", text: "测试转录", status: "final" },
+        { id: "interrupted", text: "", status: "interrupted" },
+      ])
+        await event({
+          type: "transcript",
+          turn: { ...turn, speaker: "interviewer", created: 1 },
+        });
+      await js("window.nextMenu={action:'transcript'}");
+      await click('[aria-label="更多"]');
       await wait("document.querySelectorAll('.turn').length===2");
       assert.match(
         await js("document.querySelector('.transcript').textContent"),
         /未完整确认/,
       );
-      await js(
-        "window.dispatchEvent(new CustomEvent('cue:event',{detail:{type:'replaced',detail:'连接已被替换'}}))",
-      );
-      await wait("document.querySelector('.reconnect')");
       assert.equal(
-        await js("document.querySelector('.send-button').disabled"),
+        await js("document.documentElement.scrollWidth<=innerWidth"),
         true,
       );
-      await js("document.querySelector('.reconnect').click()");
+      await click('[aria-label="收起"]');
+      await wait("!document.querySelector('.card') && window.lastSize.height<120");
+      await event({ type: "replaced", detail: "连接已被替换" });
+      await wait("document.querySelector('.reconnect')");
+      assert.equal(
+        await js("document.querySelector('.answer-button').disabled"),
+        true,
+      );
+      await click(".reconnect");
       await wait(
         "document.querySelector('.connection').textContent==='已连接'",
       );
@@ -162,9 +180,8 @@ app
         await js("document.querySelector('.reconnect')===null"),
         true,
       );
-      assert.equal(await js("localStorage.getItem('cue.chat')"), "chat");
       console.log(
-        "PASS chat, screenshot attachment, live then folded reasoning summary, streaming Markdown/table/math, copy, source restore/failure, silence display, manual reconnect and narrow layout; all network blocked",
+        "PASS overlay: hidden newest chat and recent history, content-sized window, focus only for typing, screenshot attachment, streaming reasoning/Markdown/table/math, copy, one exchange with paging, native menu depth/source/failure, interviewer captions, transcript view and manual reconnect; all network blocked",
       );
     } finally {
       win.destroy();

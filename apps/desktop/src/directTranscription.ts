@@ -8,10 +8,12 @@ import { receive, type Event } from "../../../packages/chat-ui/bridge";
 export function directTranscription(
   send: (event: Event) => void,
   fail: (detail: string) => void,
+  caption?: (value: { role: string; item: string; text: string }) => void,
 ) {
   return new DirectTranscription({
     send,
     fail,
+    caption,
     makeVAD: async () => {
       // Independent WASM instance and voice state for each channel/upstream.
       const VAD = await initializeVAD();
@@ -45,6 +47,10 @@ export function installMacTranscription() {
     (detail) => {
       receive({ type: "error", detail });
       void host.audio(false).catch(() => {});
+    },
+    // Interviewer captions go only to the native overlay, never the server.
+    ({ role, item, text }) => {
+      if (role === "interviewer") void host.caption?.({ item, text });
     },
   );
   window.cueReceive = (event) => {

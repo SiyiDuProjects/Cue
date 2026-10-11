@@ -6,58 +6,316 @@ import WebKit
 // current SDK spells @State as a macro. The property-wrapper type still works.
 private typealias ViewState<Value> = SwiftUI.State<Value>
 
-/// The window's SwiftUI content. Controls are native; the answer column is
-/// the shared web renderer, kept alive because it also runs transcription.
+/// Width shared by notices, captions and the answer card.
+private let cardWidth: CGFloat = 560
+
+/// The overlay: a control bar, then notices, interviewer captions and the
+/// answer card, each only while it has something to show. The answer page
+/// stays in the hierarchy when the card is closed because it also runs
+/// transcription.
 struct ChatRootView: View {
   @ObservedObject var model: ChatModel
   let web: WKWebView
   var body: some View {
     VStack(spacing: 0) {
+      ControlBar(model: model)
       if !model.connected && model.status != "正在连接…" {
-        Banner(text: model.status, tint: .orange) {
+        Notice(text: model.status, tint: .orange) {
           Button("重新连接") { Task { await model.reconnect() } }
         }
       }
       if !model.error.isEmpty {
-        Banner(text: model.error, tint: .red) {
+        Notice(text: model.error, tint: .red) {
           Button {
             model.error = ""
           } label: {
             Image(systemName: "xmark")
           }
-          .buttonStyle(.borderless)
           .help("关闭提示")
         }
       }
-      ZStack {
-        AnswerView(web: web)
-          .opacity(model.showTranscript ? 0 : 1)
-          .allowsHitTesting(!model.showTranscript)
-        if model.showTranscript { TranscriptPanel(model: model) }
-      }
-      Composer(model: model)
+      if model.captionsOn && model.audio == "active" { CaptionStrip(model: model) }
+      AnswerCard(model: model, web: web)
     }
-    .frame(minWidth: 440, minHeight: 480)
-    .background(Glass().ignoresSafeArea())
-    .toolbar { ChatToolbar(model: model) }
-    .sheet(
-      isPresented: Binding(
-        get: { model.imagePreview != nil }, set: { if !$0 { model.imagePreview = nil } })
-    ) {
-      if let id = model.imagePreview { ImagePreview(model: model, id: id) }
-    }
+    .fixedSize()
+    .onGeometryChange(for: CGSize.self) { $0.size } action: { model.resize($0) }
+    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+    // The overlay never activates Cue, so every click arrives as one.
+    .allowsWindowActivationEvents(true)
   }
 }
 
+/// Window for the full transcript and screenshot picker, opened from the menu.
+struct TranscriptRoot: View {
+  @ObservedObject var model: ChatModel
+  var body: some View {
+    TranscriptPanel(model: model)
+      .frame(minWidth: 420, minHeight: 360)
+      .sheet(
+        isPresented: Binding(
+          get: { model.imagePreview != nil }, set: { if !$0 { model.imagePreview = nil } })
+      ) {
+        if let id = model.imagePreview { ImagePreview(model: model, id: id) }
+      }
+  }
+}
+
+/// Behind-window blur clipped to a rounded shape. The window computes its
+/// shadow from this shape's alpha.
 private struct Glass: NSViewRepresentable {
+  let radius: CGFloat
   func makeNSView(context: Context) -> NSVisualEffectView {
     let view = NSVisualEffectView()
     view.material = .popover
     view.blendingMode = .behindWindow
     view.state = .active
+    let side = radius * 2 + 1
+    let mask = NSImage(size: NSSize(width: side, height: side), flipped: false) { rect in
+      NSColor.black.setFill()
+      NSBezierPath(roundedRect: rect, xRadius: radius, yRadius: radius).fill()
+      return true
+    }
+    mask.capInsets = NSEdgeInsets(top: radius, left: radius, bottom: radius, right: radius)
+    mask.resizingMode = .stretch
+    view.maskImage = mask
     return view
   }
   func updateNSView(_ view: NSVisualEffectView, context: Context) {}
+}
+
+private struct Surface: ViewModifier {
+  let radius: CGFloat
+  func body(content: Content) -> some View {
+    content
+      .background(Glass(radius: radius))
+      .overlay(RoundedRectangle(cornerRadius: radius).strokeBorder(.primary.opacity(0.12)))
+  }
+}
+
+/// The empty part of the control bar moves the window.
+private struct DragHandle: NSViewRepresentable {
+  let tip: String
+  final class Handle: NSView {
+    override func mouseDown(with event: NSEvent) { window?.performDrag(with: event) }
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+  }
+  func makeNSView(context: Context) -> Handle { Handle() }
+  func updateNSView(_ view: Handle, context: Context) { view.toolTip = tip }
+}
+
+/// Drawn by SwiftUI rather than AppKit controls, so the first click works
+/// while another app keeps focus.
+private struct PillButtonStyle: ButtonStyle {
+  var prominent = false
+  func makeBody(configuration: Configuration) -> some View {
+    PillLabel(configuration: configuration, prominent: prominent)
+  }
+}
+
+private struct PillLabel: View {
+  let configuration: ButtonStyleConfiguration
+  let prominent: Bool
+  @Environment(\.isEnabled) private var enabled
+  @ViewState private var hovering = false
+  var body: some View {
+    configuration.label
+      .font(.system(size: 13, weight: prominent ? .semibold : .regular))
+      .padding(.horizontal, 9)
+      .frame(minWidth: 30, minHeight: 30)
+      .foregroundStyle(prominent ? Color.white : Color.primary)
+      .background(Capsule().fill(fill))
+      .contentShape(Capsule())
+      .opacity(enabled ? 1 : 0.4)
+      .onHover { hovering = $0 }
+  }
+  private var fill: Color {
+    if prominent { return Color.accentColor.opacity(configuration.isPressed ? 0.75 : 1) }
+    return Color.primary.opacity(configuration.isPressed ? 0.16 : hovering && enabled ? 0.08 : 0)
+  }
+}
+
+private struct ControlBar: View {
+  @ObservedObject var model: ChatModel
+  var body: some View {
+    HStack(spacing: 2) {
+      Circle()
+        .fill(model.connected ? Color.green : Color.secondary.opacity(0.5))
+        .frame(width: 8, height: 8)
+        .frame(width: 26, height: 30)
+        .overlay(DragHandle(tip: model.status))
+      AudioButton(model: model)
+      Button {
+        model.captionsOn.toggle()
+      } label: {
+        Image(systemName: model.captionsOn ? "captions.bubble.fill" : "captions.bubble")
+      }
+      .help(model.captionsOn ? "关闭面试官字幕" : "显示面试官字幕")
+      Button(action: model.shot) {
+        if model.working {
+          ProgressView().controlSize(.mini)
+        } else {
+          HStack(spacing: 3) {
+            Image(systemName: "camera.viewfinder")
+            if !model.selected.isEmpty {
+              Text("\(model.selected.count)").font(.caption.weight(.semibold)).monospacedDigit()
+            }
+          }
+        }
+      }
+      .disabled(!model.connected || model.working)
+      .help("截图（⌃⌥⌘S），随下一次提问发送")
+      if model.sending {
+        Button(action: model.cancel) {
+          Label("停止", systemImage: "stop.fill")
+        }
+        .help("停止生成")
+      } else {
+        Button(action: model.ask) {
+          Label("回答", systemImage: "arrow.up")
+        }
+        .buttonStyle(PillButtonStyle(prominent: true))
+        .disabled(!model.connected || model.working || model.audioBusy)
+        .help("回答当前问题（⌃⌥⌘↩）")
+      }
+      Divider().frame(height: 16).padding(.horizontal, 3)
+      MoreMenu(model: model)
+      Button {
+        model.expanded.toggle()
+      } label: {
+        Image(systemName: model.expanded ? "chevron.up" : "chevron.down")
+      }
+      .help(model.expanded ? "收起" : "展开")
+    }
+    .buttonStyle(PillButtonStyle())
+    .padding(4)
+    .modifier(Surface(radius: 19))
+  }
+}
+
+private struct AudioButton: View {
+  @ObservedObject var model: ChatModel
+  var body: some View {
+    Button(action: model.toggleAudio) {
+      if model.audioBusy {
+        HStack(spacing: 5) {
+          ProgressView().controlSize(.mini)
+          Text(model.audio == "starting" ? "开启中" : "收尾中")
+        }
+      } else if model.audio == "active", let since = model.audioSince {
+        HStack(spacing: 6) {
+          Circle().fill(Color.red).frame(width: 7, height: 7)
+          TimelineView(.periodic(from: since, by: 1)) { context in
+            Text(Self.clock(context.date.timeIntervalSince(since))).monospacedDigit()
+          }
+        }
+      } else {
+        Label("转录", systemImage: "waveform")
+      }
+    }
+    .disabled(!model.connected || model.audioBusy)
+    .help(model.audio == "active" ? "停止转录" : "开始转录")
+  }
+  static func clock(_ elapsed: TimeInterval) -> String {
+    let s = max(0, Int(elapsed))
+    return s >= 3600
+      ? String(format: "%d:%02d:%02d", s / 3600, s / 60 % 60, s % 60)
+      : String(format: "%02d:%02d", s / 60, s % 60)
+  }
+}
+
+private struct MoreMenu: View {
+  @ObservedObject var model: ChatModel
+  var body: some View {
+    Menu {
+      Picker("回答深度", selection: $model.effort) {
+        Text("跟随网页设置").tag("")
+        Text("快速").tag("low")
+        Text("均衡").tag("medium")
+        Text("深入").tag("high")
+        Text("最深入").tag("xhigh")
+      }
+      .pickerStyle(.menu)
+      Button("转录与截图…", action: model.openTranscript)
+      Divider()
+      Button("更新个人资料…", action: model.uploadMaterials)
+      Button("网页设置…", action: model.openWebSettings)
+      Button("连接设置…", action: model.importConnection)
+      if !ScreenAccess.granted {
+        Button("打开录屏权限设置…", action: model.openPrivacy)
+      }
+      Divider()
+      Button("隐藏（⌃⌥⌘\\）", action: model.hide)
+      Button("退出 Cue") { NSApp.terminate(nil) }
+    } label: {
+      Image(systemName: "ellipsis")
+    }
+    .menuStyle(.button)
+    .menuIndicator(.hidden)
+    .fixedSize()
+    .help("更多")
+  }
+}
+
+private struct Notice<Action: View>: View {
+  let text: String
+  let tint: Color
+  @ViewBuilder let action: () -> Action
+  var body: some View {
+    HStack(spacing: 8) {
+      Text(text).font(.callout).frame(maxWidth: .infinity, alignment: .leading)
+        .textSelection(.enabled)
+      action().buttonStyle(PillButtonStyle())
+    }
+    .padding(.leading, 12)
+    .padding(.trailing, 4)
+    .padding(.vertical, 3)
+    .frame(width: cardWidth)
+    .background(tint.opacity(0.14), in: RoundedRectangle(cornerRadius: 12))
+    .modifier(Surface(radius: 12))
+    .padding(.top, 8)
+  }
+}
+
+/// Two reserved lines so the card below does not jump as speech arrives;
+/// older words scroll off the front.
+private struct CaptionStrip: View {
+  @ObservedObject var model: ChatModel
+  var body: some View {
+    let text = model.captionText
+    Text(text.isEmpty ? "等待面试官说话…" : text)
+      .font(.system(size: 15, weight: .medium))
+      .foregroundStyle(text.isEmpty ? .tertiary : .primary)
+      .lineLimit(2, reservesSpace: true)
+      .truncationMode(.head)
+      .frame(width: cardWidth - 28, alignment: .leading)
+      .padding(.horizontal, 14)
+      .padding(.vertical, 8)
+      .modifier(Surface(radius: 12))
+      .padding(.top, 8)
+      .accessibilityLabel("面试官字幕")
+  }
+}
+
+private struct AnswerCard: View {
+  @ObservedObject var model: ChatModel
+  let web: WKWebView
+  var body: some View {
+    let open = model.expanded
+    // Beyond half the screen the page scrolls inside the card.
+    let limit = (NSScreen.main?.visibleFrame.height ?? 900) * 0.5
+    let height = min(model.answerHeight, limit)
+    VStack(spacing: 0) {
+      AnswerView(web: web)
+        .frame(height: open ? height : 0)
+        .padding(.bottom, open && height > 0 ? 8 : 0)
+      if open { Composer(model: model) }
+    }
+    .padding(open ? 10 : 0)
+    .frame(width: cardWidth)
+    .modifier(Surface(radius: 16))
+    .opacity(open ? 1 : 0)
+    .padding(.top, open ? 8 : 0)
+  }
 }
 
 private struct AnswerView: NSViewRepresentable {
@@ -66,128 +324,119 @@ private struct AnswerView: NSViewRepresentable {
   func updateNSView(_ view: WKWebView, context: Context) {}
 }
 
-private struct Banner<Action: View>: View {
-  let text: String
-  let tint: Color
-  @ViewBuilder let action: () -> Action
-  var body: some View {
-    HStack(spacing: 8) {
-      Text(text).font(.callout).frame(maxWidth: .infinity, alignment: .leading)
-        .textSelection(.enabled)
-      action().controlSize(.small)
-    }
-    .padding(.horizontal, 12)
-    .padding(.vertical, 7)
-    .background(tint.opacity(0.13), in: RoundedRectangle(cornerRadius: 10))
-    .padding(.horizontal, 12)
-    .padding(.top, 6)
-  }
-}
-
-private struct ChatToolbar: ToolbarContent {
+private struct Composer: View {
   @ObservedObject var model: ChatModel
-  @ViewState private var settings = false
-  var body: some ToolbarContent {
-    ToolbarItem(placement: .navigation) {
-      Menu {
-        ForEach(model.chats) { item in
-          Button {
-            model.choose(item.id)
-          } label: {
-            if item.id == model.chat {
-              Label(item.title, systemImage: "checkmark")
-            } else {
-              Text(item.title)
+  var body: some View {
+    VStack(alignment: .leading, spacing: 6) {
+      if !model.selected.isEmpty {
+        ScrollView(.horizontal, showsIndicators: false) {
+          HStack(spacing: 8) {
+            ForEach(Array(model.selected.enumerated()), id: \.element) { index, id in
+              Attachment(model: model, id: id, index: index)
             }
           }
-        }
-        Divider()
-        Button("新聊天") { model.newChat() }
-      } label: {
-        HStack(spacing: 6) {
-          Circle()
-            .fill(model.connected ? Color.green : Color.secondary.opacity(0.5))
-            .frame(width: 7, height: 7)
-            .help(model.status)
-          Text(model.chatTitle).lineLimit(1)
+          .padding(.top, 4)
         }
       }
-      .disabled(model.sending || model.chats.isEmpty)
-    }
-    ToolbarItem(placement: .navigation) {
-      Button {
-        model.newChat()
-      } label: {
-        Label("新聊天", systemImage: "square.and.pencil")
-      }
-      .disabled(!model.connected || model.sending)
-      .help("新聊天")
-    }
-    // .primaryAction sits at the leading edge on macOS; .automatic is trailing.
-    ToolbarItemGroup(placement: .automatic) {
-      Button(action: model.toggleAudio) {
-        if model.audioBusy {
-          Label(model.audio == "starting" ? "开启中" : "收尾中", systemImage: "hourglass")
-        } else if model.audio == "active" {
-          Label("停止转录", systemImage: "stop.circle.fill").foregroundStyle(.red)
+      HStack(alignment: .bottom, spacing: 6) {
+        ZStack(alignment: .topLeading) {
+          // The hidden text sizes the editor; it grows to a few lines, then scrolls.
+          Text(model.text.isEmpty ? " " : model.text + " ")
+            .padding(.horizontal, 5)
+            .padding(.vertical, 6)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .hidden()
+          if model.text.isEmpty {
+            Text("追问或补充…")
+              .foregroundStyle(.tertiary)
+              .padding(.horizontal, 6)
+              .padding(.vertical, 6)
+              .allowsHitTesting(false)
+          }
+          TextEditor(text: $model.text)
+            .scrollContentBackground(.hidden)
+            .scrollIndicators(.never)
+            .padding(.vertical, 6)
+            .onKeyPress(.return, phases: .down) { press in
+              guard press.modifiers.contains(.command) else { return .ignored }
+              model.ask()
+              return .handled
+            }
+            .onKeyPress(.escape) {
+              model.expanded = false
+              return .handled
+            }
+        }
+        .font(.body)
+        .frame(minHeight: 30, maxHeight: 120)
+        .fixedSize(horizontal: false, vertical: true)
+        Text("⌘↩").font(.caption).foregroundStyle(.tertiary).padding(.bottom, 8)
+        if model.sending {
+          Button(action: model.cancel) {
+            Image(systemName: "stop.fill")
+          }
+          .buttonStyle(PillButtonStyle())
+          .help("停止生成")
         } else {
-          Label("开始转录", systemImage: "waveform")
+          Button(action: model.ask) {
+            Image(systemName: "arrow.up")
+          }
+          .buttonStyle(PillButtonStyle(prominent: true))
+          .disabled(!model.connected || model.working || model.audioBusy)
+          .help("回答（⌘↩）")
         }
       }
-      .labelStyle(.titleAndIcon)
-      .disabled(!model.connected || model.audioBusy)
-      Toggle(isOn: $model.showTranscript) {
-        Label(
-          model.visibleTurns.isEmpty ? "转录" : "转录 \(model.visibleTurns.count)",
-          systemImage: "text.bubble")
-      }
-      .help("转录与截图")
-      Button(action: model.togglePin) {
-        Label(model.pinned ? "取消置顶" : "置顶", systemImage: model.pinned ? "pin.fill" : "pin")
-      }
-      .help(model.pinned ? "取消置顶" : "置顶")
-      Button {
-        settings.toggle()
-      } label: {
-        Label("设置", systemImage: "gearshape")
-      }
-      .help("设置")
-      .popover(isPresented: $settings, arrowEdge: .bottom) { SettingsPopover(model: model) }
     }
+    .padding(.leading, 6)
+    .padding(.trailing, 3)
+    .padding(.vertical, 3)
+    .background(.background.opacity(0.55), in: RoundedRectangle(cornerRadius: 12))
+    .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(.separator.opacity(0.6)))
   }
 }
 
-private struct SettingsPopover: View {
+private struct Attachment: View {
   @ObservedObject var model: ChatModel
-  @ViewState private var title = ""
+  let id: String
+  let index: Int
+  @ViewState private var previewing = false
   var body: some View {
-    Form {
-      Section {
-        Picker("回答深度", selection: $model.effort) {
-          Text("跟随网页设置").tag("")
-          Text("快速").tag("low")
-          Text("均衡").tag("medium")
-          Text("深入").tag("high")
-          Text("最深入").tag("xhigh")
-        }
-        if !ScreenAccess.granted {
-          Button("打开录屏权限设置…", action: model.openPrivacy)
+    ZStack(alignment: .topTrailing) {
+      Group {
+        if let picture = model.previews[id] {
+          Image(nsImage: picture).resizable().scaledToFill()
+        } else {
+          Text("截图 \(index + 1)").font(.caption2).foregroundStyle(.secondary)
         }
       }
-      Section {
-        TextField("聊天名称", text: $title)
-          .onSubmit { model.rename(title) }
+      .frame(width: 60, height: 42)
+      .background(.quaternary)
+      .clipShape(RoundedRectangle(cornerRadius: 8))
+      .onTapGesture {
+        model.loadPreview(id)
+        previewing = true
       }
-      Section {
-        Button("更新个人资料…", action: model.uploadMaterials)
-        Button("网页设置…", action: model.openWebSettings)
-        Button("连接设置…", action: model.importConnection)
+      .popover(isPresented: $previewing) {
+        if let picture = model.previews[id] {
+          Image(nsImage: picture).resizable().scaledToFit()
+            .frame(maxWidth: 720, maxHeight: 460)
+            .padding(8)
+        } else {
+          ProgressView().padding(40)
+        }
       }
+      Button {
+        model.selected.removeAll { $0 == id }
+      } label: {
+        Image(systemName: "xmark.circle.fill")
+          .symbolRenderingMode(.palette)
+          .foregroundStyle(.white, .black.opacity(0.6))
+      }
+      .buttonStyle(.plain)
+      .padding(2)
+      .help("移除附件")
     }
-    .formStyle(.grouped)
-    .frame(width: 320)
-    .fixedSize(horizontal: false, vertical: true)
-    .onAppear { title = model.chatTitle }
+    .onAppear { model.loadPreview(id) }
   }
 }
 
@@ -289,123 +538,6 @@ private struct ShotTile: View {
       .controlSize(.small)
     }
     .onAppear { model.loadPreview(shot.id) }
-  }
-}
-
-private struct Composer: View {
-  @ObservedObject var model: ChatModel
-  @FocusState private var focused: Bool
-  var body: some View {
-    VStack(alignment: .leading, spacing: 6) {
-      if !model.selected.isEmpty {
-        ScrollView(.horizontal, showsIndicators: false) {
-          HStack(spacing: 8) {
-            ForEach(Array(model.selected.enumerated()), id: \.element) { index, id in
-              Attachment(model: model, id: id, index: index)
-            }
-          }
-          .padding(.horizontal, 4)
-        }
-      }
-      ZStack(alignment: .topLeading) {
-        // The hidden text sizes the editor; it grows to a few lines, then scrolls.
-        Text(model.text.isEmpty ? " " : model.text + " ")
-          .padding(.horizontal, 5)
-          .padding(.vertical, 8)
-          .frame(maxWidth: .infinity, alignment: .leading)
-          .hidden()
-        if model.text.isEmpty {
-          Text("补充问题，或直接回答当前问题…")
-            .foregroundStyle(.tertiary)
-            .padding(.horizontal, 6)
-            .padding(.vertical, 8)
-            .allowsHitTesting(false)
-        }
-        TextEditor(text: $model.text)
-          .scrollContentBackground(.hidden)
-          .scrollIndicators(.never)
-          .focused($focused)
-          .padding(.vertical, 8)
-          .onKeyPress(.return, phases: .down) { press in
-            guard press.modifiers.contains(.command) else { return .ignored }
-            model.ask()
-            return .handled
-          }
-      }
-      .font(.body)
-      .frame(minHeight: 36, maxHeight: 160)
-      .fixedSize(horizontal: false, vertical: true)
-      HStack(spacing: 8) {
-        Button(action: model.shot) {
-          if model.working {
-            ProgressView().controlSize(.small)
-          } else {
-            Label("截图", systemImage: "camera.viewfinder")
-          }
-        }
-        .buttonStyle(.borderless)
-        .disabled(!model.connected || model.working)
-        .help("截取主屏幕，随下一次提问发送")
-        Spacer()
-        Text("⌘↩").font(.caption).foregroundStyle(.tertiary)
-        if model.sending {
-          Button(action: model.cancel) {
-            Label("停止", systemImage: "stop.fill")
-          }
-          .buttonStyle(.bordered)
-        } else {
-          Button(action: model.ask) {
-            Label("回答", systemImage: "arrow.up")
-          }
-          .buttonStyle(.borderedProminent)
-          .disabled(!model.connected || model.working || model.audioBusy)
-        }
-      }
-      .controlSize(.regular)
-    }
-    .padding(10)
-    .background(.background.opacity(0.92), in: RoundedRectangle(cornerRadius: 16))
-    .overlay(RoundedRectangle(cornerRadius: 16).strokeBorder(.separator.opacity(0.6)))
-    .shadow(color: .black.opacity(0.06), radius: 10, y: 2)
-    .padding(.horizontal, 12)
-    .padding(.bottom, 12)
-    .frame(maxWidth: 784)
-    .onAppear { focused = true }
-  }
-}
-
-private struct Attachment: View {
-  @ObservedObject var model: ChatModel
-  let id: String
-  let index: Int
-  var body: some View {
-    ZStack(alignment: .topTrailing) {
-      Group {
-        if let picture = model.previews[id] {
-          Image(nsImage: picture).resizable().scaledToFill()
-        } else {
-          Text("截图 \(index + 1)").font(.caption2).foregroundStyle(.secondary)
-        }
-      }
-      .frame(width: 60, height: 42)
-      .background(.quaternary)
-      .clipShape(RoundedRectangle(cornerRadius: 8))
-      .onTapGesture {
-        model.loadPreview(id)
-        model.imagePreview = id
-      }
-      Button {
-        model.selected.removeAll { $0 == id }
-      } label: {
-        Image(systemName: "xmark.circle.fill")
-          .symbolRenderingMode(.palette)
-          .foregroundStyle(.white, .black.opacity(0.6))
-      }
-      .buttonStyle(.plain)
-      .padding(2)
-      .help("移除附件")
-    }
-    .onAppear { model.loadPreview(id) }
   }
 }
 

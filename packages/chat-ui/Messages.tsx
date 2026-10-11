@@ -1,6 +1,8 @@
 import React, {
   Children,
   isValidElement,
+  useEffect,
+  useRef,
   useState,
   type ReactNode,
 } from "react";
@@ -10,9 +12,15 @@ import remarkMath from "remark-math";
 import rehypeKatex from "rehype-katex";
 import { Button, Spinner } from "@heroui/react";
 import { CodeBlock } from "@heroui-pro/react/code-block";
-import { Check, Copy, Images } from "@phosphor-icons/react";
+import {
+  CaretLeft,
+  CaretRight,
+  Check,
+  Copy,
+  Images,
+} from "@phosphor-icons/react";
 
-// Message rendering shared by the Windows window and the Mac answer view.
+// Message rendering shared by the Windows overlay and the Mac answer card.
 export type Message = {
   id: string;
   chat: string;
@@ -133,15 +141,6 @@ function Reasoning({ m }: { m: Message }) {
 }
 
 export function MessageList({ messages }: { messages: Message[] }) {
-  if (!messages.length)
-    return (
-      <div className="welcome">
-        <span className="wordmark">Cue</span>
-        <p>
-          截图或开始转录后，按 <kbd>{shortcut}</kbd> 回答当前问题
-        </p>
-      </div>
-    );
   return (
     <>
       {messages.map((m) => (
@@ -183,6 +182,67 @@ export function MessageList({ messages }: { messages: Message[] }) {
           </div>
         </article>
       ))}
+    </>
+  );
+}
+
+/**
+ * The answer card on both platforms: one exchange at a time, the newest
+ * unless paged back. A new question returns to the newest. `onTurn` tells
+ * the scroller whether the shown exchange is the newest.
+ */
+export function OneExchange({
+  messages,
+  onTurn,
+}: {
+  messages: Message[];
+  onTurn?: (newest: boolean) => void;
+}) {
+  // null follows the newest exchange; a number keeps an earlier one open.
+  const [page, setPage] = useState<number | null>(null);
+  const count = useRef(messages.length);
+  useEffect(() => {
+    if (messages.length > count.current) setPage(null);
+    count.current = messages.length;
+  }, [messages.length]);
+  const index =
+    page === null || page >= messages.length ? messages.length - 1 : page;
+  if (index < 0) return null;
+  const turn = (to: number) => {
+    const newest = to === messages.length - 1;
+    setPage(newest ? null : to);
+    onTurn?.(newest);
+  };
+  return (
+    <>
+      <MessageList messages={[messages[index]]} />
+      {messages.length > 1 && (
+        <nav className="pager" aria-label="切换回答">
+          <Button
+            isIconOnly
+            size="sm"
+            variant="ghost"
+            aria-label="上一条"
+            isDisabled={index === 0}
+            onPress={() => turn(index - 1)}
+          >
+            <CaretLeft />
+          </Button>
+          <span>
+            {index + 1} / {messages.length}
+          </span>
+          <Button
+            isIconOnly
+            size="sm"
+            variant="ghost"
+            aria-label="下一条"
+            isDisabled={index === messages.length - 1}
+            onPress={() => turn(index + 1)}
+          >
+            <CaretRight />
+          </Button>
+        </nav>
+      )}
     </>
   );
 }

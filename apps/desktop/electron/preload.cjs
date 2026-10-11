@@ -10,8 +10,9 @@ contextBridge.exposeInMainWorld("sageCaptureHost", {
   screenshot: () => ipcRenderer.invoke("sage:screenshot"),
   openSettings: () => ipcRenderer.invoke("sage:settings"),
   uploadMaterials: () => ipcRenderer.invoke("sage:materials"),
-  pin: (value) => ipcRenderer.invoke("sage:pin", value),
+  resize: (size) => ipcRenderer.invoke("sage:resize", size),
+  focus: (on) => ipcRenderer.invoke("sage:focus", on),
+  menu: (state) => ipcRenderer.invoke("sage:menu", state),
 });
-ipcRenderer.on("sage:answer-requested", () =>
-  window.dispatchEvent(new Event("sage:answer-requested")),
-);
+for (const name of ["sage:answer-requested", "sage:shot-requested"])
+  ipcRenderer.on(name, () => window.dispatchEvent(new Event(name)));

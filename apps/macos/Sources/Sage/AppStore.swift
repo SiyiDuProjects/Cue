@@ -151,6 +151,10 @@ import SageCore
           "type": "history", "chat": "preview",
           "messages": [
             [
+              "id": "preview-intro", "chat": "preview", "text": "", "status": "completed",
+              "answer": "先用一句话概括背景，再讲一个最能体现能力的项目。", "detail": "", "context": "{}",
+            ],
+            [
               "id": "preview", "chat": "preview", "text": "两数之和怎么做？", "answer": answer,
               "status": "completed", "detail": "", "context": "{}",
             ]

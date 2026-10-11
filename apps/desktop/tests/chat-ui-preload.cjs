@@ -16,6 +16,7 @@ window.cue = {
       50,
     ),
   command: async (v) => {
+    if (v.type === "history") window.lastHistory = v;
     if (v.type === "history")
       setTimeout(() => emit({ type: "history", chat: v.chat, messages }), 0);
     if (v.type === "ask") {
@@ -89,10 +90,23 @@ window.cue = {
   selectSource: async (id) => {
     if (window.rejectSource) throw Error("来源已关闭");
     source = id;
+    window.selectedSource = id;
   },
   uploadMaterials: async () => {},
   importConnection: async () => {},
-  pin: async () => {},
+  resize: async (size) => {
+    window.lastSize = size;
+  },
+  focus: async (on) => {
+    window.focusCalls = [...(window.focusCalls || []), on];
+  },
+  // The native menu: tests set the choice the user would pick.
+  menu: async (state) => {
+    window.menuState = state;
+    const choice = window.nextMenu || null;
+    window.nextMenu = null;
+    return choice;
+  },
   copy: async (text) => {
     window.copied = text;
   },

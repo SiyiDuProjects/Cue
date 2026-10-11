@@ -12,7 +12,9 @@ window.cue = {
       50,
     ),
   audio: async () => {},
+  caption: async (value) => window.captions.push(value),
 };
+window.captions = [];
 window.webkit = { messageHandlers: { cue: {} } };
 window.directControls = [];
 window.directSockets = [];

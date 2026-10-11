@@ -30,7 +30,7 @@ app.whenReady().then(async () => {
     await win.loadFile(path.join(__dirname, "../dist-mac/content.html"));
     await wait("!!document.querySelector('.content-view')");
     await run(
-      "for(const role of ['interviewer','candidate'])window.cueReceive({type:'asr_config',role,stream:role,token:'ek_synthetic',session:{type:'transcription'}})",
+      "for(const role of ['interviewer','candidate'])window.cueReceive({type:'asr_config',role,stream:role,token:'ek_synthetic',session:{type:'transcription',tag:role}})",
     );
     await wait(
       "window.directControls.filter(e=>e.type==='asr_ready').length===2",
@@ -57,11 +57,36 @@ app.whenReady().then(async () => {
       ),
       true,
     );
+    // Captions: every interviewer partial reaches the overlay at once, while
+    // the server still gets one coalesced partial; the candidate has none.
+    await run(`(() => {
+      const socket = (role) => window.directSockets.find((s) => s.sent[0].session.tag === role);
+      const emit = (role, event) => socket(role).dispatchEvent(new MessageEvent("message", { data: JSON.stringify(event) }));
+      const delta = "conversation.item.input_audio_transcription.delta";
+      emit("interviewer", { type: delta, item_id: "i1", delta: "你好" });
+      emit("interviewer", { type: delta, item_id: "i1", delta: "，请介绍" });
+      emit("candidate", { type: delta, item_id: "c1", delta: "我" });
+      emit("interviewer", { type: "conversation.item.input_audio_transcription.completed", item_id: "i1", transcript: "你好，请介绍一下。" });
+    })()`);
+    assert.deepEqual(await run("window.captions"), [
+      { item: "i1", text: "你好" },
+      { item: "i1", text: "你好，请介绍" },
+      { item: "i1", text: "你好，请介绍一下。" },
+    ]);
+    assert.deepEqual(
+      await run(
+        "window.directControls.filter(e=>e.type==='asr_event'&&e.event.item_id==='i1').map(e=>e.event.type)",
+      ),
+      [
+        "conversation.item.input_audio_transcription.full",
+        "conversation.item.input_audio_transcription.completed",
+      ],
+    );
     await run("window.cueReceive({type:'disconnected'})");
     assert.equal(await run("window.directSockets.every(s=>s.closed)"), true);
     assert.equal(await run("window.directSockets.length"), 2);
     console.log(
-      "PASS packaged Mac bridge, real VAD WASM, dual commit ordering and disconnect cleanup; network blocked",
+      "PASS packaged Mac bridge, real VAD WASM, dual commit ordering, local interviewer captions and disconnect cleanup; network blocked",
     );
     app.exit(0);
   } catch (error) {

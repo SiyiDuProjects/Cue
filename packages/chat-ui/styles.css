@@ -15,42 +15,183 @@ body {
   background: var(--background);
   color: var(--foreground);
 }
-.cue-app {
-  position: relative;
-  height: 100%;
+/* Windows overlay: a transparent window sized to this content. The bar
+   and the caption strip move the window. */
+body:has(.overlay) {
+  background: transparent;
+  overflow: hidden;
+}
+.overlay {
+  width: max-content;
   display: flex;
   flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px 16px;
   font-size: 14px;
-  background: var(--background);
 }
-/* Mac answer view: the native window draws the glass and every control. */
+.glass {
+  background: color-mix(in oklab, var(--background) 92%, transparent);
+  box-shadow:
+    0 6px 18px rgb(0 0 0 / 0.22),
+    inset 0 0 0 1px var(--border);
+}
+.bar {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  height: 40px;
+  padding: 0 5px;
+  border-radius: 999px;
+  -webkit-app-region: drag;
+}
+.bar .button,
+.card,
+.overlay .banner,
+.overlay .notice {
+  -webkit-app-region: no-drag;
+}
+.bar .button {
+  border-radius: 999px;
+}
+.bar .separator {
+  width: 1px;
+  height: 16px;
+  margin: 0 3px;
+  background: var(--separator);
+}
+.answer-button {
+  padding-inline: 12px;
+}
+.clock,
+.shot-count {
+  font-variant-numeric: tabular-nums;
+}
+.shot-count {
+  font-size: 12px;
+  font-weight: 600;
+}
+/* Two reserved lines; older words scroll off the top as speech arrives. */
+.captions {
+  width: 560px;
+  box-sizing: border-box;
+  height: calc(3em + 16px);
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  overflow: hidden;
+  padding: 8px 14px;
+  border-radius: 12px;
+  font-size: 15px;
+  font-weight: 500;
+  line-height: 1.5;
+  -webkit-app-region: drag;
+}
+.captions p {
+  margin: 0;
+}
+.captions.waiting {
+  color: var(--muted);
+}
+.card {
+  width: 560px;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px;
+  border-radius: 16px;
+}
+.card .conversation,
+.card .transcript,
+.image-full {
+  flex: none;
+  overflow-y: auto;
+}
+.card .column:empty {
+  display: none;
+}
+.card .transcript .column {
+  max-width: none;
+  padding: 0 6px 6px;
+  gap: 14px;
+}
+.card-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-left: -6px;
+}
+.image-full img {
+  display: block;
+  width: 100%;
+  border-radius: 8px;
+}
+/* Mac answer card: the native overlay draws the glass and every control. */
 html.mac body {
   background: transparent;
 }
 .content-view {
   height: 100%;
 }
-
-/* Top bar */
-.topbar {
+/* Answer card on both platforms: one exchange at a time; the question
+   shrinks to a single muted line. */
+.exchange-view .column {
+  position: relative;
+  max-width: none;
+  padding: 2px 6px 0;
+  gap: 0;
+}
+.exchange-view .exchange {
+  gap: 8px;
+}
+.exchange-view .user-message {
+  align-self: stretch;
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  max-width: none;
+  padding: 0;
+  border-radius: 0;
+  background: none;
+  color: var(--muted);
+  font-size: 12.5px;
+}
+.exchange-view .column:has(.pager) .user-message {
+  padding-right: 96px;
+}
+.exchange-view .user-message p {
+  flex: 0 1 auto;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.exchange-view .attachment-note {
+  flex-shrink: 0;
+  margin-top: 0;
+}
+.exchange-view .assistant-message {
+  font-size: 15px;
+}
+.pager {
+  position: absolute;
+  top: -6px;
+  right: 0;
   display: flex;
   align-items: center;
-  gap: 2px;
-  height: 48px;
-  padding: 0 10px;
-  flex-shrink: 0;
+  font-size: 12px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
 }
-.topbar .button--icon-only svg {
-  width: 18px;
-  height: 18px;
+.pager .button {
+  color: var(--muted);
 }
-.topbar .pin-on {
-  color: var(--accent);
-}
+
 .status-dot {
-  width: 7px;
-  height: 7px;
-  margin: 0 4px 0 6px;
+  width: 8px;
+  height: 8px;
+  margin: 0 8px 0 9px;
   border-radius: 50%;
   background: var(--muted);
   opacity: 0.45;
@@ -59,16 +200,6 @@ html.mac body {
 .status-dot.online {
   background: var(--success);
   opacity: 1;
-}
-.chat-trigger {
-  max-width: 44%;
-  min-width: 0;
-  font-weight: 600;
-  justify-content: flex-start;
-}
-.chat-menu {
-  min-width: 220px;
-  max-width: 320px;
 }
 .record-dot {
   width: 8px;
@@ -82,32 +213,14 @@ html.mac body {
     opacity: 0.35;
   }
 }
-.transcript-toggle {
-  position: relative;
-}
-.count-badge {
-  position: absolute;
-  top: 1px;
-  right: 0;
-  min-width: 15px;
-  height: 15px;
-  padding: 0 4px;
-  border-radius: 999px;
-  background: var(--accent);
-  color: var(--accent-foreground);
-  font-size: 9.5px;
-  font-weight: 600;
-  line-height: 15px;
-  font-variant-numeric: tabular-nums;
-}
-
 /* Status messages */
 .banner,
 .notice {
   display: flex;
   align-items: center;
   gap: 8px;
-  margin: 0 12px 8px;
+  width: 560px;
+  box-sizing: border-box;
   padding: 6px 6px 6px 12px;
   border-radius: 12px;
   font-size: 13px;
@@ -127,88 +240,11 @@ html.mac body {
   min-width: 0;
 }
 
-/* Settings sheet */
-.sheet-backdrop {
-  position: fixed;
-  inset: 0;
-  z-index: 20;
-}
-.settings-sheet {
-  position: absolute;
-  top: 46px;
-  right: 10px;
-  z-index: 21;
-  width: min(340px, calc(100% - 20px));
-  max-height: calc(100% - 58px);
-  overflow-y: auto;
-  display: flex;
-  flex-direction: column;
-  gap: 14px;
-  padding: 14px;
-  border-radius: 16px;
-  background: var(--overlay);
-  color: var(--overlay-foreground);
-  box-shadow: var(--overlay-shadow);
-}
-.field {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-.field label {
-  font-size: 12px;
-  font-weight: 500;
-  color: var(--muted);
-}
-.field select,
-.field input {
-  height: 34px;
-  padding: 0 10px;
-  border: var(--field-border-width) solid var(--field-border);
-  border-radius: var(--field-radius);
-  background-color: var(--field-background);
-  color: var(--field-foreground);
-  box-shadow: var(--field-shadow);
-  font: inherit;
-  font-size: 13px;
-  outline: none;
-}
-.field select {
-  appearance: none;
-  padding-right: 30px;
-  background-image:
-    linear-gradient(45deg, transparent 50%, var(--muted) 50%),
-    linear-gradient(135deg, var(--muted) 50%, transparent 50%);
-  background-size:
-    5px 5px,
-    5px 5px;
-  background-repeat: no-repeat;
-  background-position:
-    right 15px center,
-    right 10px center;
-  cursor: var(--cursor-interactive);
-}
-.field select:focus-visible,
-.field input:focus-visible {
-  box-shadow: 0 0 0 2px var(--focus);
-}
-.field select:disabled {
-  opacity: var(--disabled-opacity);
-}
 .hint {
   margin: 0;
   font-size: 12px;
   color: var(--muted);
 }
-.sheet-actions {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 6px;
-}
-.sheet-actions .button {
-  width: 100%;
-}
-
 /* Scrolling areas */
 .conversation,
 .transcript {
@@ -226,25 +262,6 @@ html.mac body {
   display: flex;
   flex-direction: column;
   gap: 24px;
-}
-.welcome {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 10px;
-  padding-top: 16vh;
-  color: var(--muted);
-  text-align: center;
-}
-.welcome p {
-  margin: 0;
-  font-size: 13px;
-}
-.wordmark {
-  font-size: 30px;
-  font-weight: 700;
-  letter-spacing: -0.03em;
-  color: var(--foreground);
 }
 kbd {
   display: inline-block;
@@ -444,16 +461,9 @@ kbd {
   color: var(--muted);
 }
 
-/* Composer */
-.composer-dock {
-  flex-shrink: 0;
-  padding: 0 12px 12px;
-}
 .composer {
-  max-width: 760px;
-  margin: 0 auto;
-  padding: 8px;
-  border-radius: 20px;
+  padding: 3px 3px 3px 6px;
+  border-radius: 12px;
   background: var(--surface);
   box-shadow: var(--surface-shadow);
 }
@@ -462,12 +472,18 @@ html.dark .composer {
     var(--surface-shadow),
     inset 0 0 0 1px var(--border);
 }
+.composer-row {
+  display: flex;
+  align-items: flex-end;
+  gap: 6px;
+}
 .composer textarea {
   display: block;
-  width: 100%;
-  min-height: 38px;
-  max-height: 168px;
-  padding: 6px 8px;
+  flex: 1;
+  min-width: 0;
+  min-height: 32px;
+  max-height: 120px;
+  padding: 5px 4px;
   border: 0;
   outline: none;
   resize: none;
@@ -480,17 +496,10 @@ html.dark .composer {
 .composer textarea::placeholder {
   color: var(--field-placeholder);
 }
-.composer-actions {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-}
 .shortcut-hint {
+  margin-bottom: 7px;
   background: transparent;
   color: var(--muted);
-}
-.send-button {
-  padding-inline: 14px;
 }
 .attachments {
   display: flex;
@@ -624,24 +633,6 @@ html.dark .composer {
   gap: 2px;
   margin: 4px 0 0 -8px;
 }
-
-/* Full-size screenshot */
-.image-preview {
-  position: fixed;
-  inset: 0;
-  z-index: 50;
-  display: grid;
-  place-items: center;
-  padding: 24px;
-  background: rgb(0 0 0 / 0.72);
-}
-.image-preview img {
-  max-width: 100%;
-  max-height: 100%;
-  border-radius: 8px;
-}
-.image-preview-close {
-  position: absolute;
-  top: 12px;
-  right: 12px;
+.tip {
+  display: contents;
 }

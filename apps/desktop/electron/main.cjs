@@ -11,7 +11,6 @@ const {
   Menu,
   net,
   nativeImage,
-  nativeTheme,
   session,
   safeStorage,
   screen,
@@ -43,6 +42,18 @@ let window,
   credentials,
   origin,
   renderer;
+// Overlay placement: the top-center point the user dragged it to. The page
+// reports its size and the window grows downward from there.
+const overlayFile = path.join(dataRoot, "overlay.json");
+let anchor,
+  fitting = false;
+const EFFORTS = [
+  ["", "跟随网页设置"],
+  ["low", "快速"],
+  ["medium", "均衡"],
+  ["high", "深入"],
+  ["xhigh", "最深入"],
+];
 const capture = createScreenCaptureService(desktopCapturer, screen, () =>
   BrowserWindow.getAllWindows(),
 );
@@ -140,9 +151,73 @@ function configure() {
   handle("sage:select", (id) => capture.selectSource(id));
   handle("sage:screenshot", () => capture.captureSnapshot());
   handle("sage:settings", () => shell.openExternal(origin + "/settings"));
-  handle("sage:pin", (value) => {
-    window.setAlwaysOnTop(value === true);
+  handle("sage:resize", (size) => {
+    fit(size);
     return {};
+  });
+  // Clicks never take focus; typing in the page's text box does.
+  handle("sage:focus", (on) => {
+    window.setFocusable(on === true);
+    if (on === true) window.focus();
+    return {};
+  });
+  // Native, so it is not clipped by the content-sized window.
+  handle("sage:menu", async (state) => {
+    const sources = await capture.listSources().catch(() => []);
+    return new Promise((resolve) => {
+      const pick = (value) => () => resolve(value);
+      Menu.buildFromTemplate([
+        {
+          label: "回答深度",
+          submenu: EFFORTS.map(([value, label]) => ({
+            label,
+            type: "radio",
+            checked: (state?.effort || "") === value,
+            click: pick({ effort: value }),
+          })),
+        },
+        {
+          label: "截图来源",
+          enabled: sources.length > 0,
+          submenu: sources.map((source) => ({
+            label: source.name || source.id,
+            type: "radio",
+            checked: !!source.selected,
+            click: pick({ source: source.id }),
+          })),
+        },
+        { label: "转录与截图", click: pick({ action: "transcript" }) },
+        { type: "separator" },
+        { label: "更新个人资料…", click: pick({ action: "materials" }) },
+        {
+          label: "网页设置",
+          click: () => {
+            resolve(null);
+            void shell.openExternal(origin + "/settings");
+          },
+        },
+        { label: "连接设置…", click: pick({ action: "connection" }) },
+        { type: "separator" },
+        {
+          label: "隐藏（Ctrl+Alt+\\）",
+          click: () => {
+            resolve(null);
+            window.hide();
+          },
+        },
+        {
+          label: "退出 Cue",
+          click: () => {
+            resolve(null);
+            app.quit();
+          },
+        },
+      ]).popup({
+        window,
+        // A chosen item resolves first; closing without one resolves null.
+        callback: () => setTimeout(() => resolve(null), 200),
+      });
+    });
   });
   handle("sage:materials", async () => {
     const picked = await dialog.showOpenDialog(window, {
@@ -247,10 +322,6 @@ async function show() {
       : pathToFileURL(path.join(__dirname, "../dist/index.html")).href;
     window = new BrowserWindow({
       ...DESKTOP_WINDOW_OPTIONS,
-      backgroundColor: nativeTheme.shouldUseDarkColors ? "#0e0e10" : "#f4f4f5",
-      width: 640,
-      height: 780,
-      minWidth: 480,
       webPreferences: {
         preload: path.join(__dirname, "preload.cjs"),
         contextIsolation: true,
@@ -281,14 +352,74 @@ async function show() {
       }
     });
     window.on("closed", () => (window = null));
+    window.on("moved", () => {
+      if (fitting) return;
+      const bounds = window.getBounds();
+      anchor = { x: bounds.x + Math.round(bounds.width / 2), y: bounds.y };
+      try {
+        fs.mkdirSync(dataRoot, { recursive: true });
+        fs.writeFileSync(overlayFile, JSON.stringify(anchor));
+      } catch {}
+    });
+    // Above full-screen apps, on every desktop where the platform allows.
+    window.setAlwaysOnTop(true, "screen-saver");
+    window.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
+    fit(window.getBounds());
     await window.loadURL(renderer);
   }
-  window.show();
-  window.focus();
+  window.showInactive();
 }
+/** The saved point if it is still on a display, else top-center of the primary. */
+function placeAnchor() {
+  try {
+    const saved = JSON.parse(fs.readFileSync(overlayFile, "utf8"));
+    if (
+      screen
+        .getAllDisplays()
+        .some(
+          ({ workArea: a }) =>
+            saved.x >= a.x &&
+            saved.x < a.x + a.width &&
+            saved.y >= a.y &&
+            saved.y < a.y + a.height,
+        )
+    )
+      return { x: saved.x, y: saved.y };
+  } catch {}
+  const area = screen.getPrimaryDisplay().workArea;
+  return { x: area.x + Math.round(area.width / 2), y: area.y + 8 };
+}
+function fit(size) {
+  const width = Math.round(size?.width),
+    height = Math.round(size?.height);
+  if (!window || !(width > 0 && width < 4000 && height > 0 && height < 4000))
+    return;
+  anchor ??= placeAnchor();
+  const area = screen.getDisplayNearestPoint(anchor).workArea;
+  const bounds = {
+    x: Math.round(anchor.x - width / 2),
+    y: anchor.y,
+    width,
+    height,
+  };
+  // Near the bottom edge the card grows upward instead of off screen.
+  if (bounds.y + height > area.y + area.height)
+    bounds.y = Math.max(area.y, area.y + area.height - height);
+  fitting = true;
+  window.setBounds(bounds);
+  fitting = false;
+}
+function send(name) {
+  if (window && !window.isDestroyed()) window.webContents.send(name);
+}
+function toggle() {
+  if (window?.isVisible()) window.hide();
+  else void show();
+}
+/** Answering shows the overlay; capturing leaves it as it is. */
 function trigger() {
-  if (window && !window.isDestroyed())
-    window.webContents.send("sage:answer-requested");
+  void show();
+  send("sage:answer-requested");
 }
 if (!app.requestSingleInstanceLock()) app.quit();
 else {
@@ -343,17 +474,31 @@ else {
       tray.setToolTip("Cue");
       tray.setContextMenu(
         Menu.buildFromTemplate([
+          { label: "显示或隐藏", click: toggle },
           { label: "回答", click: trigger },
-          { label: "打开 Cue", click: () => void show() },
+          { label: "截图", click: () => send("sage:shot-requested") },
           { type: "separator" },
           { label: "退出", click: () => app.quit() },
         ]),
       );
-      tray.on("click", () => void show());
-      if (!globalShortcut.register("Control+Alt+Enter", trigger))
+      tray.on("click", toggle);
+      const taken = [
+        ["Control+Alt+Enter", trigger],
+        ["Control+Alt+S", () => send("sage:shot-requested")],
+        ["Control+Alt+\\", toggle],
+      ]
+        .filter(([key, action]) => {
+          try {
+            return !globalShortcut.register(key, action);
+          } catch {
+            return true;
+          }
+        })
+        .map(([key]) => key);
+      if (taken.length)
         dialog.showErrorBox(
           "快捷键已被占用",
-          "仍可使用 Cue 窗口中的回答按钮。",
+          taken.join("、") + "，仍可使用浮窗按钮。",
         );
     })
     .catch(() => {

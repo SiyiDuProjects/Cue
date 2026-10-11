@@ -3,6 +3,7 @@ export class DirectTranscription {
     send: (value: any) => void;
     makeVAD: () => Promise<any>;
     fail: (detail: string) => void;
+    caption?: (value: { role: string; item: string; text: string }) => void;
     WebSocket?: any;
   });
   handle(event: any): boolean;
