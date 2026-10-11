@@ -182,7 +182,7 @@ app
           expires: Date.now() + 15000,
         },
       });
-      await wait("document.querySelector('.source')?.textContent==='面板'");
+      await wait("document.querySelector('.source')?.textContent==='网页'");
       await wait(
         "window.remoteStates.at(-1).phase==='active' && window.remoteStates.at(-1).source==='remote'",
       );
@@ -201,7 +201,7 @@ app
         await js("window.remoteResults.some(r=>r.id==='r1'&&r.ok)"),
         true,
       );
-      assert.equal(await js("window.remoteStates.at(-1).version"), 2);
+      assert.equal(await js("window.remoteStates.at(-1).version"), 3);
       const remote = (id, type, extra = {}) =>
         event({
           type: "remote_command",
@@ -225,11 +225,11 @@ app
         await js("window.remoteResults.some(r=>r.id==='delayed')"),
         false,
       );
-      await remote("blocked", "prepare");
+      await remote("blocked", "shot");
       await wait("window.remoteResults.some(r=>r.id==='blocked'&&!r.ok)");
       await js("window.holdShot=false;window.finishShot()");
       await wait(
-        "window.remoteResults.some(r=>r.id==='delayed'&&r.ok&&r.image==='shot')",
+        "window.remoteResults.some(r=>r.id==='delayed'&&r.ok&&!r.image)",
       );
       await js("window.failShot=true");
       await remote("failure", "shot");
@@ -237,13 +237,27 @@ app
         "window.remoteResults.some(r=>r.id==='failure'&&!r.ok&&r.detail.includes('录屏权限'))",
       );
       await js("window.failShot=false");
-      await remote("prepare", "prepare");
-      await wait("window.lastPrepare?.id==='prepare'");
-      assert.ok((await js("window.lastPrepare.images")).includes("shot"));
-      assert.equal(
-        await js("window.remoteResults.some(r=>r.id==='prepare'&&r.ok)"),
-        false,
-      );
+      await remote("remove", "unselect", {image:"shot"});
+      await wait("window.remoteResults.some(r=>r.id==='remove'&&r.ok)");
+      await wait("!window.remoteStates.at(-1).selected.includes('shot')");
+      await js("window.holdUpload=true");
+      await remote("queued-shot", "shot");
+      await wait("window.finishUpload && window.remoteResults.some(r=>r.id==='queued-shot'&&r.ok)");
+      await wait("window.remoteStates.at(-1).uploading===1");
+      const oldAsk = await js("window.lastAsk?.id");
+      await remote("web-ask", "ask", {text:"remote follow-up",effort:"low"});
+      await wait("window.remoteResults.some(r=>r.id==='web-ask'&&r.ok&&r.answer)");
+      assert.equal(await js("window.lastAsk?.id"),oldAsk);
+      await remote("web-cancel", "cancel");
+      await wait("window.remoteResults.some(r=>r.id==='web-cancel'&&r.ok)");
+      await js("window.holdUpload=false;window.finishUpload()");
+      await wait("window.remoteStates.at(-1).uploading===0");
+      assert.equal(await js("window.lastAsk?.id"),oldAsk);
+      await remote("web-answer", "ask", {text:"remote follow-up",effort:"low"});
+      await wait("window.lastAsk?.text==='remote follow-up'");
+      assert.equal(await js("window.lastAsk.effort"),'low');
+      assert.ok((await js("window.lastAsk.images")).includes('shot'));
+      await wait("!document.querySelector('.bar .answer-button')?.textContent.includes('停止')");
       await js("window.nextMenu={remote:false}");
       await click('[aria-label="更多"]');
       await wait("window.remoteStates.at(-1).allow===false");
@@ -300,7 +314,7 @@ app
         true,
       );
       console.log(
-        "PASS overlay: hidden newest chat and recent history, ChatGPT panel status/commands/switch, content-sized window, focus only for typing, screenshot attachment, streaming reasoning/Markdown/table/math, copy, one exchange with paging, native menu depth/source/failure, interviewer captions, transcript view and manual reconnect; all network blocked",
+        "PASS overlay: hidden newest chat and recent history, web remote status/commands/switch, content-sized window, focus only for typing, screenshot attachment, streaming reasoning/Markdown/table/math, copy, one exchange with paging, native menu depth/source/failure, interviewer captions, transcript view and manual reconnect; all network blocked",
       );
     } finally {
       win.destroy();

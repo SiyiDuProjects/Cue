@@ -1,21 +1,23 @@
 # Cue
 
-个人面试助手：桌面悬浮聊天、双路转录、手动截图。Mac 和 Windows 共用聊天界面；网页管理提示词、模型档位和个人资料；ChatGPT 通过只读插件按需读取上下文。
+个人面试助手：桌面悬浮聊天、双路转录、手动截图。Mac 和 Windows 共用聊天界面；网页具备同样的能力并管理提示词、模型档位和个人资料；ChatGPT 通过只读插件按需读取上下文。
 
 ## 使用
 
 开启转录后，系统音频和麦克风分别积累上下文。需要时手动截图，按回答按钮或快捷键提问。答案在 Cue 中流式显示，可继续追问和停止。启动及重连不会自行采集或重发。
 
-ChatGPT 的 Cue 面板可遥控开始/停止转录和截图。指令只发给面板显示的电脑连接，截图完成后才显示成功；「让 GPT 回答」立即发消息，让 ChatGPT 读取当前已有的转录与截图；不再等语音尾句，电脑断线时也能读取已存内容。面板等待操作时不能重复提问，失败或超时会明确提示，不自动重试。遥控要求支持回执协议的桌面端（Mac build 28 及以上），发布与实际验收状态见[面板发布记录](docs/releases/2026-10-10-chatgpt-panel.md)。
+网页 `https://interview.siyidu.com` 通过 ChatGPT 登录，手机浏览器也可用。首页和悬浮条一样：控制条、面试官字幕、一次一轮的回答卡片；可遥控电脑开始/停止转录、截图、回答（可附追问和推理深度）、停止生成、移除待发截图。指令只发给页面显示的电脑连接，结果如实显示，失败或超时不自动重试。回答、停止和移除截图需要支持遥控协议 version 3 的桌面端（Mac build 29 起）。截到即确认，可继续截图；原图顺序上传，回答等全部传完。上传失败会明确提示并保留本次运行中的原图，可手动重试。
 
-面板右上角的「悬浮 / 全屏」用于切换显示方式，同一插件同时支持两种模式。手机 ChatGPT 可能把悬浮转为全屏，或提示不支持；以面板实际提示为准。全屏里的回复气泡和聊天面板由 ChatGPT 控制。
+`/settings` 的「回答设置」和「个人资料」可编辑回答提示词、上传或更换 TXT、Markdown、PDF、Word 资料。修改从下一次提问生效。
 
-网页设置位于 `https://interview.siyidu.com/settings`，通过 ChatGPT 登录；可编辑回答提示词、上传或更换 TXT、Markdown、PDF、Word 资料。修改从下一次提问生效。
+在 ChatGPT 中，Cue 插件只提供只读工具：让 ChatGPT 读取 Cue 的转录、截图和资料后回答。同一对话自动只给未读内容和修正，每次最多四张截图；需要更早转录时可请求历史。没有会话编号的客户端保持普通读取。
+
+当前发布与真实设备验证范围见[网页遥控发布记录](docs/releases/2026-10-11-web-remote.md)。
 
 ## 代码
 
 - `packages/transcription`：共用 VAD、直连转录和截止顺序。
-- `packages/chat-ui`：共用 React 聊天。
+- `packages/chat-ui`：共用 React 聊天；`Web.tsx` 是网页首页，`npm --prefix apps/desktop run build:web` 生成到私有云端仓库的 `web/app/`。
 - [Mac](apps/macos/README.md)：AppKit / ScreenCaptureKit 原生宿主。
 - `apps/desktop`：Windows Electron 宿主与打包。
 - [云端](apps/cloud/README.md)：私有独立仓库，Sites、D1、R2、模型和设置页。桌面构建不依赖此仓库。

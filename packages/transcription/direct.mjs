@@ -224,7 +224,7 @@ export class DirectTranscription {
     });
   }
   control(value) {
-    if (["ask", "stop", "remote_prepare"].includes(value.type)) {
+    if (["ask", "stop"].includes(value.type)) {
       for (const channel of this.active.values()) this.commit(channel);
     }
     this.send(value);

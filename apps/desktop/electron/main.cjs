@@ -84,7 +84,7 @@ function headers() {
 function permitted(endpoint, method) {
   return (
     /^(GET|POST|DELETE)$/.test(method) &&
-    /^\/capture\/(state|materials|images(?:\/[a-zA-Z0-9_-]+)?)$/.test(endpoint)
+    /^\/capture\/(state|materials|remote|images(?:\/[a-zA-Z0-9_-]+)?)$/.test(endpoint)
   );
 }
 async function request(endpoint, method = "GET", body) {
@@ -188,7 +188,7 @@ function configure() {
         },
         { label: "转录与截图", click: pick({ action: "transcript" }) },
         {
-          label: "允许 ChatGPT 遥控",
+          label: "允许网页遥控",
           type: "checkbox",
           checked: state?.remote !== false,
           click: pick({ remote: state?.remote === false }),

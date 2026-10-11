@@ -27,7 +27,7 @@ function timers() {
   };
 }
 
-for (const type of ["ask", "remote_prepare"])
+for (const type of ["ask"])
 test(`Windows ${type} flushes both worklets before its marker and holds later PCM`, async () => {
   const events = [], calls = [], handles = new Map();
   let stopComplete = true;

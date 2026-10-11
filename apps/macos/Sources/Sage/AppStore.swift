@@ -11,10 +11,13 @@ import SageCore
   private let http = HTTPClient()
   private let capture: CaptureController
   private let screenshotProvider: (() async throws -> JSON)?
+  private let uploadProvider: ((JSON) async throws -> JSON)?
   private var address: ServerAddress?
   private var keys: SiteCredentials?
   private var link: SocketLink?
   private var timer: Timer?
+  private var remotePoll: Task<Void, Never>?
+  private var remoteEpoch = UUID()
   private var lastPump = ContinuousClock.now
   private let audioLog = Logger(subsystem: "com.siyidu.sage.mac", category: "AudioDelivery")
   private var audioGeneration = UUID()
@@ -25,11 +28,13 @@ import SageCore
   let preview: Bool
   init(
     preview: Bool = false, capture: CaptureController? = nil,
-    connection: SocketLink? = nil, screenshot: (() async throws -> JSON)? = nil
+    connection: SocketLink? = nil, screenshot: (() async throws -> JSON)? = nil,
+    upload: ((JSON) async throws -> JSON)? = nil
   ) {
     self.preview = preview
     self.capture = capture ?? CaptureController()
     self.screenshotProvider = screenshot
+    self.uploadProvider = upload
     if let connection { attach(connection) }
   }
   func connect() async throws {
@@ -78,6 +83,7 @@ import SageCore
     next.onState = { [weak self] ready, detail in
       guard let self else { return }
       if !ready {
+        stopRemotePoll()
         audioGeneration = UUID()
         phase = "idle"
         Task { _ = await self.capture.finish() }
@@ -102,6 +108,10 @@ import SageCore
     switch value["type"] as? String {
     case "session_ready":
       cached = value
+      stopRemotePoll()
+      if value["remote_http"] as? Bool == true, let generation = value["generation"] as? String {
+        startRemotePoll(generation)
+      }
       phase = "idle"
     case "started":
       phase = "prepared"
@@ -112,12 +122,36 @@ import SageCore
       phase = "idle"
       Task { _ = await self.capture.finish() }
     case "replaced":
+      stopRemotePoll()
       audioGeneration = UUID()
       phase = "idle"
       Task { _ = await self.capture.finish() }
     default: break
     }
     onEvent(value)
+  }
+  private func stopRemotePoll() {
+    remoteEpoch = UUID()
+    remotePoll?.cancel()
+    remotePoll = nil
+  }
+  private func startRemotePoll(_ generation: String) {
+    let epoch = remoteEpoch
+    remotePoll = Task { [weak self] in
+      guard let self else { return }
+      while !Task.isCancelled, remoteEpoch == epoch, link?.ready == true {
+        var delay = 3000
+        do {
+          let reply = try await request("/capture/remote", method: "POST", body: ["generation": generation])
+          guard !Task.isCancelled, remoteEpoch == epoch, link?.ready == true else { return }
+          let present = reply["connected"] as? Bool == true
+          delay = present ? 500 : 3000
+          onEvent(["type": "remote", "connected": present])
+          for command in reply["commands"] as? [JSON] ?? [] { onEvent(["type": "remote_command", "command": command]) }
+        } catch { /* Only unclaimed commands may be returned on a later request. */ }
+        try? await Task.sleep(for: .milliseconds(delay))
+      }
+    }
   }
   private func pump(force: Bool = false) {
     // Upstreams are ready in prepared; native capture may already be producing
@@ -178,7 +212,7 @@ import SageCore
       try link.enqueue(message)
       return
     }
-    if ["ask", "remote_prepare"].contains(value["type"] as? String ?? "") {
+    if value["type"] as? String == "ask" {
       guard !["starting", "prepared", "stopping"].contains(phase) else {
         throw SageError("请等待音频就绪。")
       }
@@ -242,7 +276,7 @@ import SageCore
   func request(_ path: String, method: String = "GET", body: JSON? = nil) async throws -> JSON {
     guard let address, let keys,
       path.range(
-        of: #"^/capture/(state|materials|images(/[a-zA-Z0-9_-]+)?)$"#, options: .regularExpression)
+        of: #"^/capture/(state|materials|remote|images(/[a-zA-Z0-9_-]+)?)$"#, options: .regularExpression)
         != nil,
       ["GET", "POST", "DELETE"].contains(method)
     else { throw SageError("连接未就绪或操作无效。") }
@@ -254,6 +288,10 @@ import SageCore
     var shot = try await capture.screenshot()
     try Task.checkCancellation()
     shot["request_id"] = UUID().uuidString.lowercased()
+    return shot
+  }
+  func uploadShot(_ shot: JSON) async throws -> JSON {
+    if let uploadProvider { return try await uploadProvider(shot) }
     var result = try await request("/capture/images", method: "POST", body: shot)
     result["image_url"] = shot["image_data"]
     return result
@@ -295,6 +333,7 @@ import SageCore
     try await connect()
   }
   func disconnect() async {
+    stopRemotePoll()
     if closing { return }
     closing = true
     connectionGeneration = UUID()

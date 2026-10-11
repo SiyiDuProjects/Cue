@@ -18,6 +18,7 @@ import {
 import { type Event } from "./bridge";
 import { OneExchange, busy, shortcut, type Message } from "./Messages";
 import "./styles.css";
+import { UploadQueue } from "./upload-queue.mjs";
 
 const time = (value: number) =>
   new Date(value).toLocaleTimeString([], {
@@ -78,6 +79,8 @@ export default function App() {
     [audio, setAudio] = useState("idle"),
     [since, setSince] = useState(0),
     [working, setWorking] = useState(false),
+    [uploading, setUploading] = useState(0),
+    [uploadError, setUploadError] = useState(""),
     [pending, setPending] = useState(""),
     [effort, setEffort] = useState(localStorage.getItem("cue.effort") || "");
   const [expanded, setExpanded] = useState(false),
@@ -88,7 +91,7 @@ export default function App() {
     ),
     [captions, setCaptions] = useState<{ item: string; text: string }[]>([]),
     [, tick] = useState(0);
-  // The Cue panel in ChatGPT: whether it may control this computer, whether
+  // The Cue web page: whether it may control this computer, whether
   // it is open now, and whether the current recording was started from it.
   const [allowRemote, setAllowRemote] = useState(
       localStorage.getItem("cue.remote") !== "off",
@@ -102,17 +105,17 @@ export default function App() {
     // Answers are one timeline, the last hour, like transcripts. This is the
     // server row new answers are stored under: the newest chat, never shown.
     chat = useRef(""),
-    // Set by a server that relays the ChatGPT panel; older ones never are.
+    // Set by a server that relays the web page; older ones never are.
     relay = useRef(false),
     remoteGeneration = useRef(""),
     remoteBusy = useRef(false),
     shooting = useRef(false),
     reported = useRef(""),
-    // The latest handlers, for panel commands arriving in the event listener.
+    // The latest handlers, for web commands arriving in the event listener.
     actions = useRef<{
       toggleAudio: (source?: string) => Promise<void>;
-      shot: () => Promise<string>;
-    }>({ toggleAudio: async () => {}, shot: async () => "" }),
+      shot: () => Promise<void>;
+    }>({ toggleAudio: async () => {}, shot: async () => {} }),
     current = useRef({
       text,
       selected,
@@ -161,7 +164,23 @@ export default function App() {
     follow.current = true;
     void attempt(() => command({ type: "history", chat: id, scope: "recent" }));
   }
-  async function ask() {
+  const uploadQueue = useRef<UploadQueue | null>(null);
+  uploadQueue.current ??= new UploadQueue(
+    (shot: Event) => window.cue.uploadScreenshot!(shot),
+    (image: Event) => {
+      setImages((v) => [...v.filter((i) => i.id !== image.id), image]);
+      if (!current.current.selected.includes(image.id))
+        current.current.selected = [...current.current.selected, image.id];
+      setSelected(current.current.selected);
+      if (image.image_url)
+        setPreviews((p) => ({ ...p, [image.id]: image.image_url }));
+    },
+    (count: number, error: string) => {
+      setUploading(count);
+      setUploadError(error);
+    },
+  );
+  function beginAnswer(value?: { text: string; effort?: string }) {
     const s = current.current;
     if (
       !s.connected ||
@@ -170,42 +189,67 @@ export default function App() {
       s.messages.some(busy) ||
       ["starting", "stopping"].includes(s.audio)
     )
-      return;
-    const id = crypto.randomUUID();
+      throw Error("请等待连接或上一轮回答完成。");
+    if (uploadQueue.current!.error) throw Error(uploadQueue.current!.error);
+    const id = crypto.randomUUID(),
+      generation = remoteGeneration.current;
     current.current.pending = id;
     setPending(id);
     setError("");
     setExpanded(true);
     setView("answer");
-    try {
-      await command({
-        type: "ask",
-        id,
-        chat: chat.current,
-        text: s.text,
-        images: s.selected,
-        effort: s.effort || undefined,
-      });
-    } catch (e) {
-      setPending("");
-      setError(String(e));
-    }
+    void (async () => {
+      try {
+        while (shooting.current) {
+          if (current.current.pending !== id) return;
+          await new Promise((r) => setTimeout(r, 20));
+        }
+        await uploadQueue.current!.wait();
+        if (
+          current.current.pending !== id ||
+          !current.current.connected ||
+          generation !== remoteGeneration.current
+        )
+          return;
+        await command({
+          type: "ask",
+          id,
+          chat: chat.current,
+          text: value?.text ?? s.text,
+          images: current.current.selected,
+          effort: (value ? value.effort : s.effort) || undefined,
+        });
+      } catch (e) {
+        if (current.current.pending === id) {
+          current.current.pending = "";
+          setPending("");
+          setError(String(e));
+        }
+      }
+    })();
+    return id;
+  }
+  async function ask() {
+    await attempt(async () => beginAnswer());
+  }
+  async function cancelAnswer() {
+    const s = current.current;
+    const id = s.messages.find(busy)?.id || s.pending;
+    current.current.pending = "";
+    setPending("");
+    if (id) await command({ type: "cancel", id });
   }
   async function captureShot() {
     if (shooting.current) throw Error("截图尚未完成。");
+    if (
+      current.current.selected.length + uploadQueue.current!.items.length >=
+      8
+    )
+      throw Error("最多待发 8 张截图，请先回答或移除。");
     shooting.current = true;
     setWorking(true);
     try {
-      const image = await window.cue.screenshot();
-      if (!image?.id) throw Error("截图未完成。");
-      setImages((v) => [...v.filter((i) => i.id !== image.id), image]);
-      current.current.selected = [...current.current.selected, image.id].slice(
-        -8,
-      );
-      setSelected(current.current.selected);
-      if (image.image_url)
-        setPreviews((p) => ({ ...p, [image.id]: image.image_url }));
-      return image.id as string;
+      uploadQueue.current!.add(await window.cue.screenshot());
     } finally {
       shooting.current = false;
       setWorking(false);
@@ -222,35 +266,38 @@ export default function App() {
       if (!current.current.connected || !current.current.allowRemote)
         throw Error("电脑上已关闭遥控或连接已断开。");
       if (!(expires > Date.now())) throw Error("指令已过期，没有执行。");
-      if (remoteBusy.current || shooting.current)
-        throw Error("电脑正在完成上一个操作。");
-      remoteBusy.current = locked = true;
-      const phase = current.current.audio;
-      if (["starting", "stopping"].includes(phase))
-        throw Error("请等待音频就绪。");
-      let image: string | undefined;
-      if (type === "prepare") {
-        await command({
-          type: "remote_prepare",
-          id,
-          generation,
-          images: current.current.selected,
-        });
-        return; // The server confirms persisted tail transcriptions.
-      } else if (type === "shot") image = await actions.current.shot();
-      else if (
-        (type === "start" && phase === "idle") ||
-        (type === "stop" && phase === "active")
-      )
-        await actions.current.toggleAudio(type === "start" ? "remote" : "");
-      else if (!["start", "stop"].includes(type)) throw Error("遥控指令无效。");
+      let answer: string | undefined;
+      if (type === "cancel") await cancelAnswer();
+      else if (type === "unselect") {
+        current.current.selected = current.current.selected.filter(
+          (i) => i !== value.image,
+        );
+        setSelected(current.current.selected);
+      } else if (type === "ask")
+        answer = beginAnswer({ text: value.text ?? "", effort: value.effort });
+      else {
+        if (remoteBusy.current || shooting.current)
+          throw Error("电脑正在完成上一个操作。");
+        remoteBusy.current = locked = true;
+        const phase = current.current.audio;
+        if (["starting", "stopping"].includes(phase))
+          throw Error("请等待音频就绪。");
+        if (type === "shot") await actions.current.shot();
+        else if (
+          (type === "start" && phase === "idle") ||
+          (type === "stop" && phase === "active")
+        )
+          await actions.current.toggleAudio(type === "start" ? "remote" : "");
+        else if (!["start", "stop"].includes(type))
+          throw Error("遥控指令无效。");
+      }
       if (remoteGeneration.current === generation && current.current.connected)
         await command({
           type: "remote_result",
           id,
           generation,
           ok: true,
-          image,
+          answer,
         });
     } catch (e) {
       const detail = e instanceof Error ? e.message : String(e);
@@ -376,7 +423,7 @@ export default function App() {
       if (e.type === "answer_requested") void ask();
       if (e.type === "shot_requested") void shot();
       if (e.type === "remote") setRemoteOpen(e.connected === true);
-      // A panel button runs exactly what this window's button runs.
+      // A web button runs exactly what this window's button runs.
       if (e.type === "remote_command") void runRemote(e.command ?? {});
       if (["disconnected", "replaced"].includes(e.type))
         remoteGeneration.current = "";
@@ -396,15 +443,18 @@ export default function App() {
     localStorage.setItem("cue.remote", allowRemote ? "on" : "off");
   }, [allowRemote]);
   useEffect(() => {
-    // What the ChatGPT panel shows about this computer; sent on change.
+    // What the web page shows about this computer; sent on change.
     if (!connected || !relay.current) return;
     const report = {
       type: "remote_state",
-      version: 2,
+      version: 3,
       allow: allowRemote,
       phase: audio,
       since,
       selected,
+      pending,
+      uploading,
+      upload_error: uploadError.slice(0, 300),
       error: error.slice(0, 300),
       source: audio === "active" ? audioSource : "",
     };
@@ -412,7 +462,18 @@ export default function App() {
     if (key === reported.current) return;
     reported.current = key;
     void command(report).catch(() => (reported.current = ""));
-  }, [connected, allowRemote, audio, since, selected, error, audioSource]);
+  }, [
+    connected,
+    allowRemote,
+    audio,
+    since,
+    selected,
+    error,
+    audioSource,
+    uploading,
+    uploadError,
+    pending,
+  ]);
   useEffect(() => {
     localStorage.setItem("cue.captions", captionsOn ? "on" : "off");
   }, [captionsOn]);
@@ -507,10 +568,7 @@ export default function App() {
           {status}
         </span>
         {remoteOpen && allowRemote && (
-          <span
-            className="remote-mark"
-            title="ChatGPT 中的 Cue 面板已打开，可遥控此电脑"
-          >
+          <span className="remote-mark" title="网页已打开，可遥控此电脑">
             <DeviceMobile />
           </span>
         )}
@@ -532,7 +590,7 @@ export default function App() {
                 <span className="record-dot" aria-hidden="true" />
                 <span className="clock">{clock(Date.now() - since)}</span>
                 {audioSource === "remote" && (
-                  <span className="source">面板</span>
+                  <span className="source">网页</span>
                 )}
               </>
             ) : (
@@ -576,11 +634,7 @@ export default function App() {
               size="sm"
               variant="secondary"
               className="answer-button"
-              onPress={() =>
-                void attempt(() =>
-                  command({ type: "cancel", id: active?.id || pending }),
-                )
-              }
+              onPress={() => void attempt(() => cancelAnswer())}
             >
               <Stop weight="fill" />
               停止
@@ -637,6 +691,24 @@ export default function App() {
             重新连接
           </Button>
         </div>
+      )}
+      {uploadError ? (
+        <div className="notice error" role="alert">
+          {uploadError}
+          <Button
+            size="sm"
+            variant="ghost"
+            onPress={() => uploadQueue.current!.retry()}
+          >
+            重试上传
+          </Button>
+        </div>
+      ) : (
+        uploading > 0 && (
+          <div className="notice" role="status">
+            {uploading} 张截图上传中
+          </div>
+        )
       )}
       {error && (
         <div className="notice glass" role="alert">
@@ -868,14 +940,7 @@ export default function App() {
                       variant="secondary"
                       className="send-button"
                       aria-label="停止生成"
-                      onPress={() =>
-                        void attempt(() =>
-                          command({
-                            type: "cancel",
-                            id: active?.id || pending,
-                          }),
-                        )
-                      }
+                      onPress={() => void attempt(() => cancelAnswer())}
                     >
                       <Stop weight="fill" />
                     </Button>

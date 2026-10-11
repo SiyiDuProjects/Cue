@@ -146,7 +146,7 @@ extension URLSessionWebSocketTask: SocketConnection {}
       }
       var heartbeat: Task<Void, Never>?
       do {
-        let auth: JSON = ["type": "authenticate", "protocol": protocolVersion]
+        let auth: JSON = ["type": "authenticate", "protocol": protocolVersion, "remote_transport": "https"]
         try await current.send(
           .string(String(data: try JSONSerialization.data(withJSONObject: auth), encoding: .utf8)!))
         var lastMessage = Date()

@@ -18,6 +18,7 @@ if (host) {
   let heartbeat: number | undefined,
     retry: number | undefined,
     lastMessage = 0;
+  let remoteEpoch = 0;
   let stopping: Promise<void> | undefined,
     stopComplete = false,
     marking = false;
@@ -100,7 +101,11 @@ if (host) {
     current.binaryType = "arraybuffer";
     current.onopen = () =>
       current.send(
-        JSON.stringify({ type: "authenticate", protocol: "cue-chat-v2" }),
+        JSON.stringify({
+          type: "authenticate",
+          protocol: "cue-chat-v2",
+          remote_transport: "https",
+        }),
       );
     current.onmessage = (e) => {
       if (socket !== current) return;
@@ -114,6 +119,8 @@ if (host) {
           return;
         }
         ready = true;
+        if (value.remote_http === true)
+          void pollRemote(value.generation, ++remoteEpoch);
       }
       if (value.type === "started") phase = "active";
       if (value.type === "stopped") {
@@ -131,6 +138,7 @@ if (host) {
     current.onclose = () => {
       if (socket !== current) return;
       ready = false;
+      remoteEpoch++;
       endLocal();
       queue.length = 0;
       clearInterval(heartbeat);
@@ -153,6 +161,24 @@ if (host) {
       }
       if (ready) send({ type: "ping" });
     }, 5000);
+  }
+  async function pollRemote(owner: string, epoch: number) {
+    while (ready && epoch === remoteEpoch && !stopped) {
+      let delay = 3000;
+      try {
+        const reply = await host.request("/capture/remote", "POST", {
+          generation: owner,
+        });
+        if (!ready || epoch !== remoteEpoch || stopped) return;
+        delay = reply.connected ? 500 : 3000;
+        receive({ type: "remote", connected: reply.connected });
+        for (const command of reply.commands ?? [])
+          receive({ type: "remote_command", command });
+      } catch {
+        /* No replay after an uncertain claim. */
+      }
+      await new Promise((r) => setTimeout(r, delay));
+    }
   }
   async function stop() {
     if (stopping) return stopping;
@@ -210,12 +236,9 @@ if (host) {
     }
   }
   async function command(value: Event) {
-    if (
-      ["ask", "remote_prepare"].includes(value.type) &&
-      ["starting", "stopping"].includes(phase)
-    )
+    if (value.type === "ask" && ["starting", "stopping"].includes(phase))
       throw Error("请等待音频就绪。");
-    if (["ask", "remote_prepare"].includes(value.type) && handles.size) {
+    if (value.type === "ask" && handles.size) {
       if (marking) throw Error("正在准备上一轮问题。");
       marking = true;
       try {
@@ -252,14 +275,14 @@ if (host) {
     resize: host.resize,
     focus: host.focus,
     menu: host.menu,
-    screenshot: async () => {
-      const shot = await host.screenshot();
-      const result = await host.request("/capture/images", "POST", {
-        ...shot,
-        request_id: crypto.randomUUID(),
-      });
-      return { ...result, image_url: shot.image_data };
-    },
+    screenshot: async () => ({
+      ...(await host.screenshot()),
+      request_id: crypto.randomUUID(),
+    }),
+    uploadScreenshot: async (shot: Event) => ({
+      ...(await host.request("/capture/images", "POST", shot)),
+      image_url: shot.image_data,
+    }),
   };
   (window as any).sageCapture = { audio };
   window.addEventListener("sage:answer-requested", () =>
@@ -270,6 +293,7 @@ if (host) {
   );
   window.addEventListener("beforeunload", () => {
     stopped = true;
+    remoteEpoch++;
     clearTimeout(retry);
     clearInterval(heartbeat);
     endLocal();

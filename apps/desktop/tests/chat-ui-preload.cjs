@@ -21,7 +21,6 @@ window.cue = {
     if (v.type === "history") window.lastHistory = v;
     if (v.type === "remote_result")
       window.remoteResults = [...(window.remoteResults || []), v];
-    if (v.type === "remote_prepare") window.lastPrepare = v;
     if (v.type === "remote_state")
       window.remoteStates = [...(window.remoteStates || []), v];
     if (v.type === "history")
@@ -85,6 +84,11 @@ window.cue = {
       image_url:
         "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jv3cAAAAASUVORK5CYII=",
     };
+  },
+  uploadScreenshot: async (shot) => {
+    if (window.holdUpload) await new Promise(r=>{window.finishUpload=r});
+    if (window.failUpload) throw Error("upload offline");
+    return shot;
   },
   request: async () => ({}),
   sources: async () => {

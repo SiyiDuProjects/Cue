@@ -4,7 +4,7 @@
 
 0.4.0 真实长测在约 59 分钟耗尽 Sites WebSocket 的 32 秒累计 CPU 限额。0.4.1 已改为客户端直连转录。用户决定（2026-10-10）不再做一小时真实长测：若长场次断线，由用户手动重新连接并重新开始转录；不要把未测的长场次稳定性写成已验收。
 
-Cue 是个人面试助手：Mac / Windows 桌面悬浮条（控制条、面试官字幕、一次一轮的回答卡片）中运行 Responses 回答；系统音频、麦克风和手动截图提供参考。网页提供设置、提示词编辑和资料上传（普通网页版式：左侧导航，提示词占满主区，资料左列表右编辑）。ChatGPT 通过 MCP 读取上下文；ChatGPT 里的 Cue 面板（侧边栏应用与对话侧面板）可让电脑开始/停止转录、截图，并让 ChatGPT 用它自己的模型回答。不提供通知、订阅或 Events，也不做独立的网页遥控页。
+Cue 是个人面试助手：Mac / Windows 桌面悬浮条（控制条、面试官字幕、一次一轮的回答卡片）中运行 Responses 回答；系统音频、麦克风和手动截图提供参考。网页具备软件的全部能力，界面与悬浮条一致（用户决定 2026-10-11）：`/` 是面试页，复用 `packages/chat-ui` 的控制条、面试官字幕和一次一轮的回答卡片（HeroUI v3 + HeroUI Pro 代码块），遥控电脑开始/停止转录、截图、回答（可附追问与推理深度）、停止生成、移除待发截图；回答工具不做转录页或截图库。`/settings` 编辑提示词与资料（普通网页版式：左侧导航，手机变顶部栏）。ChatGPT 只通过只读 MCP 工具读取上下文，用户让它答它就答；ChatGPT 面板已移除，不做 MCP Apps 界面。不提供通知、订阅或 Events。
 
 用户已授权完整重构、保留手动截图、在已开启的转录中轮换上游、保留 Windows、建立私有云端源码备份。不要恢复旧通知链路、CLI 模型宿主、资料轮询桥接、自动截图或自动回答。界面文案简短，避免宣传和重复说明。
 
@@ -15,7 +15,7 @@ Cue 是个人面试助手：Mac / Windows 桌面悬浮条（控制条、面试�
 - HeroUI Pro 来自仓库外的授权包 `/Users/siyi/Projects/_private/vendor/heroui-pro-react-1.0.0-beta.8.tgz`（`file:` 依赖）。外层仓库公开，不得提交该包或其代码。`shiki` 在构建时被替换为 `apps/desktop/src/shiki.ts` 的固定语言集，因为 Mac 页面以 file:// 单脚本加载，不能动态导入。
 - `apps/macos/`：原生 SwiftUI 悬浮条（不激活 Cue 的无边框面板：控制条、面试官字幕、回答卡片；`ChatModel` 管理界面状态，`ChatViews` 为原生控件），只把回答卡片内容交给 WKWebView 加载 `content.html`；钥匙串、ScreenCaptureKit 双路采集、手动截图、快捷键。截图仅用 ScreenCaptureKit 截取主屏幕当前画面并排除 Cue 自身，不读取其他应用文字、不识别最近应用或页面，不申请辅助功能权限。Mac 包不含 Node 或 ChatGPT 采集组件；本机 Node 仅用于构建与离线检查。命令行 SwiftPM 构建无法加载 SwiftUI 宏，`@State` 用 `SwiftUI.State` 类型别名代替。
 - `apps/desktop/`：Windows Electron 宿主（无边框透明置顶窗口，点击不取焦点，只在输入框打字时取焦点）、safeStorage、双路 AudioWorklet、截图与打包。
-- `apps/cloud/`：独立私有 Sites 仓库，D1 / R2、转录、Responses、只读 MCP、网页设置。外层 GitHub 仓库公开，不把云端源码或私人资料直接并入。
+- `apps/cloud/`：独立私有 Sites 仓库，D1 / R2、转录、Responses、只读 MCP、网页设置（`web/settings.js`）。面试页源码是 `packages/chat-ui/Web.tsx`，由 `npm --prefix apps/desktop run build:web` 生成到 `apps/cloud/web/app/`（字体内联、文件名带哈希）；该生成物含 HeroUI Pro 代码，只能提交到私有云端仓库，不得进入外层公开仓库。改了 `packages/chat-ui` 后先重新生成再构建云端。外层 GitHub 仓库公开，不把云端源码或私人资料直接并入。
 - 正式域名 `https://interview.siyidu.com`；平台 MCP 地址 `https://sage-capture.dusiyi0916.chatgpt.site/mcp` 保持不变。
 - 新协议 `cue-chat-v2`，源码版本 0.4.1。构建、离线验证、部署、安装和真实设备验收分别记录，不互相冒充。
 - `baseline-20261007` 保存重构前两个仓库；外层 `legacy-v12` 保存旧服务；云端 `sites-v12` 对应原部署提交 `0b0c282`。旧 VPS、私有历史、钥匙串和用户资料不删除。
@@ -32,16 +32,16 @@ Cue 是个人面试助手：Mac / Windows 桌面悬浮条（控制条、面试�
 - 在用户已开始的会话中约 55 分钟主动替换两路上游。停止、退出、凭证失效或连接被替换后不能复活。意外网络断开停止本地媒体；恢复连接后需明确重新开始转录。
 - 新连接接管桌面所有权，旧连接退出；转录写入带 generation 条件。心跳按时间间隔运行。
 - 截图仅手动触发，保留原图。用户手动滚动后可继续截图，多张图随下一次提问发送；不自动滚动、抓全文或回答。截图是不可信参考。
+- 截图分两段反馈（用户决定 2026-10-11）：截屏完成即回执「已截」，不等上传，允许立刻再截；原图在电脑后台按顺序排队上传，`remote_state` 汇报上传中数量、失败原因和等待中的回答 ID，网页如实显示。回答（含网页发起）在电脑端等上传队列清空后再提问；上传失败的图在本次运行中保留原图及固定上传 ID，阻止回答，并提供明确的「重试上传」操作，不自动重试或静默丢弃。
 
 ## 上下文、资料与安全
 
 - Responses 采用 `store:false`，服务器保存完整完成输出（含 encrypted reasoning）并在后续轮次重放。回答与转录一样是一条时间线：后续轮次重放最近一小时内完成的回答（最多 16 轮），不分聊天；界面不再有聊天切换、新聊天或重命名。客户端仍把新回答写到最新的旧聊天行，旧聊天与记录不删。输入预算耗尽时明确说明只采用近期上下文，不假称模型看到了全部历史。
 - 资料作为用户参考内容置于输入前部，不作为 instructions。模型与推理档位、可调提示词通过网页保存；客户端可覆盖推理档位。默认 xhigh 保留，不能把离线测试当作速度或质量结论。
 - 资料手动上传、更换、编辑或删除；支持 UTF-8 TXT / Markdown、文字 PDF、DOCX。原文件存 R2，提取文字存 D1。个人资料不提交 Git；面经与 private-notes 不是个人背景资料。
-- 面板遥控经 D1 中转（Sites 只有 D1/R2，连接间无共享内存）：指令写入 `remote_commands`；桌面连接只在面板打开时每 500 ms 取一次，空轮询不再额外查询所有者，指令绑定面板看到的桌面 generation，并在 D1 中校验当前所有者、原子领取一次；早于本连接或超过 15 秒的指令不执行；桌面经 `remote_state` 汇报状态，只有当前所有者的汇报有效，且只在服务器的 session_ready 带 `remote: true` 和 generation 时汇报。遥控协议状态 version 为 2，旧客户端需更新。每条指令记录完成/失败回执，执行结果超过 30 秒未确认时明确提示，不自动重试。桌面执行与自身按钮相同的代码，「允许 ChatGPT 遥控」默认开启；由面板开始的录音在悬浮条标明。
+- 网页遥控经 D1 中转（Sites 只有 D1/R2，连接间无共享内存，无法从网页请求直接推送到桌面连接）：网页经所有者鉴权的 `/api/remote` 写入 `remote_commands`；新桌面通过设备鉴权的 `/capture/remote` 独立 HTTPS 请求领取指令，网页最近 10 分钟内打开过时每次请求完成后约 500 ms 再取，无网页时约 3 秒检查一次；通过握手协商后关闭 WebSocket 内的指令轮询，旧桌面保留兼容领取方式（手机切到其他应用再回来不会重新等待网页唤醒），指令绑定网页看到的桌面 generation，并在 D1 中校验当前所有者、原子领取一次；早于本连接或超过 15 秒的指令不执行；桌面经 `remote_state` 汇报状态，只有当前所有者的汇报有效，且只在服务器的 session_ready 带 `remote: true` 和 generation 时汇报。指令：start、stop、shot（version 2 起）；ask（`text` ≤ 16,000、可选 `effort`）、cancel、unselect（`image`）需要桌面汇报 version 3，否则服务器拒绝并提示更新。ask 的回执可带 `answer`（该次回答 ID），网页据此跟随；shot 回执可不带图片 ID（截到即确认），带了则必须已保存。每条指令记录完成/失败回执，执行结果超过 30 秒未确认时明确提示，不自动重试。桌面执行与自身按钮相同的代码，遥控开关默认开启；由网页开始的录音在悬浮条标明。网页按 `updated` 增量读取最近一小时的回答（生成中每 2 秒保存一次），读取不写库：超过 20 秒未保存的生成中回答由网页显示为已中断；转录中才读取并显示最近保存的面试官原句；待发截图的缩略图经所有者鉴权的 `/api/remote/images/:id` 返回。`/api/remote` 等网站接口只接受同源请求，`https://chatgpt.com` 只能访问 `/mcp`。
 - 转录和截图是一条连续时间线；回答、插件和界面都只取最近一小时。没有场次，也没有「新一场」；数据库旧 `recording` 列只写同一个固定值。
-- ChatGPT 面板同一资源支持 inline / fullscreen / pip，右上角「悬浮 / 全屏」请求切换并采用宿主返回的实际模式；手机可能转为全屏或不支持 PiP，不能把请求成功当作悬浮验收。PiP 隐藏字幕，页面使用宿主安全边距并跟随更新。全屏原生回复气泡属于 ChatGPT，不能用面板 CSS 控制其大小。
-- 模型可见的 MCP 工具全部只读：`read_context`、`list_materials`、`read_material`、`cue_panel`（打开面板）。面板按钮使用的 `remote_status`、`remote_command` 标为仅面板可调用（`_meta.ui.visibility: ["app"]`），模型看不到也调不了；`remote_command` 只有 start、stop、shot、prepare（提交已开启转录的尾句，不启动采集或回答）。面板是 MCP Apps 资源 `ui://cue/panel-v3.html`（`text/html;profile=mcp-app`，官方 ext-apps SDK 打包内联），用户决定（2026-10-11）「让 GPT 回答」直接发消息让 ChatGPT 读取当时已有的上下文，不发送 prepare、不等最后一句识别完成，转录继续；电脑离线或关闭遥控也不阻止只读提问。Cue 提示词在面板打开时传入模型上下文，不再逐次等待，不调用 Responses API。旧 prepare 协议仅保留兼容缓存面板。截图等指令在同一 MCP 调用内最多等待 10 秒回执，超出再按 ID 续查，不重复下发；回执查询不额外读取字幕和截图目录。截图只有上传成功并收到对应回执才显示成功，等待期间禁止面板提问；失败与未知结果明确显示。分页使用完整条件、修订水位与签名游标，不写整份快照；返回截断标志。转录按提交顺序，不能按识别完成顺序排列。
+- MCP 只有三个只读工具：`read_context`、`list_materials`、`read_material`；不声明 resources，不提供 MCP Apps 界面或仅界面可调用的工具（ChatGPT 面板与 prepare 协议已于 2026-10-11 移除）。ChatGPT 用它自己的模型回答，不调用 Responses API。ChatGPT 的 `params._meta["openai/session"]` 只用于读取进度，不用于鉴权；与已验证所有者一起做摘要后存入 `context_reads`，不保存原始会话编号。首次给最近一小时最新约 22,000 字，此后给未读和修正转录；`history:true` 向前读，每次最多 4 张最新未读原图、累计约 12 MiB 原图字节，并返回 `remaining`；并发调用用修订号原子推进，避免重复消费。没有会话编号或显式给 cursor 时保留签名游标读取。转录页内按提交时间排列，不按识别完成顺序。
 - 长期 OpenAI key 仅服务器持有。服务器签发 60 秒有效的 Realtime 连接凭证；它只进入本地聊天渲染进程并连接固定 OpenAI 地址，不入日志、URL、存储或 Git。凭证有效期限制新连接，不等于会话时长。设备凭证仅原生主进程 / 系统安全存储持有，不进网页进程、URL、日志或 Git。Web 设置和 MCP 依靠 Sites 验证后的所有者身份；不能用设备凭证冒充用户。
 - 保留既有 bundle/app ID、钥匙串 service 与 Sage 用户资料路径，名称变化不能清除权限或旧登录。HTTP 不跟随携凭证的重定向。
 - 数据库迁移只追加 schema，不删除旧用户记录，不用迁移文件上传个人资料。

@@ -15,6 +15,7 @@ export interface CueBridge {
   request(path: string, method?: string, body?: Event): Promise<any>;
   audio(start: boolean): Promise<unknown>;
   screenshot(): Promise<any>;
+  uploadScreenshot?(shot: Event): Promise<any>;
   sources(): Promise<any[]>;
   selectSource(id: string): Promise<unknown>;
   uploadMaterials(): Promise<any>;

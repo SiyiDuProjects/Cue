@@ -24,6 +24,13 @@ struct ChatRootView: View {
           Button("重新连接") { Task { await model.reconnect() } }
         }
       }
+      if !model.uploadError.isEmpty {
+        Notice(text: model.uploadError, tint: .red) {
+          Button("重试上传", action: model.retryUploads)
+        }
+      } else if model.uploading > 0 {
+        Notice(text: "\(model.uploading) 张截图上传中", tint: .secondary) { EmptyView() }
+      }
       if !model.error.isEmpty {
         Notice(text: model.error, tint: .red) {
           Button {
@@ -147,7 +154,7 @@ private struct ControlBar: View {
         Image(systemName: "iphone.radiowaves.left.and.right")
           .foregroundStyle(Color.accentColor)
           .frame(width: 24, height: 30)
-          .help("ChatGPT 中的 Cue 面板已打开，可遥控此电脑")
+          .help("网页已打开，可遥控此电脑")
       }
       AudioButton(model: model)
       Button {
@@ -214,7 +221,7 @@ private struct AudioButton: View {
             Text(Self.clock(context.date.timeIntervalSince(since))).monospacedDigit()
           }
           if model.audioSource == "remote" {
-            Text("面板").font(.caption2).foregroundStyle(.secondary)
+            Text("网页").font(.caption2).foregroundStyle(.secondary)
           }
         }
       } else {
@@ -245,7 +252,7 @@ private struct MoreMenu: View {
       }
       .pickerStyle(.menu)
       Button("转录与截图…", action: model.openTranscript)
-      Toggle("允许 ChatGPT 遥控", isOn: $model.allowRemote)
+      Toggle("允许网页遥控", isOn: $model.allowRemote)
       Divider()
       Button("更新个人资料…", action: model.uploadMaterials)
       Button("网页设置…", action: model.openWebSettings)

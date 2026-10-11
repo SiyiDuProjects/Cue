@@ -65,7 +65,7 @@ function fixture() {
   };
   return { direct, sent, failures, detectors, open };
 }
-for (const control of ["ask", "remote_prepare"])
+for (const control of ["ask"])
   test(`PCM only reaches OpenAI; both commits precede ${control} and later audio`, async () => {
     const { direct, sent, open, detectors } = fixture();
     const a = await open("interviewer", "a"),
