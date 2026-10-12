@@ -1,5 +1,5 @@
 import AppKit
-import SageCore
+import CueCore
 import Security
 
 enum LocalFiles {
@@ -22,32 +22,34 @@ enum LocalFiles {
 }
 
 enum Credentials {
-  static func query(_ origin: String) -> [String: Any] {
+  // Stable storage identity, independent of the current website address.
+  // Changing these would discard the existing login / Keychain authorization.
+  static func query() -> [String: Any] {
     [
       kSecClass as String: kSecClassGenericPassword,
       kSecAttrService as String: "com.siyidu.sage.mac.connection",
-      kSecAttrAccount as String: origin,
+      kSecAttrAccount as String: "https://interview.siyidu.com",
     ]
   }
-  static func load(_ origin: String) async throws -> String {
-    try await Task.detached { try read(origin) }.value
+  static func load() async throws -> String {
+    try await Task.detached { try read() }.value
   }
-  private static func read(_ origin: String) throws -> String {
-    var query = query(origin)
+  private static func read() throws -> String {
+    var query = query()
     query[kSecReturnData as String] = true
     var result: CFTypeRef?
     let status = SecItemCopyMatching(query as CFDictionary, &result)
     if status == errSecItemNotFound { return "" }
     guard status == errSecSuccess, let data = result as? Data,
       let text = String(data: data, encoding: .utf8)
-    else { throw SageError("无法读取钥匙串中的连接凭证。") }
+    else { throw CueError("无法读取钥匙串中的连接凭证。") }
     return text
   }
-  static func save(_ token: String, origin: String) async throws {
-    try await Task.detached { try write(token, origin: origin) }.value
+  static func save(_ token: String) async throws {
+    try await Task.detached { try write(token) }.value
   }
-  private static func write(_ token: String, origin: String) throws {
-    let query = query(origin)
+  private static func write(_ token: String) throws {
+    let query = query()
     let data = Data(token.utf8)
     let status = SecItemUpdate(
       query as CFDictionary, [kSecValueData as String: data] as CFDictionary)
@@ -56,10 +58,10 @@ enum Credentials {
       value[kSecValueData as String] = data
       value[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
       guard SecItemAdd(value as CFDictionary, nil) == errSecSuccess else {
-        throw SageError("无法保存连接凭证到钥匙串。")
+        throw CueError("无法保存连接凭证到钥匙串。")
       }
     } else if status != errSecSuccess {
-      throw SageError("无法更新钥匙串。原连接配置已保留。")
+      throw CueError("无法更新钥匙串。原连接配置已保留。")
     }
   }
 }

@@ -10,6 +10,7 @@ import {
   X,
 } from "@phosphor-icons/react";
 import { OneExchange, shortcut, type Message } from "./Messages";
+import { CaptionStrip, joinCaptions } from "./Captions";
 import "./styles.css";
 
 /**
@@ -38,7 +39,7 @@ type Receipt = {
 };
 type View = {
   desktop: Desktop;
-  captions: { id: string; text: string }[];
+  captions: { id: string; text: string; created: number }[];
   attachments: { id: string; created: number }[];
   answers: Answer[];
   commands: (Receipt | null)[];
@@ -256,10 +257,8 @@ export default function Web() {
         : !d!.allow
           ? "电脑上已关闭遥控"
           : "已连接";
-  const caption =
-    audio === "active"
-      ? (view?.captions[view.captions.length - 1]?.text ?? "")
-      : "";
+  // The server sends the interviewer's last ten minutes while transcribing.
+  const caption = joinCaptions((view?.captions ?? []).map((c) => c.text));
   async function ask() {
     if (asking || generating) return;
     await send("ask", { text: text.trim(), ...(effort ? { effort } : {}) });
@@ -411,11 +410,7 @@ export default function Web() {
           </Button>
         </div>
       )}
-      {caption && (
-        <div className="captions glass" aria-label="面试官字幕">
-          <p>{caption}</p>
-        </div>
-      )}
+      {audio === "active" && <CaptionStrip text={caption} />}
       <section className="card glass" aria-label="回答">
         <div className="conversation exchange-view">
           <div className="column">

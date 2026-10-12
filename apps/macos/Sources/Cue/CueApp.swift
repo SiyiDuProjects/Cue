@@ -1,14 +1,13 @@
 import AppKit
 import Carbon
-import SageCore
+import CueCore
 import ScreenCaptureKit
 
-@main struct SageEntry {
+@main struct CueEntry {
   @MainActor static func main() async {
     if CommandLine.arguments.contains("--check-connection") {
       do {
-        try await ConnectionCheck.run(
-          importMaterials: CommandLine.arguments.contains("--import-existing-materials"))
+        try await ConnectionCheck.run()
       } catch {
         fputs("Connection check failed: \(error.localizedDescription)\n", stderr)
         exit(1)
@@ -34,7 +33,7 @@ import ScreenCaptureKit
     let menu = NSMenu()
     for (title, action) in [
       ("显示或隐藏 Cue", #selector(toggle)), ("回答", #selector(answer)), ("截图", #selector(shot)),
-      ("转录与截图…", #selector(transcript)), ("退出 Cue", #selector(quit)),
+      ("退出 Cue", #selector(quit)),
     ] {
       let item = NSMenuItem(title: title, action: action, keyEquivalent: "")
       item.target = self
@@ -126,7 +125,7 @@ import ScreenCaptureKit
           let target = content.windows.first(where: {
             $0.windowID == CGWindowID(window.windowNumber)
           })
-        else { throw SageError("preview window not listed") }
+        else { throw CueError("preview window not listed") }
         let filter = SCContentFilter(desktopIndependentWindow: target)
         let config = SCStreamConfiguration()
         config.width = Int(filter.contentRect.width * CGFloat(filter.pointPixelScale))
@@ -154,7 +153,6 @@ import ScreenCaptureKit
     chat?.model.ask()
   }
   @objc private func shot() { chat?.model.shot() }
-  @objc private func transcript() { chat?.model.openTranscript() }
   @objc private func quit() { NSApp.terminate(nil) }
   func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows: Bool) -> Bool {
     show()

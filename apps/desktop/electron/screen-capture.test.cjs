@@ -109,20 +109,20 @@ function ownWindow(id, initiallyProtected = false) {
   };
 }
 
-test("Sage is excluded from choices and cannot be explicitly selected", async () => {
-  const window = ownWindow("window:sage");
+test("Cue is excluded from choices and cannot be explicitly selected", async () => {
+  const window = ownWindow("window:cue");
   const service = createScreenCaptureService({ getSources: async () => [
-    source("screen:primary", "1"), source("window:sage"), source("window:question"),
+    source("screen:primary", "1"), source("window:cue"), source("window:question"),
   ] }, { getPrimaryDisplay: () => ({ id: 1 }) }, () => [window]);
   assert.deepEqual((await service.listSources()).map((item) => item.id), ["screen:primary", "window:question"]);
-  await assert.rejects(service.selectSource("window:sage"), /不可用/);
+  await assert.rejects(service.selectSource("window:cue"), /不可用/);
   await service.selectSource("window:question");
   assert.equal((await service.captureSnapshot()).source_id, "window:question");
   assert.equal(window.protected, false);
 });
 
 test("overlapping screenshot and source preview restore protection after the last capture", { skip: process.platform !== "win32" }, async () => {
-  const window = ownWindow("window:sage");
+  const window = ownWindow("window:cue");
   const alreadyProtected = ownWindow("window:protected", true);
   const pending = new Map();
   let started;
@@ -150,7 +150,7 @@ test("overlapping screenshot and source preview restore protection after the las
 });
 
 test("audio source discovery never changes window capture settings", async () => {
-  const window = ownWindow("window:sage");
+  const window = ownWindow("window:cue");
   const service = createScreenCaptureService({ getSources: async () => [source("screen:primary", "1")] },
     { getPrimaryDisplay: () => ({ id: 1 }) }, () => [window]);
   assert.equal((await service.getAudioCaptureSource()).id, "screen:primary");

@@ -1,5 +1,5 @@
 import AppKit
-import SageCore
+import CueCore
 import SwiftUI
 import WebKit
 
@@ -29,7 +29,6 @@ private final class AnswerWebView: WKWebView {
   let web: WKWebView
   let store: AppStore
   let model: ChatModel
-  private let transcript: TranscriptWindow
   private let ui: URL
   private var page: URL { ui.appendingPathComponent("content.html") }
   /// Top-center point the user dragged the overlay to; content grows down.
@@ -39,7 +38,6 @@ private final class AnswerWebView: WKWebView {
   init(store: AppStore) {
     self.store = store
     model = ChatModel(store: store)
-    transcript = TranscriptWindow(model: model)
     ui = Bundle.main.resourceURL!.appendingPathComponent("ui", isDirectory: true)
     let controller = WKUserContentController()
     let configuration = WKWebViewConfiguration()
@@ -80,7 +78,6 @@ private final class AnswerWebView: WKWebView {
     model.render = { [weak self] value in self?.send(value) }
     model.resize = { [weak self] size in self?.fit(size) }
     model.hide = { [weak self] in self?.window.orderOut(nil) }
-    model.openTranscript = { [weak self] in self?.transcript.show() }
     web.loadFileURL(page, allowingReadAccessTo: ui)
   }
   func show() { window.orderFrontRegardless() }
@@ -193,7 +190,7 @@ private final class AnswerWebView: WKWebView {
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(text, forType: .string)
       }
-    default: throw SageError("不支持的操作。")
+    default: throw CueError("不支持的操作。")
     }
     return [:] as JSON
   }
@@ -230,29 +227,4 @@ private final class AnswerWebView: WKWebView {
       window.cue = Object.fromEntries(['command','audio','copy','ready','caption','height'].map(method=>[method,(...args)=>call(method,...args)]));
     })();
     """
-}
-
-/// Ordinary window for the full transcript and screenshot picker.
-@MainActor final class TranscriptWindow {
-  private let model: ChatModel
-  private var window: NSWindow?
-  init(model: ChatModel) { self.model = model }
-  func show() {
-    let window = self.window ?? make()
-    self.window = window
-    NSApp.activate(ignoringOtherApps: true)
-    window.makeKeyAndOrderFront(nil)
-  }
-  private func make() -> NSWindow {
-    let window = NSWindow(
-      contentRect: NSRect(x: 0, y: 0, width: 520, height: 640),
-      styleMask: [.titled, .closable, .miniaturizable, .resizable], backing: .buffered,
-      defer: false)
-    window.title = "转录与截图"
-    window.isReleasedWhenClosed = false
-    window.contentViewController = NSHostingController(rootView: TranscriptRoot(model: model))
-    if !window.setFrameUsingName("CueTranscript") { window.center() }
-    window.setFrameAutosaveName("CueTranscript")
-    return window
-  }
 }

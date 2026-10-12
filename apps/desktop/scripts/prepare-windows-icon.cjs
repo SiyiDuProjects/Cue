@@ -1,4 +1,4 @@
-// Convert the existing Sage tray artwork into Windows icon resources.
+// Convert the existing Cue tray artwork into Windows icon resources.
 const { app, nativeImage } = require("electron");
 const fs = require("node:fs");
 const path = require("node:path");
@@ -20,6 +20,6 @@ app.whenReady().then(() => {
     offset += images[i].length;
   });
   fs.mkdirSync(path.join(root, "assets"), { recursive: true });
-  fs.writeFileSync(path.join(root, "assets/sage.ico"), Buffer.concat([header, ...images]));
+  fs.writeFileSync(path.join(root, "assets/cue.ico"), Buffer.concat([header, ...images]));
   app.exit(0);
 }).catch(() => app.exit(1));

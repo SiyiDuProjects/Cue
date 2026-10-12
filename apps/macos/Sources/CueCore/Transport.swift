@@ -63,7 +63,7 @@ public final class HTTPClient: NSObject, URLSessionTaskDelegate, @unchecked Send
     if !token.isEmpty { request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization") }
     if let body { request.httpBody = try JSONSerialization.data(withJSONObject: body) }
     let (data, response) = try await session.data(for: request)
-    guard let response = response as? HTTPURLResponse else { throw SageError("无效服务器响应。") }
+    guard let response = response as? HTTPURLResponse else { throw CueError("无效服务器响应。") }
     let json = (try? JSONSerialization.jsonObject(with: data)) as? JSON ?? [:]
     guard (200..<300).contains(response.statusCode) else {
       throw HTTPFailure(
@@ -146,7 +146,7 @@ extension URLSessionWebSocketTask: SocketConnection {}
       }
       var heartbeat: Task<Void, Never>?
       do {
-        let auth: JSON = ["type": "authenticate", "protocol": protocolVersion, "remote_transport": "https"]
+        let auth: JSON = ["type": "authenticate", "protocol": protocolVersion]
         try await current.send(
           .string(String(data: try JSONSerialization.data(withJSONObject: auth), encoding: .utf8)!))
         var lastMessage = Date()
@@ -172,13 +172,13 @@ extension URLSessionWebSocketTask: SocketConnection {}
           @unknown default: continue
           }
           guard let event = try JSONSerialization.jsonObject(with: data) as? JSON else {
-            throw SageError("无效实时消息。")
+            throw CueError("无效实时消息。")
           }
           if event["type"] as? String == "session_ready" {
             guard event["protocol"] as? String == protocolVersion else {
               onState(false, "服务器协议不兼容，请更新 Cue。")
               stopped = true
-              throw SageError("服务器协议不兼容，请更新 Cue。")
+              throw CueError("服务器协议不兼容，请更新 Cue。")
             }
             ready = true
             attempt = 0
@@ -190,7 +190,7 @@ extension URLSessionWebSocketTask: SocketConnection {}
         }
       } catch {
         if !stopped {
-          onState(false, error is SageError ? error.localizedDescription : "连接中断，正在恢复；未自动重发消息。")
+          onState(false, error is CueError ? error.localizedDescription : "连接中断，正在恢复；未自动重发消息。")
         }
       }
       timeout.cancel()
@@ -213,15 +213,15 @@ extension URLSessionWebSocketTask: SocketConnection {}
   }
   /// Ordered control insertion for a cutoff: no actor suspension between commit and ask markers.
   public func enqueue(_ json: JSON) throws {
-    guard ready, !stopped else { throw SageError("连接尚未就绪。") }
-    guard frames.count < 100 else { throw SageError("连接积压，请稍后重试。") }
+    guard ready, !stopped else { throw CueError("连接尚未就绪。") }
+    guard frames.count < 100 else { throw CueError("连接积压，请稍后重试。") }
     let text = String(data: try JSONSerialization.data(withJSONObject: json), encoding: .utf8)!
     frames.append((.string(text), nil))
     drain()
   }
   public func send(_ json: JSON) async throws {
-    guard ready, !stopped else { throw SageError("连接尚未就绪，请稍后重试。") }
-    guard frames.count < 100 else { throw SageError("连接积压，请稍后重试。") }
+    guard ready, !stopped else { throw CueError("连接尚未就绪，请稍后重试。") }
+    guard frames.count < 100 else { throw CueError("连接积压，请稍后重试。") }
     let text = String(data: try JSONSerialization.data(withJSONObject: json), encoding: .utf8)!
     try await withCheckedThrowingContinuation { continuation in
       frames.append((.string(text), continuation))
@@ -238,7 +238,7 @@ extension URLSessionWebSocketTask: SocketConnection {}
           try await current.send(message)
           continuation?.resume()
         } catch {
-          continuation?.resume(throwing: SageError("发送未确认，请检查重连后的记录再重试。"))
+          continuation?.resume(throwing: CueError("发送未确认，请检查重连后的记录再重试。"))
           current.cancel(with: .goingAway, reason: nil)
           break
         }
@@ -247,7 +247,7 @@ extension URLSessionWebSocketTask: SocketConnection {}
     }
   }
   private func failQueue() {
-    for (_, continuation) in frames { continuation?.resume(throwing: SageError("连接中断，发送未确认。")) }
+    for (_, continuation) in frames { continuation?.resume(throwing: CueError("连接中断，发送未确认。")) }
     frames = []
   }
 }

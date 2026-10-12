@@ -18,7 +18,6 @@ export interface CueBridge {
   uploadScreenshot?(shot: Event): Promise<any>;
   sources(): Promise<any[]>;
   selectSource(id: string): Promise<unknown>;
-  uploadMaterials(): Promise<any>;
   importConnection(): Promise<unknown>;
   /** Windows overlay: size the window to the rendered content. */
   resize?(size: { width: number; height: number }): Promise<unknown>;

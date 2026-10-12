@@ -13,7 +13,7 @@ app.whenReady().then(async () => {
       const context = new AudioContext({ sampleRate: 24000 });
       try {
         await context.audioWorklet.addModule(${JSON.stringify(url)});
-        const processor = new AudioWorkletNode(context, "interview-pcm", {
+        const processor = new AudioWorkletNode(context, "cue-pcm", {
           numberOfInputs: 1, numberOfOutputs: 1, outputChannelCount: [1], channelCount: 1, channelCountMode: "explicit",
         });
         const oscillator = context.createOscillator();

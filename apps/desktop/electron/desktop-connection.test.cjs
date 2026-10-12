@@ -6,7 +6,7 @@ const path = require("node:path");
 const { loadConnection, saveConnection, validateConnection } = require("./desktop-connection.cjs");
 
 function fixture(t) {
-  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "sage-connection-test-"));
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "cue-connection-test-"));
   t.after(() => { for (const name of ["connection.bin", "connection.bin.tmp"]) {
     const file = path.join(directory, name); if (fs.existsSync(file)) fs.unlinkSync(file);
   } fs.rmdirSync(directory); });
@@ -24,29 +24,53 @@ test("connection is stored encrypted and only desktop fields are restored", asyn
   assert.equal(fs.readFileSync(path.join(directory, "connection.bin"), "utf8"), "synthetic-encrypted");
   const env = {};
   assert.equal(await loadConnection(directory, storage, env), true);
-  assert.deepEqual(env, { INTERVIEW_API_BASE_URL: "https://example.test", INTERVIEW_ACCESS_TOKEN: "fixture-token" });
+  assert.deepEqual(env, { CUE_API_BASE_URL: "https://example.test", CUE_ACCESS_TOKEN: "fixture-token" });
 });
 test("saved credentials cannot be redirected to a different server", async t => {
   const { directory, storage } = fixture(t);
   await saveConnection(directory, storage, { apiBaseUrl: "https://example.test", accessToken: "fixture-token" });
-  const env = { INTERVIEW_API_BASE_URL: "https://other.test" };
+  const env = { CUE_API_BASE_URL: "https://other.test" };
   await assert.rejects(loadConnection(directory, storage, env), /连接配置/);
-  assert.equal(env.INTERVIEW_ACCESS_TOKEN, undefined);
-  env.INTERVIEW_ACCESS_TOKEN = "explicit-other-token";
+  assert.equal(env.CUE_ACCESS_TOKEN, undefined);
+  env.CUE_ACCESS_TOKEN = "explicit-other-token";
   assert.equal(await loadConnection(directory, storage, env), false);
-  assert.equal(env.INTERVIEW_ACCESS_TOKEN, "explicit-other-token");
+  assert.equal(env.CUE_ACCESS_TOKEN, "explicit-other-token");
 });
-test("legacy documents directory survives import without restoring a CLI or provider auth", async t => {
+test("obsolete CLI and documents settings are discarded without touching personal files", async t => {
   const { directory, storage } = fixture(t);
   const workspace = path.join(directory, "personal"), binary = path.join(directory, "codex.exe");
   await saveConnection(directory, storage, { accessToken: "fixture-token", codexWorkspace: workspace,
     codexBin: binary, OPENAI_API_KEY: "not-stored" });
   const env = {};
   await loadConnection(directory, storage, env);
-  assert.equal(env.INTERVIEW_MATERIALS_WORKSPACE, workspace);
-  assert.equal(env.INTERVIEW_CODEX_BIN, undefined);
-  assert.equal(env.OPENAI_API_KEY, undefined);
-  assert.throws(() => validateConnection({ accessToken: "fixture", codexWorkspace: "relative/path" }), /绝对路径/);
+  assert.deepEqual(env, { CUE_API_BASE_URL: "https://cue.siyidu.com", CUE_ACCESS_TOKEN: "fixture-token" });
+  assert.deepEqual(validateConnection({ accessToken: "fixture", codexWorkspace: "relative/path", materialsWorkspace: workspace }),
+    { apiBaseUrl: "https://cue.siyidu.com", accessToken: "fixture" });
+});
+test("existing encrypted production login is upgraded once to the same site's Cue domain", async t => {
+  const { directory, storage } = fixture(t);
+  await saveConnection(directory, storage, { apiBaseUrl: "https://interview.siyidu.com", accessToken: "existing-login" });
+  const encrypt = storage.encryptStringAsync;
+  let writes = 0;
+  storage.encryptStringAsync = async value => { writes++; return encrypt(value); };
+  const env = {};
+  await loadConnection(directory, storage, env);
+  assert.deepEqual(env, { CUE_API_BASE_URL: "https://cue.siyidu.com", CUE_ACCESS_TOKEN: "existing-login" });
+  assert.equal(writes, 1);
+  assert.deepEqual(JSON.parse((await storage.decryptStringAsync()).result),
+    { apiBaseUrl: "https://cue.siyidu.com", accessToken: "existing-login" });
+  await loadConnection(directory, storage, {});
+  assert.equal(writes, 1);
+});
+test("failed connection migration preserves the encrypted login and exports nothing", async t => {
+  const { directory, storage } = fixture(t);
+  await saveConnection(directory, storage, { apiBaseUrl: "https://interview.siyidu.com", accessToken: "existing-login" });
+  const before = fs.readFileSync(path.join(directory, "connection.bin"));
+  storage.encryptStringAsync = async () => { throw new Error("synthetic encryption failure"); };
+  const env = {};
+  await assert.rejects(loadConnection(directory, storage, env), /连接配置/);
+  assert.deepEqual(env, {});
+  assert.deepEqual(fs.readFileSync(path.join(directory, "connection.bin")), before);
 });
 test("unavailable encryption preserves previous encrypted connection", async t => {
   const { directory, storage } = fixture(t);

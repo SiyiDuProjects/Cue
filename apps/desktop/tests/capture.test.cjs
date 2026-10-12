@@ -47,10 +47,14 @@ test(`Windows ${type} flushes both worklets before its marker and holds later PC
     emit(value) { this.onmessage({ data: JSON.stringify(value) }); }
     close() { this.readyState = 3; }
   }
-  const window = { sageCaptureHost: { origin: "https://synthetic.invalid", connect: async () => {} },
-    setInterval: () => 1, setTimeout, addEventListener() {} };
+  // Timers must not keep the test process alive: the web-command pickup
+  // keeps polling for as long as the connection is open.
+  const later = (fn, ms) => { const t = setTimeout(fn, ms); t.unref(); return t; };
+  const window = { cueCaptureHost: { origin: "https://synthetic.invalid", connect: async () => {},
+    request: async () => ({ connected: false, commands: [] }) },
+    setInterval: () => 1, setTimeout: later, addEventListener() {} };
   const bytes = (n) => new Int16Array([n]).buffer;
-  compile("src/captureClient.ts", { window, WebSocket: Socket, setTimeout,
+  compile("src/captureClient.ts", { window, WebSocket: Socket, setTimeout: later,
     setInterval: () => 1, clearInterval() {}, clearTimeout() {},
     require(name) {
       if (name.endsWith("audioCapture")) return {
@@ -253,7 +257,7 @@ test("native worklet converts and clamps PCM across variable render block sizes"
   const scope = {
     Int16Array, currentTime: 2, sampleRate: 24000,
     AudioWorkletProcessor: class { constructor() { this.port = { postMessage: (data, transfers) => messages.push({ data, transfers }) }; } },
-    registerProcessor(name, klass) { assert.equal(name, "interview-pcm"); Processor = klass; },
+    registerProcessor(name, klass) { assert.equal(name, "cue-pcm"); Processor = klass; },
   };
   vm.runInNewContext(fs.readFileSync(path.join(__dirname, "../public/pcm-worklet.js"), "utf8"), scope);
   const processor = new Processor();

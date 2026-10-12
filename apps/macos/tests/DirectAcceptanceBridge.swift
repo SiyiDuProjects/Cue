@@ -12,7 +12,7 @@ import Foundation
   init() throws {
     guard let node = ProcessInfo.processInfo.environment["CUE_NODE_BIN"],
       let script = ProcessInfo.processInfo.environment["CUE_DIRECT_RUNNER"]
-    else { throw SageError("Direct acceptance runtime paths are missing") }
+    else { throw CueError("Direct acceptance runtime paths are missing") }
     process.executableURL = URL(fileURLWithPath: node)
     process.arguments = [script]
     process.environment = ["PATH": "/usr/bin:/bin", "NODE_NO_WARNINGS": "1"]
@@ -26,7 +26,7 @@ import Foundation
         for try await line in handle.bytes.lines {
           guard let data = line.data(using: .utf8),
             let value = try JSONSerialization.jsonObject(with: data) as? JSON
-          else { throw SageError("Direct runtime returned invalid data") }
+          else { throw CueError("Direct runtime returned invalid data") }
           self?.onMessage(value)
         }
         if self?.closing == false {

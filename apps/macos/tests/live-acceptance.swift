@@ -3,7 +3,7 @@ import Security
 
 // Explicit production acceptance driver. It sends only the supplied synthetic
 // PCM fixtures, never opens a microphone or screen, and never exports credentials.
-// Compile with SageCore/Protocol.swift and SageCore/Transport.swift.
+// Compile with CueCore/Protocol.swift and CueCore/Transport.swift.
 @MainActor final class LiveClient {
   let name: String
   var link: SocketLink!
@@ -23,7 +23,7 @@ import Security
     self.report = report
     bridge = try DirectAcceptanceBridge()
     link = SocketLink(
-      url: try address.socket(interview: "current", role: "interviewer"), token: keys.device,
+      url: address.socket(), token: keys.device,
       role: "desktop", siteToken: keys.site,
       connectionFactory: { [weak self] url in
         var request = URLRequest(url: url)
@@ -98,13 +98,13 @@ import Security
   func wait(_ type: String, after: Int = 0, timeout: Double = 25) async throws -> JSON {
     let end = Date().addingTimeInterval(timeout)
     while Date() < end {
-      if let failure { throw SageError(failure) }
+      if let failure { throw CueError(failure) }
       if let result = events.dropFirst(after).first(where: { $0["type"] as? String == type }) {
         return result
       }
       try await Task.sleep(for: .milliseconds(100))
     }
-    throw SageError("Timed out waiting for \(name):\(type)")
+    throw CueError("Timed out waiting for \(name):\(type)")
   }
   func command(_ value: JSON, expecting type: String) async throws -> JSON {
     let index = events.count
@@ -136,7 +136,7 @@ import Security
     ])
     var didCancel = false
     while Date().timeIntervalSince(start) < 135 {
-      if let failure { throw SageError(failure) }
+      if let failure { throw CueError(failure) }
       if cancel && !didCancel && Date().timeIntervalSince(start) > 2 {
         didCancel = true
         try await link.send(["type": "cancel", "id": id])
@@ -150,7 +150,7 @@ import Security
           "answer": result["answer"] ?? "", "detail": result["detail"] ?? "",
         ])
         guard status == (cancel ? "cancelled" : "completed") else {
-          throw SageError("Unexpected answer status: \(status)")
+          throw CueError("Unexpected answer status: \(status)")
         }
         // Terminal publication precedes the server task's finally cleanup.
         try await Task.sleep(for: .milliseconds(250))
@@ -158,12 +158,12 @@ import Security
       }
       try await Task.sleep(for: .milliseconds(100))
     }
-    throw SageError("Answer timed out without a terminal state")
+    throw CueError("Answer timed out without a terminal state")
   }
   func chat(_ title: String) async throws -> String {
     let event = try await command(["type": "new_chat"], expecting: "chat_created")
     guard let chat = event["chat"] as? JSON, let id = chat["id"] as? String else {
-      throw SageError("No chat ID")
+      throw CueError("No chat ID")
     }
     _ = try await command(["type": "rename_chat", "chat": id, "title": title], expecting: "state")
     return id
@@ -187,14 +187,14 @@ import Security
         guard (answer["answer"] as? String ?? "").contains("玉兰十七"),
           (answer["detail"] as? String ?? "").contains("近期上下文")
         else {
-          throw SageError("Long conversation did not retain recent context or disclose truncation")
+          throw CueError("Long conversation did not retain recent context or disclose truncation")
         }
       }
     }
     let history = try await client.command(
       ["type": "history", "chat": longChat], expecting: "history")
     guard (history["messages"] as? [JSON])?.count == 18 else {
-      throw SageError("Long conversation history was lost")
+      throw CueError("Long conversation history was lost")
     }
     report([
       "event": "pass_long_chat", "rounds": 18, "recent_context": true, "truncation_disclosed": true,
@@ -223,7 +223,7 @@ import Security
       guard status == errSecSuccess, let data = result as? Data,
         let value = String(data: data, encoding: .utf8)
       else {
-        throw SageError("Keychain access failed (\(status)); no credentials were exported")
+        throw CueError("Keychain access failed (\(status)); no credentials were exported")
       }
       return try SiteCredentials(value)
     }.value
@@ -239,7 +239,7 @@ import Security
     var offsets: [Int]? = nil
     var minute = -1
     while Date().timeIntervalSince(start) < seconds {
-      if let failure = client.failure { throw SageError(failure) }
+      if let failure = client.failure { throw CueError(failure) }
       let elapsed = Date().timeIntervalSince(start)
       if let due = pending.first, elapsed >= due {
         pending.removeFirst()
@@ -273,7 +273,7 @@ import Security
       if pause > 0 {
         try await Task.sleep(for: .seconds(pause))
       } else if pause < -2 {
-        throw SageError("Local sender fell more than two seconds behind realtime")
+        throw CueError("Local sender fell more than two seconds behind realtime")
       }
     }
   }
@@ -308,13 +308,13 @@ import Security
       let fixtures = try ["interviewer.pcm", "candidate.pcm"].map { name in
         let data = try Data(contentsOf: fixtureDir.appendingPathComponent(name))
         guard data.count > 48000, data.count < 480000, data.count % 2 == 0 else {
-          throw SageError("Invalid PCM fixture")
+          throw CueError("Invalid PCM fixture")
         }
         return data
       }
       report(["event": "keychain_wait", "microphone": false, "screen": false, "minutes": minutes])
       let credentials = try await keys()
-      let address = try ServerAddress("https://interview.siyidu.com")
+      let address = try ServerAddress("https://cue.siyidu.com")
       let first = try LiveClient("first", address: address, keys: credentials, report: report)
       clients.append(first)
       first.link.start()
@@ -325,7 +325,7 @@ import Security
       let firstSpeech = first.events.count
       try await stream(first, fixtures: fixtures, seconds: 8, speechAt: [0], report: report)
       let stopped = try await first.command(["type": "stop"], expecting: "stopped")
-      guard stopped["complete"] as? Bool == true else { throw SageError("Tail commit incomplete") }
+      guard stopped["complete"] as? Bool == true else { throw CueError("Tail commit incomplete") }
       let turns = first.finals(after: firstSpeech)
       for (role, word) in [("interviewer", "cobalt"), ("candidate", "maple")] {
         guard
@@ -333,7 +333,7 @@ import Security
             $0["speaker"] as? String == role
               && ($0["text"] as? String ?? "").lowercased().contains(word)
           })
-        else { throw SageError("Missing or mixed transcript for \(role)") }
+        else { throw CueError("Missing or mixed transcript for \(role)") }
       }
       report(["event": "pass_dual_channel"])
       _ = try await first.command(["type": "start"], expecting: "started")
@@ -344,7 +344,7 @@ import Security
       try await Task.sleep(for: .seconds(4))
       guard
         !first.events.dropFirst(reconnect).contains(where: { $0["type"] as? String == "started" })
-      else { throw SageError("Reconnection restarted transcription") }
+      else { throw CueError("Reconnection restarted transcription") }
       report(["event": "pass_reconnect_no_restart", "disconnected_while_recording": true])
       _ = try await first.command(["type": "start"], expecting: "started")
       let takeover = first.events.count
@@ -358,7 +358,7 @@ import Security
         !first.events.dropFirst(takeover).contains(where: {
           $0["type"] as? String == "session_ready"
         })
-      else { throw SageError("Replaced client reclaimed ownership") }
+      else { throw CueError("Replaced client reclaimed ownership") }
       first.close()
       report(["event": "pass_takeover_no_revival"])
       second.strictConnection = true
@@ -379,7 +379,7 @@ import Security
       try await chatTask.value
       let final = try await second.command(["type": "stop"], expecting: "stopped")
       guard final["complete"] as? Bool == true else {
-        throw SageError("Soak ended with missing audio")
+        throw CueError("Soak ended with missing audio")
       }
       if minutes >= 62 {
         for role in ["interviewer", "candidate"] {
@@ -387,7 +387,7 @@ import Security
             second.events.dropFirst(soakStart).contains(where: {
               $0["type"] as? String == "rotated" && $0["role"] as? String == role
             })
-          else { throw SageError("No real upstream rotation for \(role)") }
+          else { throw CueError("No real upstream rotation for \(role)") }
         }
         let lastRotation = second.events.lastIndex(where: { $0["type"] as? String == "rotated" })!
         for (role, word) in [("interviewer", "cobalt"), ("candidate", "maple")] {
@@ -396,7 +396,7 @@ import Security
               $0["speaker"] as? String == role
                 && ($0["text"] as? String ?? "").lowercased().contains(word)
             })
-          else { throw SageError("Missing post-rotation speech for \(role)") }
+          else { throw CueError("Missing post-rotation speech for \(role)") }
         }
       }
       let stoppedIndex = second.events.count
@@ -405,7 +405,7 @@ import Security
         !second.events.dropFirst(stoppedIndex).contains(where: {
           $0["type"] as? String == "started" || $0["type"] as? String == "rotated"
         })
-      else { throw SageError("Stopped recording revived") }
+      else { throw CueError("Stopped recording revived") }
       report([
         "event": "passed", "wall_seconds": Date().timeIntervalSince(beginning),
         "soak_minutes": minutes,

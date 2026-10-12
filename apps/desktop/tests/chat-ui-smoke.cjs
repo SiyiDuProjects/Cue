@@ -156,6 +156,30 @@ app
       await wait(
         "document.querySelector('.captions p').textContent==='好的，我们先从项目开始。缓存一致性怎么保证？'",
       );
+      // The strip follows the newest words and scrolls back over earlier ones;
+      // scrolling up stops following until the reader returns to the end.
+      for (let i = 3; i < 12; i++)
+        await event({
+          type: "caption",
+          item: "i" + i,
+          text: "第" + i + "句比较长的面试官发言，用来撑出好几行字幕。",
+        });
+      await wait(
+        "(e=>e.scrollHeight>e.clientHeight&&e.scrollHeight-e.scrollTop-e.clientHeight<4)(document.querySelector('.captions'))",
+      );
+      await js(
+        "(e=>{e.scrollTop=0;e.dispatchEvent(new Event('scroll'))})(document.querySelector('.captions'))",
+      );
+      await event({ type: "caption", item: "i12", text: "新的一句。" });
+      await new Promise((r) => setTimeout(r, 100));
+      assert.equal(
+        await js("document.querySelector('.captions').scrollTop"),
+        0,
+      );
+      assert.match(
+        await js("document.querySelector('.captions p').textContent"),
+        /新的一句。$/,
+      );
       await wait("document.querySelector('.clock')");
       fs.mkdirSync(path.join(__dirname, "../../../artifacts"), {
         recursive: true,
@@ -237,27 +261,39 @@ app
         "window.remoteResults.some(r=>r.id==='failure'&&!r.ok&&r.detail.includes('录屏权限'))",
       );
       await js("window.failShot=false");
-      await remote("remove", "unselect", {image:"shot"});
+      await remote("remove", "unselect", { image: "shot" });
       await wait("window.remoteResults.some(r=>r.id==='remove'&&r.ok)");
       await wait("!window.remoteStates.at(-1).selected.includes('shot')");
       await js("window.holdUpload=true");
       await remote("queued-shot", "shot");
-      await wait("window.finishUpload && window.remoteResults.some(r=>r.id==='queued-shot'&&r.ok)");
+      await wait(
+        "window.finishUpload && window.remoteResults.some(r=>r.id==='queued-shot'&&r.ok)",
+      );
       await wait("window.remoteStates.at(-1).uploading===1");
       const oldAsk = await js("window.lastAsk?.id");
-      await remote("web-ask", "ask", {text:"remote follow-up",effort:"low"});
-      await wait("window.remoteResults.some(r=>r.id==='web-ask'&&r.ok&&r.answer)");
-      assert.equal(await js("window.lastAsk?.id"),oldAsk);
+      await remote("web-ask", "ask", {
+        text: "remote follow-up",
+        effort: "low",
+      });
+      await wait(
+        "window.remoteResults.some(r=>r.id==='web-ask'&&r.ok&&r.answer)",
+      );
+      assert.equal(await js("window.lastAsk?.id"), oldAsk);
       await remote("web-cancel", "cancel");
       await wait("window.remoteResults.some(r=>r.id==='web-cancel'&&r.ok)");
       await js("window.holdUpload=false;window.finishUpload()");
       await wait("window.remoteStates.at(-1).uploading===0");
-      assert.equal(await js("window.lastAsk?.id"),oldAsk);
-      await remote("web-answer", "ask", {text:"remote follow-up",effort:"low"});
+      assert.equal(await js("window.lastAsk?.id"), oldAsk);
+      await remote("web-answer", "ask", {
+        text: "remote follow-up",
+        effort: "low",
+      });
       await wait("window.lastAsk?.text==='remote follow-up'");
-      assert.equal(await js("window.lastAsk.effort"),'low');
-      assert.ok((await js("window.lastAsk.images")).includes('shot'));
-      await wait("!document.querySelector('.bar .answer-button')?.textContent.includes('停止')");
+      assert.equal(await js("window.lastAsk.effort"), "low");
+      assert.ok((await js("window.lastAsk.images")).includes("shot"));
+      await wait(
+        "!document.querySelector('.bar .answer-button')?.textContent.includes('停止')",
+      );
       await js("window.nextMenu={remote:false}");
       await click('[aria-label="更多"]');
       await wait("window.remoteStates.at(-1).allow===false");
@@ -274,23 +310,9 @@ app
       await wait("window.remoteResults.some(r=>r.id==='r3'&&!r.ok)");
       assert.equal(await js("!!document.querySelector('.clock')"), false);
       assert.equal(await js("document.querySelector('.remote-mark')"), null);
-      // Transcript view inside the card.
-      for (const turn of [
-        { id: "silence", text: "", status: "final" },
-        { id: "speech", text: "测试转录", status: "final" },
-        { id: "interrupted", text: "", status: "interrupted" },
-      ])
-        await event({
-          type: "transcript",
-          turn: { ...turn, speaker: "interviewer", created: 1 },
-        });
-      await js("window.nextMenu={action:'transcript'}");
-      await click('[aria-label="更多"]');
-      await wait("document.querySelectorAll('.turn').length===2");
-      assert.match(
-        await js("document.querySelector('.transcript').textContent"),
-        /未完整确认/,
-      );
+      // The refused web command left a notice; dismiss it before collapsing.
+      await click('[aria-label="关闭提示"]');
+      assert.equal(await js("document.querySelector('.transcript')"), null);
       assert.equal(
         await js("document.documentElement.scrollWidth<=innerWidth"),
         true,
@@ -314,7 +336,7 @@ app
         true,
       );
       console.log(
-        "PASS overlay: hidden newest chat and recent history, web remote status/commands/switch, content-sized window, focus only for typing, screenshot attachment, streaming reasoning/Markdown/table/math, copy, one exchange with paging, native menu depth/source/failure, interviewer captions, transcript view and manual reconnect; all network blocked",
+        "PASS overlay: hidden newest chat and recent history, web remote status/commands/switch, content-sized window, focus only for typing, screenshot attachment, streaming reasoning/Markdown/table/math, copy, one exchange with paging, native menu depth/source/failure, scrollable interviewer captions and manual reconnect; all network blocked",
       );
     } finally {
       win.destroy();

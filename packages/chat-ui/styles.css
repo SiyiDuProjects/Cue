@@ -47,6 +47,7 @@ body:has(.overlay) {
 }
 .bar .button,
 .card,
+.captions,
 .overlay .banner,
 .overlay .notice {
   -webkit-app-region: no-drag;
@@ -81,24 +82,29 @@ body:has(.overlay) {
   font-size: 12px;
   font-weight: 600;
 }
-/* Two reserved lines; older words scroll off the top as speech arrives. */
+/* Two reserved lines that follow the newest words; the strip scrolls back
+   over the last ten minutes, so it is not a window drag area. */
 .captions {
   width: 560px;
   box-sizing: border-box;
   height: calc(3em + 16px);
   display: flex;
   flex-direction: column;
-  justify-content: flex-end;
-  overflow: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: none;
   padding: 8px 14px;
   border-radius: 12px;
   font-size: 15px;
   font-weight: 500;
   line-height: 1.5;
-  -webkit-app-region: drag;
 }
+.captions::-webkit-scrollbar {
+  display: none;
+}
+/* Short text sits on the bottom line without hiding older overflow. */
 .captions p {
-  margin: 0;
+  margin: auto 0 0;
 }
 .captions.waiting {
   color: var(--muted);
@@ -112,30 +118,12 @@ body:has(.overlay) {
   padding: 10px;
   border-radius: 16px;
 }
-.card .conversation,
-.card .transcript,
-.image-full {
+.card .conversation {
   flex: none;
   overflow-y: auto;
 }
 .card .column:empty {
   display: none;
-}
-.card .transcript .column {
-  max-width: none;
-  padding: 0 6px 6px;
-  gap: 14px;
-}
-.card-head {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin-left: -6px;
-}
-.image-full img {
-  display: block;
-  width: 100%;
-  border-radius: 8px;
 }
 /* Mac answer card: the native overlay draws the glass and every control. */
 html.mac body {
@@ -250,14 +238,8 @@ html.mac body {
   min-width: 0;
 }
 
-.hint {
-  margin: 0;
-  font-size: 12px;
-  color: var(--muted);
-}
 /* Scrolling areas */
-.conversation,
-.transcript {
+.conversation {
   flex: 1;
   min-height: 0;
   overflow-y: auto;
@@ -552,96 +534,9 @@ html.dark .composer {
   cursor: var(--cursor-interactive);
 }
 
-/* Transcript and screenshots */
-.section-title {
-  display: flex;
-  align-items: baseline;
-  flex-wrap: wrap;
-  gap: 4px 10px;
-}
-.section-title h2 {
-  margin: 0;
-  font-size: 15px;
-  font-weight: 600;
-}
 .empty-note {
   margin: 0;
   color: var(--muted);
-}
-.turn {
-  display: flex;
-  flex-direction: column;
-  gap: 3px;
-}
-.turn-meta {
-  display: flex;
-  gap: 8px;
-  font-size: 12px;
-  color: var(--muted);
-}
-.speaker {
-  font-weight: 600;
-}
-.speaker.them {
-  color: var(--accent);
-}
-.speaker.me {
-  color: var(--foreground);
-}
-.turn p {
-  margin: 0;
-  line-height: 1.6;
-  white-space: pre-wrap;
-}
-.image-library {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
-  gap: 12px;
-}
-.thumb {
-  position: relative;
-  display: grid;
-  place-items: center;
-  width: 100%;
-  aspect-ratio: 16 / 10;
-  padding: 0;
-  border: 0;
-  border-radius: 10px;
-  overflow: hidden;
-  background: var(--default);
-  color: var(--muted);
-  font-size: 12px;
-  cursor: var(--cursor-interactive);
-}
-.thumb[aria-pressed="true"] {
-  box-shadow: 0 0 0 2px var(--accent);
-}
-.thumb:focus-visible {
-  outline: 2px solid var(--focus);
-  outline-offset: 2px;
-}
-.thumb img {
-  width: 100%;
-  height: 100%;
-  object-fit: cover;
-}
-.thumb-check {
-  position: absolute;
-  top: 6px;
-  right: 6px;
-  width: 20px;
-  height: 20px;
-  display: grid;
-  place-items: center;
-  border-radius: 50%;
-  background: var(--accent);
-  color: var(--accent-foreground);
-  font-size: 12px;
-}
-.image-actions {
-  display: flex;
-  gap: 2px;
-  margin: 4px 0 0 -8px;
 }
 .tip {
   display: contents;
@@ -676,9 +571,9 @@ body:has(.overlay.web) {
 .overlay.web .card .conversation {
   overflow: visible;
 }
-/* Captions size to the latest words; the overlay reserves two lines. */
+/* A third line on the page, where the strip is the only transcript. */
 .overlay.web .captions {
-  height: auto;
+  height: calc(4.5em + 16px);
 }
 .overlay.web .card > .empty-note {
   padding: 16px 6px 12px;

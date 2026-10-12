@@ -11,7 +11,6 @@ __pycache__/
 .DS_Store
 .env
 .env.*
-!.env.example
 *.log
 
 # Removed local ASR/model artifacts must not return.
@@ -29,7 +28,6 @@ apps/server/web/*
 /apps/server/context/resume.txt
 /apps/server/data/
 /assistant-workspace/materials/*
-!/assistant-workspace/materials/.gitkeep
 /assistant-workspace/.runtime/
 /assistant-workspace/conversations/
 /artifacts/interview-replay/
@@ -49,7 +47,6 @@ apps/server/web/*
 **/.runtime/
 .env
 .env.*
-!.env.example
 !.env.sample
 .npmrc
 .dev.vars

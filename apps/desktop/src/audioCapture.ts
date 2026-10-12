@@ -166,7 +166,7 @@ export function startLocalAudioCapture(
     .addModule(new URL("./pcm-worklet.js", document.baseURI).href)
     .then(() => {
       if (stopped) return;
-      processorNode = new AudioWorkletNode(audioContext, "interview-pcm", {
+      processorNode = new AudioWorkletNode(audioContext, "cue-pcm", {
         numberOfInputs: 1,
         numberOfOutputs: 1,
         outputChannelCount: [1],

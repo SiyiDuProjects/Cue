@@ -1,5 +1,5 @@
 import Foundation
-import SageCore
+import CueCore
 
 var checked = 0
 func check(_ condition: @autoclosure () -> Bool, _ name: String) {
@@ -11,7 +11,7 @@ func check(_ condition: @autoclosure () -> Bool, _ name: String) {
   print("PASS \(name)")
 }
 for value in [
-  "https://interview.siyidu.com", "http://127.0.0.1:8000", "http://localhost:8000",
+  "https://cue.siyidu.com", "http://127.0.0.1:8000", "http://localhost:8000",
   "http://[::1]:8000",
 ] {
   check((try? ServerAddress(value)) != nil, "allowed server \(value)")
@@ -22,12 +22,10 @@ for value in [
 ] {
   check((try? ServerAddress(value)) == nil, "rejected unsafe origin")
 }
-let address = try ServerAddress("https://interview.siyidu.com")
-let socket = try address.socket(interview: "current_123", role: "interviewer")
+let address = try ServerAddress("https://cue.siyidu.com")
+let socket = address.socket()
 check(socket.scheme == "wss" && socket.query == nil, "websocket credentials never in URL")
-check(
-  (try? address.socket(interview: "../bad", role: "interviewer")) == nil,
-  "interview path traversal rejected")
+check(socket.path == "/capture/socket", "capture uses one fixed socket endpoint")
 var queue = PCMQueue(capacity: 8)
 queue.append(Data([1, 2, 3, 4]))
 queue.append(Data([5, 6, 7, 8]))
@@ -61,7 +59,7 @@ print("\(checked) offline checks passed")
   func resume() {}
   func cancel(with code: URLSessionWebSocketTask.CloseCode, reason: Data?) {
     closeCode = code
-    receiver?.resume(throwing: SageError("closed"))
+    receiver?.resume(throwing: CueError("closed"))
     receiver = nil
   }
   func send(_ message: URLSessionWebSocketTask.Message) async throws {

@@ -1,11 +1,11 @@
-name: Deploy legacy interview server (manual only)
+name: Deploy Cue archived server (manual only)
 
 # The production domain now serves Sites. Source cleanup must not deploy the VPS.
 on:
   workflow_dispatch:
 
 concurrency:
-  group: deploy-interview-server
+  group: deploy-cue-archived-server
   cancel-in-progress: false
 
 permissions:

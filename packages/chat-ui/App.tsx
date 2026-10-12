@@ -2,12 +2,10 @@ import { useEffect, useRef, useState, type ReactNode } from "react";
 import { Button, Spinner } from "@heroui/react";
 import {
   ArrowClockwise,
-  ArrowLeft,
   ArrowUp,
   Camera,
   CaretDown,
   CaretUp,
-  Check,
   DeviceMobile,
   DotsThree,
   Stop,
@@ -17,14 +15,10 @@ import {
 } from "@phosphor-icons/react";
 import { type Event } from "./bridge";
 import { OneExchange, busy, shortcut, type Message } from "./Messages";
+import { CAPTION_WINDOW, CaptionStrip, joinCaptions } from "./Captions";
 import "./styles.css";
 import { UploadQueue } from "./upload-queue.mjs";
 
-const time = (value: number) =>
-  new Date(value).toLocaleTimeString([], {
-    hour: "2-digit",
-    minute: "2-digit",
-  });
 const clock = (ms: number) => {
   const s = Math.max(0, Math.floor(ms / 1000)),
     pad = (n: number) => String(n).padStart(2, "0");
@@ -38,21 +32,6 @@ const lastHour = (ms: Message[]) =>
     (m: Message & { created?: number }) =>
       busy(m) || (m.created ?? Date.now()) >= Date.now() - 3600000,
   );
-/** Chinese and Japanese run sentences together; other scripts use a space. */
-const joinCaptions = (parts: string[]) =>
-  parts
-    .map((t) => t.trim())
-    .filter(Boolean)
-    .reduce(
-      (line, next) =>
-        !line
-          ? next
-          : line +
-            (line.charCodeAt(line.length - 1) >= 0x2e80 ? "" : " ") +
-            next,
-      "",
-    );
-
 /** Native tooltip: an in-page one would be clipped by the window edge. */
 const Tip = ({ label, children }: { label: string; children: ReactNode }) => (
   <span className="tip" title={label}>
@@ -71,8 +50,6 @@ export default function App() {
     [status, setStatus] = useState("正在连接…"),
     [error, setError] = useState("");
   const [messages, setMessages] = useState<Message[]>([]),
-    [turns, setTurns] = useState<Event[]>([]),
-    [images, setImages] = useState<Event[]>([]),
     [selected, setSelected] = useState<string[]>([]),
     [previews, setPreviews] = useState<Record<string, string>>({});
   const [text, setText] = useState(localStorage.getItem("cue.draft") || ""),
@@ -84,12 +61,12 @@ export default function App() {
     [pending, setPending] = useState(""),
     [effort, setEffort] = useState(localStorage.getItem("cue.effort") || "");
   const [expanded, setExpanded] = useState(false),
-    // "answer", "transcript" or "image:<id>" inside the card.
-    [view, setView] = useState("answer"),
     [captionsOn, setCaptionsOn] = useState(
       localStorage.getItem("cue.captions") !== "off",
     ),
-    [captions, setCaptions] = useState<{ item: string; text: string }[]>([]),
+    [captions, setCaptions] = useState<
+      { item: string; text: string; at: number }[]
+    >([]),
     [, tick] = useState(0);
   // The Cue web page: whether it may control this computer, whether
   // it is open now, and whether the current recording was started from it.
@@ -105,8 +82,6 @@ export default function App() {
     // Answers are one timeline, the last hour, like transcripts. This is the
     // server row new answers are stored under: the newest chat, never shown.
     chat = useRef(""),
-    // Set by a server that relays the web page; older ones never are.
-    relay = useRef(false),
     remoteGeneration = useRef(""),
     remoteBusy = useRef(false),
     shooting = useRef(false),
@@ -145,9 +120,6 @@ export default function App() {
     }
   };
   const command = (value: Event) => window.cue.command(value);
-  const visibleTurns = turns.filter(
-    (turn) => turn.text?.trim() || turn.status === "interrupted",
-  );
   async function reconnect() {
     setStatus("正在连接…");
     setError("");
@@ -168,7 +140,6 @@ export default function App() {
   uploadQueue.current ??= new UploadQueue(
     (shot: Event) => window.cue.uploadScreenshot!(shot),
     (image: Event) => {
-      setImages((v) => [...v.filter((i) => i.id !== image.id), image]);
       if (!current.current.selected.includes(image.id))
         current.current.selected = [...current.current.selected, image.id];
       setSelected(current.current.selected);
@@ -197,7 +168,6 @@ export default function App() {
     setPending(id);
     setError("");
     setExpanded(true);
-    setView("answer");
     void (async () => {
       try {
         while (shooting.current) {
@@ -320,14 +290,11 @@ export default function App() {
       if (e.type === "session_ready" || e.type === "state") {
         setConnected(true);
         setStatus("已连接");
-        setTurns(e.turns || []);
-        setImages(e.images || []);
         if (e.type === "session_ready") {
           setAudio("idle");
           setSince(0);
           setPending("");
           setAudioSource("");
-          relay.current = e.remote === true && !!e.generation;
           remoteGeneration.current = e.generation ?? "";
           reported.current = "";
           // The server lists chats newest first.
@@ -336,11 +303,7 @@ export default function App() {
         }
       }
       if (e.type === "chat_created") use(e.chat.id);
-      // A server without the timeline answers for the chat instead.
-      if (
-        e.type === "history" &&
-        (e.scope === "recent" || e.chat === chat.current)
-      ) {
+      if (e.type === "history") {
         setMessages(lastHour(e.messages));
         setPending("");
       }
@@ -374,19 +337,17 @@ export default function App() {
               : m,
           ),
         );
-      if (e.type === "transcript")
-        setTurns((ts) =>
-          [...ts.filter((t) => t.id !== e.turn.id), e.turn].sort(
-            (a, b) => a.created - b.created || a.id.localeCompare(b.id),
-          ),
-        );
       // Display only: from the local transcription stream, never the server.
+      // The strip keeps the last ten minutes for scrolling back.
       if (e.type === "caption" && current.current.audio !== "idle")
-        setCaptions((cs) =>
-          cs.some((c) => c.item === e.item)
-            ? cs.map((c) => (c.item === e.item ? { ...c, text: e.text } : c))
-            : [...cs, { item: e.item, text: e.text }].slice(-3),
-        );
+        setCaptions((cs) => {
+          const now = Date.now();
+          return (
+            cs.some((c) => c.item === e.item)
+              ? cs.map((c) => (c.item === e.item ? { ...c, text: e.text } : c))
+              : [...cs, { item: e.item, text: e.text, at: now }]
+          ).filter((c) => c.at >= now - CAPTION_WINDOW);
+        });
       if (e.type === "started") {
         setAudio("active");
         setSince(Date.now());
@@ -444,7 +405,7 @@ export default function App() {
   }, [allowRemote]);
   useEffect(() => {
     // What the web page shows about this computer; sent on change.
-    if (!connected || !relay.current) return;
+    if (!connected || !remoteGeneration.current) return;
     const report = {
       type: "remote_state",
       version: 3,
@@ -501,7 +462,7 @@ export default function App() {
     if (!el) return;
     el.style.height = "auto";
     el.style.height = Math.min(el.scrollHeight, 120) + "px";
-  }, [text, expanded, view]);
+  }, [text, expanded]);
   const active = messages.find(busy),
     sending = !!active || !!pending,
     audioBusy = ["starting", "stopping"].includes(audio),
@@ -523,16 +484,6 @@ export default function App() {
   async function toggleAudio() {
     await attempt(() => changeAudio());
   }
-  async function preview(id: string) {
-    if (previews[id]) return;
-    await attempt(async () => {
-      const v = await window.cue.request("/capture/images/" + id);
-      setPreviews((p) => ({
-        ...p,
-        [id]: "data:" + v.mimeType + ";base64," + v.data,
-      }));
-    });
-  }
   actions.current = { toggleAudio: changeAudio, shot: captureShot };
   /** The native menu returns a choice; hiding, quitting and links stay native. */
   async function more() {
@@ -544,17 +495,11 @@ export default function App() {
     else if (typeof choice.remote === "boolean") setAllowRemote(choice.remote);
     else if (choice.source)
       void attempt(() => window.cue.selectSource(choice.source));
-    else if (choice.action === "transcript") {
-      setExpanded(true);
-      setView("transcript");
-    } else if (choice.action === "materials")
-      void attempt(() => window.cue.uploadMaterials());
     else if (choice.action === "connection")
       void attempt(() => window.cue.importConnection());
     else if (choice.action === "privacy")
       void attempt(() => window.cue.openPrivacy!());
   }
-  const image = view.startsWith("image:") ? view.slice(6) : "";
 
   return (
     <div className="overlay" ref={root}>
@@ -724,243 +669,109 @@ export default function App() {
           </Button>
         </div>
       )}
-      {captionsOn && audio === "active" && (
-        <div
-          className={"captions glass" + (captionText ? "" : " waiting")}
-          aria-label="面试官字幕"
-        >
-          <p>{captionText || "等待面试官说话…"}</p>
-        </div>
-      )}
+      {captionsOn && audio === "active" && <CaptionStrip text={captionText} />}
       {expanded && (
         <section className="card glass" aria-label="回答">
-          {view === "transcript" ? (
-            <div className="transcript" style={{ maxHeight: limit }}>
+          <>
+            <div
+              className="conversation exchange-view"
+              ref={list}
+              style={{ maxHeight: limit }}
+              onScroll={() => {
+                const el = list.current!;
+                follow.current =
+                  el.scrollHeight - el.scrollTop - el.clientHeight < 70;
+              }}
+            >
               <div className="column">
-                <div className="card-head">
-                  <Button
-                    size="sm"
-                    variant="ghost"
-                    onPress={() => setView("answer")}
-                  >
-                    <ArrowLeft />
-                    回答
-                  </Button>
-                  <span className="hint">最近一小时 · 两路分开记录</span>
-                </div>
-                {!visibleTurns.length && (
-                  <p className="empty-note">还没有转录。</p>
-                )}
-                {visibleTurns.map((t) => (
-                  <div className="turn" key={t.id}>
-                    <div className="turn-meta">
-                      <span
-                        className={
-                          "speaker " +
-                          (t.speaker === "candidate" ? "me" : "them")
+                <OneExchange
+                  messages={messages}
+                  onTurn={(newest) => {
+                    follow.current = newest;
+                    if (list.current) list.current.scrollTop = 0;
+                  }}
+                />
+              </div>
+            </div>
+            <div className="composer">
+              {selected.length > 0 && (
+                <div className="attachments">
+                  {selected.map((id, index) => (
+                    <div className="attachment" key={id}>
+                      {previews[id] ? (
+                        <img src={previews[id]} alt={"截图 " + (index + 1)} />
+                      ) : (
+                        <span>截图 {index + 1}</span>
+                      )}
+                      <button
+                        aria-label="移除附件"
+                        onClick={() =>
+                          setSelected((s) => s.filter((x) => x !== id))
                         }
                       >
-                        {t.speaker === "candidate" ? "我" : "对方"}
-                      </span>
-                      <span>{time(t.created)}</span>
-                      {t.status === "partial" && <span>转录中</span>}
-                      {t.status === "interrupted" && <span>未完整确认</span>}
+                        <X weight="bold" />
+                      </button>
                     </div>
-                    <p>{t.text || "…"}</p>
-                  </div>
-                ))}
-                {images.length > 0 && (
-                  <>
-                    <div className="section-title">
-                      <h2>截图</h2>
-                      <span className="hint">点选后随下一次提问发送</span>
-                    </div>
-                    <div className="image-library">
-                      {images.map((i) => (
-                        <div className="saved-image" key={i.id}>
-                          <button
-                            className="thumb"
-                            aria-pressed={selected.includes(i.id)}
-                            onClick={() => {
-                              setSelected((s) =>
-                                s.includes(i.id)
-                                  ? s.filter((id) => id !== i.id)
-                                  : [...s, i.id].slice(-8),
-                              );
-                              void preview(i.id);
-                            }}
-                          >
-                            {previews[i.id] ? (
-                              <img src={previews[i.id]} alt="手动截图" />
-                            ) : (
-                              <span>{time(i.created)}</span>
-                            )}
-                            {selected.includes(i.id) && (
-                              <span className="thumb-check">
-                                <Check weight="bold" />
-                              </span>
-                            )}
-                          </button>
-                          <div className="image-actions">
-                            <Button
-                              size="sm"
-                              variant="ghost"
-                              onPress={() => {
-                                void preview(i.id);
-                                setView("image:" + i.id);
-                              }}
-                            >
-                              查看
-                            </Button>
-                            <Button
-                              size="sm"
-                              variant="ghost"
-                              isDisabled={sending}
-                              onPress={() =>
-                                void attempt(async () => {
-                                  await window.cue.request(
-                                    "/capture/images/" + i.id,
-                                    "DELETE",
-                                  );
-                                  setImages((v) =>
-                                    v.filter((x) => x.id !== i.id),
-                                  );
-                                  setSelected((v) =>
-                                    v.filter((x) => x !== i.id),
-                                  );
-                                })
-                              }
-                            >
-                              移除
-                            </Button>
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  </>
-                )}
-              </div>
-            </div>
-          ) : image ? (
-            <div className="image-full" style={{ maxHeight: limit }}>
-              <div className="card-head">
-                <Button
-                  size="sm"
-                  variant="ghost"
-                  onPress={() => setView("transcript")}
-                >
-                  <ArrowLeft />
-                  返回
-                </Button>
-              </div>
-              {previews[image] ? (
-                <img src={previews[image]} alt="截图原图" />
-              ) : (
-                <Spinner size="sm" color="current" />
+                  ))}
+                </div>
               )}
-            </div>
-          ) : (
-            <>
-              <div
-                className="conversation exchange-view"
-                ref={list}
-                style={{ maxHeight: limit }}
-                onScroll={() => {
-                  const el = list.current!;
-                  follow.current =
-                    el.scrollHeight - el.scrollTop - el.clientHeight < 70;
-                }}
-              >
-                <div className="column">
-                  <OneExchange
-                    messages={messages}
-                    onTurn={(newest) => {
-                      follow.current = newest;
-                      if (list.current) list.current.scrollTop = 0;
-                    }}
-                  />
-                </div>
-              </div>
-              <div className="composer">
-                {selected.length > 0 && (
-                  <div className="attachments">
-                    {selected.map((id, index) => (
-                      <div className="attachment" key={id}>
-                        {previews[id] ? (
-                          <img src={previews[id]} alt={"截图 " + (index + 1)} />
-                        ) : (
-                          <span>截图 {index + 1}</span>
-                        )}
-                        <button
-                          aria-label="移除附件"
-                          onClick={() =>
-                            setSelected((s) => s.filter((x) => x !== id))
-                          }
-                        >
-                          <X weight="bold" />
-                        </button>
-                      </div>
-                    ))}
-                  </div>
+              <div className="composer-row">
+                <textarea
+                  ref={input}
+                  rows={1}
+                  aria-label="追问或补充"
+                  placeholder="追问或补充…"
+                  value={text}
+                  // The window takes keyboard focus only for typing here.
+                  onPointerDown={() => void window.cue.focus?.(true)}
+                  onBlur={() => void window.cue.focus?.(false)}
+                  onChange={(e) => {
+                    setText(e.target.value);
+                    localStorage.setItem("cue.draft", e.target.value);
+                  }}
+                  onKeyDown={(e) => {
+                    if (e.key === "Escape") {
+                      setExpanded(false);
+                      e.currentTarget.blur();
+                    }
+                    if (
+                      e.key === "Enter" &&
+                      (e.metaKey || e.ctrlKey) &&
+                      !e.nativeEvent.isComposing
+                    ) {
+                      e.preventDefault();
+                      void ask();
+                    }
+                  }}
+                />
+                <kbd className="shortcut-hint">{shortcut}</kbd>
+                {sending ? (
+                  <Button
+                    isIconOnly
+                    size="sm"
+                    variant="secondary"
+                    className="send-button"
+                    aria-label="停止生成"
+                    onPress={() => void attempt(() => cancelAnswer())}
+                  >
+                    <Stop weight="fill" />
+                  </Button>
+                ) : (
+                  <Button
+                    isIconOnly
+                    size="sm"
+                    variant="primary"
+                    className="send-button"
+                    aria-label="回答"
+                    isDisabled={!connected || working || audioBusy}
+                    onPress={() => void ask()}
+                  >
+                    <ArrowUp weight="bold" />
+                  </Button>
                 )}
-                <div className="composer-row">
-                  <textarea
-                    ref={input}
-                    rows={1}
-                    aria-label="追问或补充"
-                    placeholder="追问或补充…"
-                    value={text}
-                    // The window takes keyboard focus only for typing here.
-                    onPointerDown={() => void window.cue.focus?.(true)}
-                    onBlur={() => void window.cue.focus?.(false)}
-                    onChange={(e) => {
-                      setText(e.target.value);
-                      localStorage.setItem("cue.draft", e.target.value);
-                    }}
-                    onKeyDown={(e) => {
-                      if (e.key === "Escape") {
-                        setExpanded(false);
-                        e.currentTarget.blur();
-                      }
-                      if (
-                        e.key === "Enter" &&
-                        (e.metaKey || e.ctrlKey) &&
-                        !e.nativeEvent.isComposing
-                      ) {
-                        e.preventDefault();
-                        void ask();
-                      }
-                    }}
-                  />
-                  <kbd className="shortcut-hint">{shortcut}</kbd>
-                  {sending ? (
-                    <Button
-                      isIconOnly
-                      size="sm"
-                      variant="secondary"
-                      className="send-button"
-                      aria-label="停止生成"
-                      onPress={() => void attempt(() => cancelAnswer())}
-                    >
-                      <Stop weight="fill" />
-                    </Button>
-                  ) : (
-                    <Button
-                      isIconOnly
-                      size="sm"
-                      variant="primary"
-                      className="send-button"
-                      aria-label="回答"
-                      isDisabled={!connected || working || audioBusy}
-                      onPress={() => void ask()}
-                    >
-                      <ArrowUp weight="bold" />
-                    </Button>
-                  )}
-                </div>
               </div>
-            </>
-          )}
+            </div>
+          </>
         </section>
       )}
     </div>

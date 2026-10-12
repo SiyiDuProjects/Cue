@@ -52,21 +52,6 @@ struct ChatRootView: View {
   }
 }
 
-/// Window for the full transcript and screenshot picker, opened from the menu.
-struct TranscriptRoot: View {
-  @ObservedObject var model: ChatModel
-  var body: some View {
-    TranscriptPanel(model: model)
-      .frame(minWidth: 420, minHeight: 360)
-      .sheet(
-        isPresented: Binding(
-          get: { model.imagePreview != nil }, set: { if !$0 { model.imagePreview = nil } })
-      ) {
-        if let id = model.imagePreview { ImagePreview(model: model, id: id) }
-      }
-  }
-}
-
 /// Behind-window blur clipped to a rounded shape. The window computes its
 /// shadow from this shape's alpha.
 private struct Glass: NSViewRepresentable {
@@ -251,10 +236,8 @@ private struct MoreMenu: View {
         Text("最深入").tag("xhigh")
       }
       .pickerStyle(.menu)
-      Button("转录与截图…", action: model.openTranscript)
       Toggle("允许网页遥控", isOn: $model.allowRemote)
       Divider()
-      Button("更新个人资料…", action: model.uploadMaterials)
       Button("网页设置…", action: model.openWebSettings)
       Button("连接设置…", action: model.importConnection)
       if !ScreenAccess.granted {
@@ -293,23 +276,28 @@ private struct Notice<Action: View>: View {
   }
 }
 
-/// Two reserved lines so the card below does not jump as speech arrives;
-/// older words scroll off the front.
+/// Two reserved lines so the card below does not jump as speech arrives.
+/// The strip follows the newest words and scrolls back over the last ten
+/// minutes; scrolling up keeps that position until the reader returns.
 private struct CaptionStrip: View {
   @ObservedObject var model: ChatModel
   var body: some View {
     let text = model.captionText
-    Text(text.isEmpty ? "等待面试官说话…" : text)
-      .font(.system(size: 15, weight: .medium))
-      .foregroundStyle(text.isEmpty ? .tertiary : .primary)
-      .lineLimit(2, reservesSpace: true)
-      .truncationMode(.head)
-      .frame(width: cardWidth - 28, alignment: .leading)
-      .padding(.horizontal, 14)
-      .padding(.vertical, 8)
-      .modifier(Surface(radius: 12))
-      .padding(.top, 8)
-      .accessibilityLabel("面试官字幕")
+    ScrollView {
+      Text(text.isEmpty ? "等待面试官说话…" : text)
+        .font(.system(size: 15, weight: .medium))
+        .foregroundStyle(text.isEmpty ? .tertiary : .primary)
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+    .scrollIndicators(.never)
+    .defaultScrollAnchor(.bottom)
+    .defaultScrollAnchor(.bottom, for: .sizeChanges)
+    .frame(width: cardWidth - 28, height: 45)
+    .padding(.horizontal, 14)
+    .padding(.vertical, 8)
+    .modifier(Surface(radius: 12))
+    .padding(.top, 8)
+    .accessibilityLabel("面试官字幕")
   }
 }
 
@@ -454,128 +442,5 @@ private struct Attachment: View {
       .help("移除附件")
     }
     .onAppear { model.loadPreview(id) }
-  }
-}
-
-private struct TranscriptPanel: View {
-  @ObservedObject var model: ChatModel
-  var body: some View {
-    ScrollView {
-      VStack(alignment: .leading, spacing: 16) {
-        Header(title: "转录", detail: "最近一小时 · 电脑音频与麦克风分开记录")
-        if model.visibleTurns.isEmpty {
-          Text("还没有转录。").foregroundStyle(.secondary)
-        }
-        ForEach(model.visibleTurns) { turn in
-          VStack(alignment: .leading, spacing: 3) {
-            HStack(spacing: 8) {
-              Text(turn.speaker == "candidate" ? "我" : "对方")
-                .fontWeight(.semibold)
-                .foregroundStyle(turn.speaker == "candidate" ? Color.primary : Color.accentColor)
-              Text(Self.time(turn.created))
-              if turn.status == "partial" { Text("转录中") }
-              if turn.status == "interrupted" { Text("未完整确认") }
-            }
-            .font(.caption)
-            .foregroundStyle(.secondary)
-            Text(turn.text.isEmpty ? "…" : turn.text).textSelection(.enabled)
-          }
-        }
-        if !model.images.isEmpty {
-          Header(title: "截图", detail: "点选后随下一次提问发送").padding(.top, 8)
-          LazyVGrid(columns: [GridItem(.adaptive(minimum: 140), spacing: 12)], spacing: 12) {
-            ForEach(model.images) { shot in ShotTile(model: model, shot: shot) }
-          }
-        }
-      }
-      .frame(maxWidth: 760, alignment: .leading)
-      .padding(20)
-      .frame(maxWidth: .infinity)
-    }
-  }
-  static func time(_ value: Double) -> String {
-    Date(timeIntervalSince1970: value / 1000).formatted(date: .omitted, time: .shortened)
-  }
-}
-
-private struct Header: View {
-  let title: String
-  let detail: String
-  var body: some View {
-    HStack(alignment: .firstTextBaseline, spacing: 10) {
-      Text(title).font(.headline)
-      Text(detail).font(.caption).foregroundStyle(.secondary)
-    }
-  }
-}
-
-private struct ShotTile: View {
-  @ObservedObject var model: ChatModel
-  let shot: SavedShot
-  var body: some View {
-    let chosen = model.selected.contains(shot.id)
-    VStack(alignment: .leading, spacing: 4) {
-      Button {
-        model.toggleSelected(shot.id)
-      } label: {
-        ZStack(alignment: .topTrailing) {
-          Group {
-            if let picture = model.previews[shot.id] {
-              Image(nsImage: picture).resizable().scaledToFill()
-            } else {
-              Text(TranscriptPanel.time(shot.created)).foregroundStyle(.secondary)
-            }
-          }
-          .frame(maxWidth: .infinity, minHeight: 90, maxHeight: 90)
-          .background(.quaternary)
-          .clipped()
-          if chosen {
-            Image(systemName: "checkmark.circle.fill")
-              .symbolRenderingMode(.palette)
-              .foregroundStyle(.white, Color.accentColor)
-              .font(.title3)
-              .padding(6)
-          }
-        }
-        .clipShape(RoundedRectangle(cornerRadius: 10))
-        .overlay(
-          RoundedRectangle(cornerRadius: 10)
-            .strokeBorder(chosen ? Color.accentColor : .clear, lineWidth: 2))
-      }
-      .buttonStyle(.plain)
-      .accessibilityLabel(chosen ? "已选截图" : "截图")
-      HStack {
-        Button("查看") {
-          model.loadPreview(shot.id)
-          model.imagePreview = shot.id
-        }
-        Button("移除") { model.removeImage(shot.id) }.disabled(model.sending)
-      }
-      .buttonStyle(.borderless)
-      .controlSize(.small)
-    }
-    .onAppear { model.loadPreview(shot.id) }
-  }
-}
-
-private struct ImagePreview: View {
-  @ObservedObject var model: ChatModel
-  let id: String
-  @Environment(\.dismiss) private var dismiss
-  var body: some View {
-    VStack(spacing: 0) {
-      HStack {
-        Spacer()
-        Button("完成") { dismiss() }.keyboardShortcut(.cancelAction)
-      }
-      .padding(10)
-      if let picture = model.previews[id] {
-        Image(nsImage: picture).resizable().scaledToFit()
-          .padding([.horizontal, .bottom], 12)
-      } else {
-        ProgressView().padding(40)
-      }
-    }
-    .frame(minWidth: 480, idealWidth: 860, minHeight: 320, idealHeight: 600)
   }
 }

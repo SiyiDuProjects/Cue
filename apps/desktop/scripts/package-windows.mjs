@@ -13,9 +13,9 @@ function run(command, args) {
     env: { ...process.env, CSC_IDENTITY_AUTO_DISCOVERY: "false" } });
   if (result.error || result.status !== 0) throw new Error("Windows package command failed.");
 }
-if (!fs.existsSync(path.join(desktop, "assets/sage.ico"))) run(require("electron"), [path.join(desktop, "scripts/prepare-windows-icon.cjs")]);
+if (!fs.existsSync(path.join(desktop, "assets/cue.ico"))) run(require("electron"), [path.join(desktop, "scripts/prepare-windows-icon.cjs")]);
 fs.mkdirSync(path.join(desktop, "build"), { recursive: true });
-const stage = fs.mkdtempSync(path.join(desktop, "build/sage-app-"));
+const stage = fs.mkdtempSync(path.join(desktop, "build/cue-app-"));
 fs.mkdirSync(path.join(stage, "electron"));
 // Explicit allowlist: no server code, tests, .env, profile, or node_modules.
 for (const name of ["main.cjs", "preload.cjs", "desktop-environment.cjs", "desktop-connection.cjs",
@@ -25,7 +25,7 @@ for (const name of ["main.cjs", "preload.cjs", "desktop-environment.cjs", "deskt
 fs.copyFileSync(path.join(desktop, "node_modules/@ozymandiasthegreat/vad/LICENSE"), path.join(stage, "VAD-LICENSE.txt"));
 fs.cpSync(path.join(desktop, "dist"), path.join(stage, "dist"), { recursive: true });
 fs.writeFileSync(path.join(stage, "package.json"), JSON.stringify({
-  name: "sage", productName: "Cue", version: metadata.version, description: "Cue desktop interview assistant",
+  name: "cue", productName: "Cue", version: metadata.version, description: "Cue desktop interview assistant",
   author: "Cue", main: "electron/main.cjs", private: true,
 }, null, 2));
 run(process.execPath, [require.resolve("electron-builder/cli.js"), "--projectDir", stage, "--config", path.join(desktop, "electron-builder.cjs"),

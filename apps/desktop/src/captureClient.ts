@@ -8,7 +8,7 @@ import {
   directTranscription,
   installMacTranscription,
 } from "./directTranscription";
-const host = (window as any).sageCaptureHost;
+const host = (window as any).cueCaptureHost;
 if (host) {
   let socket: WebSocket | undefined,
     ready = false,
@@ -101,11 +101,7 @@ if (host) {
     current.binaryType = "arraybuffer";
     current.onopen = () =>
       current.send(
-        JSON.stringify({
-          type: "authenticate",
-          protocol: "cue-chat-v2",
-          remote_transport: "https",
-        }),
+        JSON.stringify({ type: "authenticate", protocol: "cue-chat-v2" }),
       );
     current.onmessage = (e) => {
       if (socket !== current) return;
@@ -119,8 +115,8 @@ if (host) {
           return;
         }
         ready = true;
-        if (value.remote_http === true)
-          void pollRemote(value.generation, ++remoteEpoch);
+        // Web commands are claimed over HTTPS while the page is open.
+        void pollRemote(value.generation, ++remoteEpoch);
       }
       if (value.type === "started") phase = "active";
       if (value.type === "stopped") {
@@ -267,7 +263,6 @@ if (host) {
     selectSource: host.selectSource,
     openSettings: host.openSettings,
     copy: async (text: string) => navigator.clipboard.writeText(text),
-    uploadMaterials: host.uploadMaterials,
     importConnection: async () => {
       await host.importConnection();
       await open();
@@ -284,11 +279,11 @@ if (host) {
       image_url: shot.image_data,
     }),
   };
-  (window as any).sageCapture = { audio };
-  window.addEventListener("sage:answer-requested", () =>
+  (window as any).cueCapture = { audio };
+  window.addEventListener("cue:answer-requested", () =>
     receive({ type: "answer_requested" }),
   );
-  window.addEventListener("sage:shot-requested", () =>
+  window.addEventListener("cue:shot-requested", () =>
     receive({ type: "shot_requested" }),
   );
   window.addEventListener("beforeunload", () => {

@@ -2,7 +2,8 @@
 // Synthetic PCM and an in-memory control socket only: no devices, keys or network.
 import AppKit
 import AVFoundation
-import SageCore
+import CueCore
+import Security
 
 @MainActor final class ControlSocket: SocketConnection {
   var maximumMessageSize = 0
@@ -15,7 +16,7 @@ import SageCore
   func resume() {}
   func cancel(with code: URLSessionWebSocketTask.CloseCode, reason: Data?) {
     closeCode = code
-    receiver?.resume(throwing: SageError("closed")); receiver = nil
+    receiver?.resume(throwing: CueError("closed")); receiver = nil
   }
   func push(_ event: JSON) {
     if let receiver {
@@ -170,6 +171,13 @@ final class SyntheticPCM: @unchecked Sendable {
   }
   @MainActor static func main() {
     _ = NSApplication.shared
+    let identity = Credentials.query()
+    require(identity[kSecAttrService as String] as? String == "com.siyidu.sage.mac.connection",
+      "rename preserves existing Keychain service")
+    require(identity[kSecAttrAccount as String] as? String == "https://interview.siyidu.com",
+      "new website still uses the existing saved login account")
+    require(LocalFiles.root.lastPathComponent == "SageMac", "rename preserves the user data directory")
+    require(AppStore.serviceURL == "https://cue.siyidu.com", "desktop connects to the Cue website")
     Task { @MainActor in
       do {
         try await scenario("normal")
@@ -197,11 +205,11 @@ final class SyntheticPCM: @unchecked Sendable {
     var uploadEnds: [CheckedContinuation<JSON, Error>] = []
     let store = AppStore(capture: CaptureController { sink, _ in SyntheticSession(sink: sink, stopDelay: .zero) }, connection: link, screenshot: {
       shotCalls += 1
-      if failShot { throw SageError("录屏权限未开启") }
+      if failShot { throw CueError("录屏权限未开启") }
       return ["request_id": "shot-\(shotCalls)", "image_data": "synthetic-original"]
     }, upload: { shot in
       uploaded += 1
-      if failUpload { throw SageError("网络中断") }
+      if failUpload { throw CueError("网络中断") }
       return try await withCheckedThrowingContinuation { uploadEnds.append($0) }
     })
     let domain = "cue-test-" + UUID().uuidString
@@ -218,7 +226,7 @@ final class SyntheticPCM: @unchecked Sendable {
     }
     func wait(_ condition: () -> Bool) async throws {
       for _ in 0..<200 { if condition() { return }; try await Task.sleep(for: .milliseconds(10)) }
-      throw SageError("Native remote test timed out")
+      throw CueError("Native remote test timed out")
     }
     try await wait { link.ready }
     model.handle(["type": "session_ready", "remote": true, "generation": "native-test", "chats": [["id": "chat"]]])

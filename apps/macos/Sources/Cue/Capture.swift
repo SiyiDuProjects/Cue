@@ -1,6 +1,6 @@
 import AVFoundation
 import AppKit
-import SageCore
+import CueCore
 import ScreenCaptureKit
 
 /// ScreenCaptureKit calls prompt when access is missing, so callers check first.
@@ -12,14 +12,14 @@ enum ScreenAccess {
   static func require(asking: Bool) throws {
     guard !granted else { return }
     if asking { _ = CGRequestScreenCaptureAccess() }
-    throw SageError(
+    throw CueError(
       "Cue 没有录屏权限。在系统设置的「录屏与系统录音」中开启 Cue；如果已显示开启，移除 Cue 后重新添加一次。")
   }
 }
 
 /// Samples stay on a serial audio queue. Only bounded PCM mailboxes cross to the UI thread.
 final class AudioSink: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Sendable {
-  let queue = DispatchQueue(label: "com.siyidu.sage.audio", qos: .userInitiated)
+  let queue = DispatchQueue(label: "com.siyidu.cue.audio", qos: .userInitiated)
   private let lock = NSLock()
   private var boxes = ["interviewer": PCMQueue(), "candidate": PCMQueue()]
   private var converters: [String: AVAudioConverter] = [:]
@@ -169,7 +169,7 @@ final class AudioSink: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Se
     let content = try await SCShareableContent.excludingDesktopWindows(
       true, onScreenWindowsOnly: true)
     guard let display = content.displays.first(where: { $0.displayID == displayID }) else {
-      throw SageError("显示器不可用。")
+      throw CueError("显示器不可用。")
     }
     let excluded =
       excludeSelf
@@ -191,7 +191,7 @@ final class AudioSink: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Se
     let capturedAt = ISO8601DateFormatter().string(from: Date())
     let representation = NSBitmapImageRep(cgImage: image)
     guard let data = representation.representation(using: .png, properties: [:]) else {
-      throw SageError("截图编码失败。")
+      throw CueError("截图编码失败。")
     }
     let result: JSON = [
       "image_data": "data:image/png;base64," + data.base64EncodedString(), "source_id": "display:\(displayID)",
@@ -229,7 +229,7 @@ final class AudioSink: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Se
   private func makeSession(sink: AudioSink, current: @escaping () -> Bool) async throws -> any AudioCaptureSession {
     let authorized = await AVCaptureDevice.requestAccess(for: .audio)
     guard current() else { throw CancellationError() }
-    guard authorized else { throw SageError("请在系统设置中允许 Cue 使用麦克风。") }
+    guard authorized else { throw CueError("请在系统设置中允许 Cue 使用麦克风。") }
     // System audio comes through ScreenCaptureKit and needs the same access.
     try ScreenAccess.require(asking: true)
     let filter = try await filter(displayID: CGMainDisplayID(), excludeSelf: false)
@@ -251,7 +251,7 @@ final class AudioSink: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Se
     try stream.addStreamOutput(sink, type: .microphone, sampleHandlerQueue: sink.queue)
     do { try await stream.startCapture() } catch {
       try? await stream.stopCapture()
-      throw SageError("无法开始采集，请检查屏幕与系统音频录制权限。\n\(error.localizedDescription)")
+      throw CueError("无法开始采集，请检查屏幕与系统音频录制权限。\n\(error.localizedDescription)")
     }
     return NativeAudioSession(stream: stream, sink: sink)
   }

@@ -9,7 +9,7 @@ const captureModule = moduleArgument ? moduleArgument.slice("--capture-module=".
 const { createScreenCaptureService } = require(captureModule);
 
 const artifactDir = path.resolve(__dirname, "../../../artifacts/screenshot-self-exclusion");
-app.setPath("userData", fs.mkdtempSync(path.join(os.tmpdir(), "sage-capture-test-")));
+app.setPath("userData", fs.mkdtempSync(path.join(os.tmpdir(), "cue-capture-test-")));
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const windows = [];
 const report = { captureModule, modelCalls: 0, audioCaptured: false, samples: [] };
@@ -20,18 +20,18 @@ app.whenReady().then(async () => {
   const display = screen.getPrimaryDisplay();
   const { x, y } = display.workArea;
   const question = new BrowserWindow({ x: x + 60, y: y + 60, width: 700, height: 500,
-    title: "Sage capture test - question", backgroundColor: "#21bb52", alwaysOnTop: true,
+    title: "Cue capture test - question", backgroundColor: "#21bb52", alwaysOnTop: true,
     show: false, webPreferences: { sandbox: true, contextIsolation: true, nodeIntegration: false } });
   windows.push(question);
   await question.loadURL("about:blank");
   question.showInactive();
-  const sage = new BrowserWindow({ x: x + 160, y: y + 160, width: 400, height: 260,
-    title: "Sage capture test - assistant", backgroundColor: "#d22a47", alwaysOnTop: true,
+  const cue = new BrowserWindow({ x: x + 160, y: y + 160, width: 400, height: 260,
+    title: "Cue capture test - assistant", backgroundColor: "#d22a47", alwaysOnTop: true,
     show: false, webPreferences: { sandbox: true, contextIsolation: true, nodeIntegration: false } });
-  windows.push(sage);
-  await sage.loadURL("about:blank");
-  sage.showInactive();
-  sage.moveTop();
+  windows.push(cue);
+  await cue.loadURL("about:blank");
+  cue.showInactive();
+  cue.moveTop();
   await sleep(300);
 
   function sample(image, name, expected) {
@@ -48,19 +48,19 @@ app.whenReady().then(async () => {
     return sources.find((source) => String(source.display_id) === String(display.id)).thumbnail;
   }
 
-  sample(await rawScreen(), "before: Sage visible", [210, 42, 71]);
-  const service = createScreenCaptureService(desktopCapturer, screen, () => [sage]);
+  sample(await rawScreen(), "before: Cue visible", [210, 42, 71]);
+  const service = createScreenCaptureService(desktopCapturer, screen, () => [cue]);
   for (let i = 0; i < 3; i += 1) {
     const [snapshot, choices] = await Promise.all([service.captureSnapshot(), service.listSources()]);
     sample(nativeImage.createFromDataURL(snapshot.image_data), `capture ${i + 1}: underlying question`, [33, 187, 82]);
-    assert(!choices.some((source) => source.id === sage.getMediaSourceId()));
+    assert(!choices.some((source) => source.id === cue.getMediaSourceId()));
     assert(choices.some((source) => source.id === question.getMediaSourceId()));
-    assert.equal(sage.isContentProtected(), false);
-    assert.equal(sage.isVisible(), true);
+    assert.equal(cue.isContentProtected(), false);
+    assert.equal(cue.isVisible(), true);
   }
   await sleep(150);
-  sample(await rawScreen(), "after: system capture can still see Sage", [210, 42, 71]);
-  await assert.rejects(service.selectSource(sage.getMediaSourceId()), /不可用/);
+  sample(await rawScreen(), "after: system capture can still see Cue", [210, 42, 71]);
+  await assert.rejects(service.selectSource(cue.getMediaSourceId()), /不可用/);
   await service.selectSource(question.getMediaSourceId());
   const selected = await service.captureSnapshot();
   assert.equal(selected.source_id, question.getMediaSourceId());

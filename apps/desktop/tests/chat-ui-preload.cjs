@@ -9,11 +9,8 @@ window.cue = {
       () =>
         emit({
           type: "session_ready",
-          remote: true,
           generation: "test-desktop",
           chats: [{ id: "chat", title: "离线检查" }],
-          turns: [],
-          images: [],
         }),
       50,
     ),
@@ -86,7 +83,10 @@ window.cue = {
     };
   },
   uploadScreenshot: async (shot) => {
-    if (window.holdUpload) await new Promise(r=>{window.finishUpload=r});
+    if (window.holdUpload)
+      await new Promise((r) => {
+        window.finishUpload = r;
+      });
     if (window.failUpload) throw Error("upload offline");
     return shot;
   },
@@ -112,7 +112,6 @@ window.cue = {
     source = id;
     window.selectedSource = id;
   },
-  uploadMaterials: async () => {},
   importConnection: async () => {},
   resize: async (size) => {
     window.lastSize = size;

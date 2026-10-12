@@ -1,10 +1,10 @@
 import AppKit
 import OSLog
-import SageCore
+import CueCore
 
 /// Device credentials stay native; PCM and ephemeral ASR tokens enter the local WebView.
 @MainActor final class AppStore {
-  static let serviceURL = "https://interview.siyidu.com"
+  static let serviceURL = "https://cue.siyidu.com"
   var onEvent: (JSON) -> Void = { _ in }
   var phase = "idle"
   private var stopComplete = false
@@ -19,7 +19,7 @@ import SageCore
   private var remotePoll: Task<Void, Never>?
   private var remoteEpoch = UUID()
   private var lastPump = ContinuousClock.now
-  private let audioLog = Logger(subsystem: "com.siyidu.sage.mac", category: "AudioDelivery")
+  private let audioLog = Logger(subsystem: "com.siyidu.cue.mac", category: "AudioDelivery")
   private var audioGeneration = UUID()
   private var connectionGeneration = UUID()
   private var connecting = false
@@ -41,7 +41,7 @@ import SageCore
     if preview {
       onEvent([
         "type": "session_ready",
-        "chats": [["id": "preview", "title": "新聊天"]], "turns": [], "images": [],
+        "chats": [["id": "preview", "title": "新聊天"]],
       ])
       return
     }
@@ -58,23 +58,23 @@ import SageCore
     if let loaded = self.keys {
       keys = loaded  // A manual reconnect does not need another Keychain read.
     } else {
-      let credential = try await Credentials.load(address.url.absoluteString)
+      let credential = try await Credentials.load()
       guard !closing, connectionGeneration == connectionEpoch else { return }
-      guard !credential.isEmpty else { throw SageError("请在连接设置中导入此电脑的登录配置。") }
+      guard !credential.isEmpty else { throw CueError("请在连接设置中导入此电脑的登录配置。") }
       keys = try SiteCredentials(credential)
       self.keys = keys
     }
     http.authorizeSite(address, token: keys.site)
     let health = try await http.request(address, "/health", token: keys.device)
     guard health["capture_protocol"] as? String == protocolVersion else {
-      throw SageError("服务器版本不匹配，未开启采集。")
+      throw CueError("服务器版本不匹配，未开启采集。")
     }
     guard !closing, connectionGeneration == connectionEpoch else { return }
     self.address = address
     self.keys = keys
     link?.close()
     let next = SocketLink(
-      url: try address.socket(interview: "current", role: "interviewer"), token: keys.device,
+      url: address.socket(), token: keys.device,
       role: "desktop", siteToken: keys.site)
     attach(next)
   }
@@ -109,7 +109,8 @@ import SageCore
     case "session_ready":
       cached = value
       stopRemotePoll()
-      if value["remote_http"] as? Bool == true, let generation = value["generation"] as? String {
+      // Web commands are claimed over HTTPS while the page is open.
+      if let generation = value["generation"] as? String {
         startRemotePoll(generation)
       }
       phase = "idle"
@@ -182,7 +183,7 @@ import SageCore
     }
   }
   func forwardTranscription(_ value: JSON) throws {
-    guard let link, link.ready else { throw SageError("连接尚未就绪。") }
+    guard let link, link.ready else { throw CueError("连接尚未就绪。") }
     try link.enqueue(value)
   }
   func command(_ value: JSON) async throws {
@@ -207,14 +208,14 @@ import SageCore
       }
       return
     }
-    guard let link, link.ready else { throw SageError("连接尚未就绪。") }
+    guard let link, link.ready else { throw CueError("连接尚未就绪。") }
     if value["type"] as? String == "asr_forward", let message = value["message"] as? JSON {
       try link.enqueue(message)
       return
     }
     if value["type"] as? String == "ask" {
       guard !["starting", "prepared", "stopping"].contains(phase) else {
-        throw SageError("请等待音频就绪。")
+        throw CueError("请等待音频就绪。")
       }
       // PCM and its marker enter WebKit in native order; the shared client
       // commits both OpenAI streams before sending the ordered ask to Sites.
@@ -225,25 +226,25 @@ import SageCore
     try await link.send(value)
   }
   func audio(_ start: Bool) async throws {
-    guard !preview else { throw SageError("预览模式不会采集声音。") }
-    guard let link, link.ready else { throw SageError("连接尚未就绪。") }
+    guard !preview else { throw CueError("预览模式不会采集声音。") }
+    guard let link, link.ready else { throw CueError("连接尚未就绪。") }
     if start {
-      guard phase == "idle" else { throw SageError("转录已开启或正在收尾。") }
+      guard phase == "idle" else { throw CueError("转录已开启或正在收尾。") }
       capture.discardFinishedSink()
       let epoch = UUID()
       audioGeneration = epoch
       lastPump = .now
       phase = "starting"
       do {
-        guard audioGeneration == epoch else { throw SageError("转录启动已取消。") }
+        guard audioGeneration == epoch else { throw CueError("转录启动已取消。") }
         try await link.send(["type": "start"])
         for _ in 0..<300 {
-          guard audioGeneration == epoch else { throw SageError("转录启动已取消。") }
+          guard audioGeneration == epoch else { throw CueError("转录启动已取消。") }
           if phase == "prepared" {
             try await capture.prepare()
             guard audioGeneration == epoch else {
               _ = await capture.finish()
-              throw SageError("转录启动已取消。")
+              throw CueError("转录启动已取消。")
             }
             phase = "active"
             onEvent(["type": "started"])
@@ -251,13 +252,13 @@ import SageCore
           }
           try await Task.sleep(for: .milliseconds(50))
         }
-        throw SageError("转录启动超时。")
+        throw CueError("转录启动超时。")
       } catch {
         if audioGeneration == epoch { try? await audio(false) }
         throw error
       }
     } else {
-      if phase == "stopping" { throw SageError("转录正在收尾。") }
+      if phase == "stopping" { throw CueError("转录正在收尾。") }
       audioGeneration = UUID()
       phase = "stopping"
       stopComplete = false
@@ -270,21 +271,21 @@ import SageCore
       }
       let confirmed = phase == "idle" && complete && stopComplete && link.ready
       phase = "idle"
-      if !confirmed { throw SageError("音频尾句未全部确认。") }
+      if !confirmed { throw CueError("音频尾句未全部确认。") }
     }
   }
   func request(_ path: String, method: String = "GET", body: JSON? = nil) async throws -> JSON {
     guard let address, let keys,
       path.range(
-        of: #"^/capture/(state|materials|remote|images(/[a-zA-Z0-9_-]+)?)$"#, options: .regularExpression)
+        of: #"^/capture/(state|remote|images(/[a-zA-Z0-9_-]+)?)$"#, options: .regularExpression)
         != nil,
-      ["GET", "POST", "DELETE"].contains(method)
-    else { throw SageError("连接未就绪或操作无效。") }
+      ["GET", "POST"].contains(method)
+    else { throw CueError("连接未就绪或操作无效。") }
     return try await http.request(address, path, method: method, token: keys.device, body: body)
   }
   func screenshot() async throws -> JSON {
     if let screenshotProvider { return try await screenshotProvider() }
-    guard !preview else { throw SageError("预览模式不会截图。") }
+    guard !preview else { throw CueError("预览模式不会截图。") }
     var shot = try await capture.screenshot()
     try Task.checkCancellation()
     shot["request_id"] = UUID().uuidString.lowercased()
@@ -296,35 +297,18 @@ import SageCore
     result["image_url"] = shot["image_data"]
     return result
   }
-  func uploadMaterials() async throws -> JSON {
-    let panel = NSOpenPanel()
-    panel.title = "选择要更新的个人资料"
-    panel.allowsMultipleSelection = true
-    panel.canChooseDirectories = false
-    panel.allowedContentTypes = [.plainText]
-    guard await panel.begin() == .OK else { return [:] }
-    guard panel.urls.count <= 20 else { throw SageError("最多选择20份资料。") }
-    let materials = try panel.urls.map { url -> JSON in
-      let data = try Data(contentsOf: url)
-      guard data.count <= 250000, let text = String(data: data, encoding: .utf8) else {
-        throw SageError("资料必须是小于250 KB的 UTF-8 文本。")
-      }
-      return ["name": url.lastPathComponent, "text": text]
-    }
-    return try await request("/capture/materials", method: "POST", body: ["materials": materials])
-  }
   func importConnection() async throws {
-    guard phase == "idle" else { throw SageError("请先停止转录。") }
+    guard phase == "idle" else { throw CueError("请先停止转录。") }
     let panel = NSOpenPanel()
     panel.title = "导入 Cue 连接配置"
     panel.canChooseDirectories = false
     guard await panel.begin() == .OK, let url = panel.url else { return }
     let bytes = try Data(contentsOf: url)
     guard bytes.count < 16000, let raw = String(data: bytes, encoding: .utf8) else {
-      throw SageError("配置无效。")
+      throw CueError("配置无效。")
     }
     let imported = try SiteCredentials(raw)
-    try await Credentials.save(raw, origin: Self.serviceURL)
+    try await Credentials.save(raw)
     keys = imported
     connectionGeneration = UUID()
     connecting = false

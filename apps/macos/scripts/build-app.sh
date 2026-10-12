@@ -12,7 +12,7 @@ if [[ -z "$SIGN_IDENTITY" ]] && ! python3 "$MAC_ROOT/scripts/local-signing.py" c
     exit 1
   fi
 fi
-NODE_BIN="${SAGE_NODE_BIN:-$(command -v node)}"
+NODE_BIN="${CUE_NODE_BIN:-$(command -v node)}"
 NODE_BIN="$("$NODE_BIN" -p 'process.execPath')"
 if [[ "$("$NODE_BIN" -p 'Number(process.versions.node.split(".")[0]) >= 22')" != true ]]; then
   echo 'Node.js 22 or later is required.' >&2
@@ -23,9 +23,9 @@ export SWIFTPM_MODULECACHE_OVERRIDE="$MAC_ROOT/.build/modules/swift"
 cd "$MAC_ROOT"
 swift build --disable-sandbox --cache-path "$MAC_ROOT/.build/cache" -c "$CONFIGURATION"
 BIN_DIR="$(swift build --disable-sandbox --cache-path "$MAC_ROOT/.build/cache" -c "$CONFIGURATION" --show-bin-path)"
-"$BIN_DIR/SageChecks"
+"$BIN_DIR/CueChecks"
 bash "$MAC_ROOT/scripts/check-audio-delivery.sh" "$BIN_DIR"
-if nm -u "$BIN_DIR/Sage" | grep -E '_AX(UIElement|IsProcessTrusted)' >/dev/null; then
+if nm -u "$BIN_DIR/Cue" | grep -E '_AX(UIElement|IsProcessTrusted)' >/dev/null; then
   echo 'Screenshot capture must not read other apps through accessibility APIs.' >&2
   exit 1
 fi
@@ -35,7 +35,7 @@ STAGE="$(mktemp -d "$MAC_ROOT/output/staging.XXXXXX")"
 trap 'rm -rf "$STAGE"' EXIT
 APP="$STAGE/Cue.app"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
-cp "$BIN_DIR/Sage" "$APP/Contents/MacOS/Cue"
+cp "$BIN_DIR/Cue" "$APP/Contents/MacOS/Cue"
 cp "$MAC_ROOT/THIRD_PARTY_NOTICES.md" "$APP/Contents/Resources/THIRD_PARTY_NOTICES.md"
 cp "$MAC_ROOT/Support/Info.plist" "$APP/Contents/Info.plist"
 # The Mac window is native; the page only renders answers and runs transcription.

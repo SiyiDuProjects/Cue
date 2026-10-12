@@ -1,5 +1,5 @@
 // PCM conversion runs on the audio rendering thread, away from React/Markdown.
-class InterviewPcmProcessor extends AudioWorkletProcessor {
+class CuePcmProcessor extends AudioWorkletProcessor {
   constructor() {
     super();
     this.pcm = new Int16Array(1024);
@@ -35,4 +35,4 @@ class InterviewPcmProcessor extends AudioWorkletProcessor {
   }
 }
 
-registerProcessor("interview-pcm", InterviewPcmProcessor);
+registerProcessor("cue-pcm", CuePcmProcessor);

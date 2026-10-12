@@ -28,8 +28,8 @@ for p in Path(sys.argv[1]).glob('*.wav'):
         p.with_suffix('.pcm').write_bytes(audio.readframes(audio.getnframes()))
 PY
 swiftc -parse-as-library -module-cache-path "$ROOT/apps/macos/.build/acceptance-cache" \
-  "$ROOT/apps/macos/Sources/SageCore/Protocol.swift" \
-  "$ROOT/apps/macos/Sources/SageCore/Transport.swift" \
+  "$ROOT/apps/macos/Sources/CueCore/Protocol.swift" \
+  "$ROOT/apps/macos/Sources/CueCore/Transport.swift" \
   "$ROOT/apps/macos/tests/DirectAcceptanceBridge.swift" \
   "$ROOT/apps/macos/tests/live-acceptance.swift" -o "$RUN_DIR/CueAcceptance"
 export CUE_NODE_BIN="$(node -p 'process.execPath')"

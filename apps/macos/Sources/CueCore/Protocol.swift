@@ -3,7 +3,7 @@ import Foundation
 public typealias JSON = [String: Any]
 public let protocolVersion = "cue-chat-v2"
 
-public struct SageError: LocalizedError {
+public struct CueError: LocalizedError {
   public let message: String
   public init(_ message: String) { self.message = message }
   public var errorDescription: String? { message }
@@ -19,38 +19,15 @@ public struct ServerAddress: Equatable {
       parts.scheme == "https"
         || (parts.scheme == "http" && ["localhost", "127.0.0.1", "::1", "[::1]"].contains(host)),
       let url = parts.url
-    else { throw SageError("服务器地址必须使用 HTTPS；仅本机开发允许 HTTP。") }
+    else { throw CueError("服务器地址必须使用 HTTPS；仅本机开发允许 HTTP。") }
     self.url = url
   }
   public func endpoint(_ path: String) -> URL { URL(string: path, relativeTo: url)!.absoluteURL }
-  public func socket(interview: String, role: String) throws -> URL {
-    guard !interview.isEmpty,
-      interview.allSatisfy({ $0.isASCII && ($0.isLetter || $0.isNumber || $0 == "_" || $0 == "-") }
-      ),
-      ["interviewer", "candidate"].contains(role)
-    else { throw SageError("无效连接标识。") }
+  public func socket() -> URL {
     var parts = URLComponents(url: url, resolvingAgainstBaseURL: false)!
     parts.scheme = url.scheme == "https" ? "wss" : "ws"
     parts.path = "/capture/socket"
     return parts.url!
-  }
-}
-
-public struct Session {
-  public let interviewID: String
-  public var conversationID: String
-  public let token: String
-  public let captureToken: String
-  public init(_ json: JSON) throws {
-    guard let id = json["interview_id"] as? String, !id.isEmpty,
-      let cid = json["conversation_id"] as? String, !cid.isEmpty,
-      let token = json["session_token"] as? String, !token.isEmpty,
-      let capture = json["capture_token"] as? String, !capture.isEmpty
-    else { throw SageError("服务器未返回有效会话凭证。") }
-    interviewID = id
-    conversationID = cid
-    self.token = token
-    captureToken = capture
   }
 }
 
@@ -64,7 +41,7 @@ public struct SiteCredentials {
       let site = value["site"] as? String, !site.isEmpty,
       let device = value["device"] as? String, !device.isEmpty,
       !site.contains(where: { $0.isNewline }), !device.contains(where: { $0.isNewline })
-    else { throw SageError("登录凭证格式无效，请重新配置 Cue。") }
+    else { throw CueError("登录凭证格式无效，请重新配置 Cue。") }
     self.site = site
     self.device = device
   }

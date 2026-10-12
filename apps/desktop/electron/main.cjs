@@ -32,7 +32,7 @@ const TRAY_ICON_DATA_URL =
 if (!app.isPackaged) loadDesktopEnvironment();
 const dataRoot = app.isPackaged
   ? path.join(app.getPath("appData"), "Sage")
-  : path.join(os.tmpdir(), "sage-capture-development");
+  : path.join(os.tmpdir(), "cue-capture-development");
 // Keep the existing profile and saved login across the product rename.
 app.setPath("userData", dataRoot);
 app.setName("Cue");
@@ -84,7 +84,9 @@ function headers() {
 function permitted(endpoint, method) {
   return (
     /^(GET|POST|DELETE)$/.test(method) &&
-    /^\/capture\/(state|materials|remote|images(?:\/[a-zA-Z0-9_-]+)?)$/.test(endpoint)
+    /^\/capture\/(state|materials|remote|images(?:\/[a-zA-Z0-9_-]+)?)$/.test(
+      endpoint,
+    )
   );
 }
 async function request(endpoint, method = "GET", body) {
@@ -117,8 +119,8 @@ function configure() {
       trusted(event);
       return fn(...args);
     });
-  handle("sage:connect", connect);
-  handle("sage:import", async () => {
+  handle("cue:connect", connect);
+  handle("cue:import", async () => {
     const selected = await dialog.showOpenDialog(window, {
       title: "导入 Cue 连接配置",
       properties: ["openFile"],
@@ -141,28 +143,28 @@ function configure() {
     await saveConnection(dataRoot, safeStorage, {
       apiBaseUrl: origin,
       accessToken: JSON.stringify(value),
-      materialsWorkspace: process.env.INTERVIEW_MATERIALS_WORKSPACE,
+
     });
     credentials = value;
     return connect();
   });
-  handle("sage:request", request);
-  handle("sage:sources", () => capture.listSources());
-  handle("sage:select", (id) => capture.selectSource(id));
-  handle("sage:screenshot", () => capture.captureSnapshot());
-  handle("sage:settings", () => shell.openExternal(origin + "/settings"));
-  handle("sage:resize", (size) => {
+  handle("cue:request", request);
+  handle("cue:sources", () => capture.listSources());
+  handle("cue:select", (id) => capture.selectSource(id));
+  handle("cue:screenshot", () => capture.captureSnapshot());
+  handle("cue:settings", () => shell.openExternal(origin + "/settings"));
+  handle("cue:resize", (size) => {
     fit(size);
     return {};
   });
   // Clicks never take focus; typing in the page's text box does.
-  handle("sage:focus", (on) => {
+  handle("cue:focus", (on) => {
     window.setFocusable(on === true);
     if (on === true) window.focus();
     return {};
   });
   // Native, so it is not clipped by the content-sized window.
-  handle("sage:menu", async (state) => {
+  handle("cue:menu", async (state) => {
     const sources = await capture.listSources().catch(() => []);
     return new Promise((resolve) => {
       const pick = (value) => () => resolve(value);
@@ -186,7 +188,6 @@ function configure() {
             click: pick({ source: source.id }),
           })),
         },
-        { label: "转录与截图", click: pick({ action: "transcript" }) },
         {
           label: "允许网页遥控",
           type: "checkbox",
@@ -194,7 +195,6 @@ function configure() {
           click: pick({ remote: state?.remote === false }),
         },
         { type: "separator" },
-        { label: "更新个人资料…", click: pick({ action: "materials" }) },
         {
           label: "网页设置",
           click: () => {
@@ -224,20 +224,6 @@ function configure() {
         callback: () => setTimeout(() => resolve(null), 200),
       });
     });
-  });
-  handle("sage:materials", async () => {
-    const picked = await dialog.showOpenDialog(window, {
-      title: "选择要更新的个人资料",
-      properties: ["openFile", "multiSelections"],
-      filters: [{ name: "文本资料", extensions: ["txt", "md"] }],
-    });
-    if (picked.canceled) return {};
-    if (picked.filePaths.length > 20) throw Error("最多选择20份资料。");
-    const materials = picked.filePaths.map((file) => {
-      if (fs.statSync(file).size > 250000) throw Error("资料过大。");
-      return { name: path.basename(file), text: fs.readFileSync(file, "utf8") };
-    });
-    return request("/capture/materials", "POST", { materials });
   });
   const ses = session.defaultSession;
   const mainFrame = (contents, details) =>
@@ -334,7 +320,7 @@ async function show() {
         nodeIntegration: false,
         sandbox: true,
         backgroundThrottling: false,
-        additionalArguments: ["--sage-origin=" + origin],
+        additionalArguments: ["--cue-origin=" + origin],
       },
     });
     window.webContents.setWindowOpenHandler(({ url }) => {
@@ -425,7 +411,7 @@ function toggle() {
 /** Answering shows the overlay; capturing leaves it as it is. */
 function trigger() {
   void show();
-  send("sage:answer-requested");
+  send("cue:answer-requested");
 }
 if (!app.requestSingleInstanceLock()) app.quit();
 else {
@@ -440,9 +426,9 @@ else {
         const config = {};
         loadDesktopEnvironment(path.resolve(source.slice(17)), config);
         await saveConnection(dataRoot, safeStorage, {
-          apiBaseUrl: config.INTERVIEW_API_BASE_URL,
-          accessToken: config.INTERVIEW_ACCESS_TOKEN,
-          materialsWorkspace: config.INTERVIEW_MATERIALS_WORKSPACE,
+          apiBaseUrl: config.CUE_API_BASE_URL,
+          accessToken: config.CUE_ACCESS_TOKEN,
+
         });
         app.quit();
         return;
@@ -451,11 +437,11 @@ else {
         await loadConnection(dataRoot, safeStorage, process.env);
       origin = validateConnection({
         apiBaseUrl:
-          process.env.INTERVIEW_API_BASE_URL || "https://interview.siyidu.com",
+          process.env.CUE_API_BASE_URL || "https://cue.siyidu.com",
         accessToken: "origin-validation",
       }).apiBaseUrl;
       try {
-        const raw = process.env.INTERVIEW_ACCESS_TOKEN || "";
+        const raw = process.env.CUE_ACCESS_TOKEN || "";
         credentials = JSON.parse(
           raw.startsWith("{")
             ? raw
@@ -482,7 +468,7 @@ else {
         Menu.buildFromTemplate([
           { label: "显示或隐藏", click: toggle },
           { label: "回答", click: trigger },
-          { label: "截图", click: () => send("sage:shot-requested") },
+          { label: "截图", click: () => send("cue:shot-requested") },
           { type: "separator" },
           { label: "退出", click: () => app.quit() },
         ]),
@@ -490,7 +476,7 @@ else {
       tray.on("click", toggle);
       const taken = [
         ["Control+Alt+Enter", trigger],
-        ["Control+Alt+S", () => send("sage:shot-requested")],
+        ["Control+Alt+S", () => send("cue:shot-requested")],
         ["Control+Alt+\\", toggle],
       ]
         .filter(([key, action]) => {
@@ -523,7 +509,7 @@ app.on("before-quit", (event) => {
   void (async () => {
     try {
       await window?.webContents.executeJavaScript(
-        "window.sageCapture?.audio(false)",
+        "window.cueCapture?.audio(false)",
       );
     } catch {}
     globalShortcut.unregisterAll();
