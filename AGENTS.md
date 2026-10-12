@@ -50,6 +50,8 @@ Cue 是回答工具，不是转录工具。Mac / Windows 桌面悬浮条（控�
 
 Mac 可加载 `/Users/siyi/Projects/_tools/env.sh`。Windows 使用 `npm.cmd`。共享私钥位于相邻 `_private/Keys`，需要时确认文件，不输出其内容；不要修改其他项目配置。
 
+用户决定（2026-10-12）：每次完成修改并通过适用测试后，直接提交并推送到对应仓库，无需再次确认或等待提醒；纯文档改动完成文档检查即可。只提交本次相关且已核验的改动，遵守公开与私有仓库边界，不提交凭证、私人资料或受限依赖。涉及两个仓库时，先提交推送私有云端，再提交推送外层仓库的引用与改动。推送后核对远端提交，报告提交号；若有实际阻碍，明确说明原因。
+
 - 云端：`npm --prefix apps/cloud test`、`npm --prefix apps/cloud run build`。
 - 桌面：`npm --prefix apps/desktop run test:capture`、`npm --prefix apps/desktop run build`（Windows）、`npm --prefix apps/desktop run build:mac`（Mac 回答页）、`npm --prefix apps/desktop run test:ui`（需先完成两种构建）。
 - 网页真实 DOM / 文件解析测试：`apps/desktop/node_modules/.bin/electron apps/cloud/tests/settings-ui.cjs`（仅 loopback，合成文件）。
