@@ -137,13 +137,8 @@ export default function App() {
     void attempt(() => command({ type: "history", chat: id, scope: "recent" }));
   }
   const uploadQueue = useRef<UploadQueue | null>(null);
-  const uploadReceipts = useRef(new Map<string, Event>());
-  function finishShot(id: string, failure?: string) {
-    const receipt = uploadReceipts.current.get(id);
-    uploadReceipts.current.delete(id);
-    if (!receipt || !current.current.connected || receipt.generation !== remoteGeneration.current) return;
-    void command({ ...receipt, ok: !failure, ...(failure ? { detail: failure.slice(0, 300) } : { image: id }) }).catch(() => {});
-  }
+  const captureTail = useRef<Promise<void>>(Promise.resolve());
+  const captureIDs = useRef<string[]>([]);
   uploadQueue.current ??= new UploadQueue(
     (shot: Event) => window.cue.uploadScreenshot!(shot),
     (image: Event) => {
@@ -153,7 +148,6 @@ export default function App() {
           image.id,
         ].slice(-8);
       setSelected(current.current.selected);
-      finishShot(image.id);
       const preview = image.image_url;
       if (typeof preview === "string")
         setPreviews((p) => {
@@ -166,7 +160,6 @@ export default function App() {
     (count: number, error: string) => {
       setUploading(count);
       setUploadError(error);
-      if (error) for (const id of uploadReceipts.current.keys()) finishShot(id, error);
     },
   );
   function beginAnswer(value?: { text: string; effort?: string }) {
@@ -229,16 +222,13 @@ export default function App() {
   }
   async function captureShot(receipt?: Event) {
     if (shooting.current) throw Error("截图尚未完成。");
-    // Saved references never block capture; only unsaved originals fill this queue.
-    if (uploadQueue.current!.items.length >= 8)
-      throw Error("8 张截图仍未上传，请等待或重试上传。");
+    // Retain every accepted manual capture until its upload is confirmed.
     shooting.current = true;
     setWorking(true);
     try {
       const shot = await window.cue.screenshot();
       if (receipt) {
         shot.request_id = receipt.id;
-        uploadReceipts.current.set(receipt.id, receipt);
       }
       uploadQueue.current!.add(shot);
     } finally {
@@ -247,16 +237,30 @@ export default function App() {
     }
   }
   async function shot() {
-    await attempt(captureShot);
+    const work = captureTail.current.then(() => attempt(captureShot));
+    captureTail.current = work.catch(() => {});
+    await work;
   }
-  async function runRemote(value: Event) {
+  function runRemote(value: Event) {
+    value = { ...value, receivedAt: Date.now() };
+    if (value.type !== "shot") return executeRemote(value);
+    captureIDs.current.push(value.id);
+    const work = captureTail.current
+      .then(() => executeRemote(value))
+      .finally(() => {
+        captureIDs.current = captureIDs.current.filter((id) => id !== value.id);
+      });
+    captureTail.current = work.catch(() => {});
+    return work;
+  }
+  async function executeRemote(value: Event) {
     const { id, type, generation, expires } = value;
     if (!id || !generation || generation !== remoteGeneration.current) return;
     let locked = false;
     try {
       if (!current.current.connected || !current.current.allowRemote)
         throw Error("电脑上已关闭遥控或连接已断开。");
-      if (!(expires > Date.now())) throw Error("指令已过期，没有执行。");
+      if (!(expires > value.receivedAt)) throw Error("指令已过期，没有执行。");
       let answer: string | undefined;
       if (type === "cancel") await cancelAnswer();
       else if (type === "unselect") {
@@ -275,9 +279,8 @@ export default function App() {
           throw Error("请等待音频就绪。");
         if (type === "shot") {
           await actions.current.shot({ type: "remote_result", id, generation });
-          return; // Upload completion sends success without blocking another capture.
-        }
-        else if (
+          return; // Saving the image completes its command on the server.
+        } else if (
           (type === "start" && phase === "idle") ||
           (type === "stop" && phase === "active")
         )
@@ -439,7 +442,12 @@ export default function App() {
       selected,
       pending,
       uploading,
-      uploads: uploadQueue.current!.items.map((shot) => shot.request_id),
+      uploads: [
+        ...new Set([
+          ...uploadQueue.current!.items.map((shot) => shot.request_id),
+          ...captureIDs.current,
+        ]),
+      ],
       upload_error: uploadError.slice(0, 300),
       error: error.slice(0, 300),
       source: audio === "active" ? audioSource : "",
@@ -459,6 +467,7 @@ export default function App() {
     uploading,
     uploadError,
     pending,
+    working,
   ]);
   useEffect(() => {
     localStorage.setItem("cue.captions", captionsOn ? "on" : "off");

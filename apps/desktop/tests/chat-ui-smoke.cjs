@@ -251,11 +251,11 @@ app
         await js("window.remoteResults.some(r=>r.id==='delayed')"),
         false,
       );
-      await remote("blocked", "shot");
-      await wait("window.remoteResults.some(r=>r.id==='blocked'&&!r.ok)");
+      await remote("queued-next", "shot");
+      assert.equal(await js("window.shotCalls"), beforeShots + 1);
       await js("window.holdShot=false;window.finishShot()");
       await wait(
-        "window.remoteResults.some(r=>r.id==='delayed'&&r.ok&&r.image==='delayed')",
+        "window.savedImages?.includes('delayed') && window.savedImages.includes('queued-next')",
       );
       await js("window.failShot=true");
       await remote("failure", "shot");

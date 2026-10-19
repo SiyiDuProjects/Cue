@@ -183,18 +183,40 @@ final class AudioSink: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Se
     let displayID = CGMainDisplayID()
     let filter = try await self.filter(displayID: displayID, excludeSelf: true)
     let config = SCStreamConfiguration()
-    config.width = Int(filter.contentRect.width * CGFloat(filter.pointPixelScale))
-    config.height = Int(filter.contentRect.height * CGFloat(filter.pointPixelScale))
+    let width = filter.contentRect.width * CGFloat(filter.pointPixelScale)
+    let height = filter.contentRect.height * CGFloat(filter.pointPixelScale)
+    let scale = min(1, 1920 / max(width, height))
+    config.width = max(1, Int(width * scale))
+    config.height = max(1, Int(height * scale))
     config.showsCursor = false
     let image = try await SCScreenshotManager.captureImage(
       contentFilter: filter, configuration: config)
     let capturedAt = ISO8601DateFormatter().string(from: Date())
-    let representation = NSBitmapImageRep(cgImage: image)
-    guard let data = representation.representation(using: .png, properties: [:]) else {
-      throw CueError("截图编码失败。")
+    var prepared = image
+    var data = NSBitmapImageRep(cgImage: prepared).representation(using: .png, properties: [:])
+    var mime = "image/png"
+    // Keep lossless PNG when it fits. Photographic/noisy screens automatically
+    // use a whole-image JPEG; no extra capture, upload, or user action is needed.
+    while data == nil || data!.count > 2_621_440 {
+      for quality in [0.92, 0.82, 0.72] {
+        data = NSBitmapImageRep(cgImage: prepared).representation(using: .jpeg, properties: [.compressionFactor: quality])
+        if let data, data.count <= 2_621_440 { break }
+      }
+      mime = "image/jpeg"
+      if let data, data.count <= 2_621_440 { break }
+      let width = max(1, Int(Double(prepared.width) * 0.8)), height = max(1, Int(Double(prepared.height) * 0.8))
+      guard width < prepared.width || height < prepared.height,
+        let context = CGContext(data: nil, width: width, height: height, bitsPerComponent: 8, bytesPerRow: 0,
+          space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)
+      else { throw CueError("截图编码失败。") }
+      context.interpolationQuality = .high
+      context.draw(prepared, in: CGRect(x: 0, y: 0, width: width, height: height))
+      guard let resized = context.makeImage() else { throw CueError("截图编码失败。") }
+      prepared = resized
     }
+    guard let data else { throw CueError("截图编码失败。") }
     let result: JSON = [
-      "image_data": "data:image/png;base64," + data.base64EncodedString(), "source_id": "display:\(displayID)",
+      "image_data": "data:\(mime);base64," + data.base64EncodedString(), "source_id": "display:\(displayID)",
       "captured_at": capturedAt,
     ]
     try Task.checkCancellation()

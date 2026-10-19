@@ -88,7 +88,9 @@ window.cue = {
         window.finishUpload = r;
       });
     if (window.failUpload) throw Error("upload offline");
-    return { ...shot, id: shot.request_id || shot.id };
+    const saved = { ...shot, id: shot.request_id || shot.id };
+    window.savedImages = [...(window.savedImages || []), saved.id];
+    return saved;
   },
   request: async () => ({}),
   sources: async () => {

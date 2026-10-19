@@ -265,8 +265,8 @@ final class SyntheticPCM: @unchecked Sendable {
     require(asked[1]["text"] as? String == "remote question" && asked[1]["effort"] as? String == "low", "web answer uses native ordered ask path with supplied text and effort")
     model.handle(["type":"answer", "message":["id":model.pending,"text":"remote question","status":"completed","context":"{}"]])
     failUpload = true
-    command("failed-upload", "shot"); try await wait { receipt("failed-upload") != nil }
-    require(receipt("failed-upload")?["ok"] as? Bool == false && model.uploading == 1, "upload failure retains captured original")
+    command("failed-upload", "shot"); try await wait { !model.uploadError.isEmpty }
+    require(receipt("failed-upload") == nil && model.uploading == 1, "upload failure retains captured original")
     model.ask(); try await Task.sleep(for:.milliseconds(20))
     require(asked.count == 2, "failed upload blocks answer")
     failUpload = false; model.retryUploads(); try await wait { !uploadEnds.isEmpty }
@@ -294,21 +294,19 @@ final class SyntheticPCM: @unchecked Sendable {
       try await wait { !uploadEnds.isEmpty }
       require(receipt("continuous-\(n)") == nil, "receipt waits for original storage")
       uploadEnds.removeFirst().resume(returning: ["id": "continuous-\(n)"])
-      try await wait { receipt("continuous-\(n)") != nil }
-      require(receipt("continuous-\(n)")?["ok"] as? Bool == true, "saved attachments do not block another capture")
+      require(receipt("continuous-\(n)") == nil, "server owns successful screenshot receipts")
       try await wait { model.uploading == 0 }
     }
     require(asked.count == asksBeforeCapture && uploaded == 17, "continuous capture uploads every image without generating an answer")
     require(model.selected == (10...17).map { "continuous-\($0)" }, "Cue answer attachments keep the latest eight saved originals")
-    // Only unuploaded originals apply backpressure; keep them all on failure.
-    for n in 18...25 {
+    // A burst beyond eight retains all originals while the first upload waits.
+    for n in 18...27 {
       command("queued-\(n)", "shot")
       try await wait { shotCalls == n && !model.working }
       require(receipt("queued-\(n)") == nil, "queued originals have no successful receipt")
     }
-    command("queue-full", "shot"); try await wait { receipt("queue-full") != nil }
-    require(shotCalls == 25 && model.uploading == 8 && receipt("queue-full")?["ok"] as? Bool == false, "only a full upload queue blocks capture with an explicit error")
-    for n in 18...25 {
+    require(shotCalls == 27 && model.uploading == 10, "all ten burst captures remain queued")
+    for n in 18...27 {
       try await wait { !uploadEnds.isEmpty }
       uploadEnds.removeFirst().resume(returning: ["id": "queued-\(n)"])
     }
