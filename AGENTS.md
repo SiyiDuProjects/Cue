@@ -19,6 +19,7 @@ Cue 是回答工具，不是转录工具。Mac / Windows 桌面悬浮条（控�
 - 网页及新客户端正式地址 `https://cue.siyidu.com`；平台 MCP 地址 `https://cue-app.dusiyi0916.chatgpt.site/mcp`。沿用同一 Sites、App、插件 ID 和所有者权限，不另建插件。旧域名只用于未升级客户端与已存连接的一次迁移。
 - 新协议 `cue-chat-v2`，源码版本 0.4.1。构建、离线验证、部署、安装和真实设备验收分别记录，不互相冒充。
 - Mac 正式安装仅使用 `/Applications/Cue.app`；构建产物使用 `apps/macos/output.noindex/`，旧 `.app` 备份使用 `artifacts/apps.noindex/`，避免 Spotlight 出现开发副本。保留旧备份，不在普通可索引目录新增 `.app` 副本。
+- 整理 Mac 应用副本时同时检查 Spotlight 文件索引与 LaunchServices 注册，不能仅凭 `mdfind` 判断搜索界面已恢复。移动后按 Cue bundle ID 注销旧备份的新路径与失效的临时构建路径，保留 `/Applications/Cue.app`；不重置全局注册表或删除备份。
 - `baseline-20261007` 保存重构前两个仓库；外层 `legacy-v12` 保存旧服务；云端 `sites-v12` 对应原部署提交 `0b0c282`。旧 VPS、私有历史、钥匙串和用户资料不删除。
 - 云端只走 Sites 发布；VPS 工作流仅允许手动从 `legacy-v12` 部署。推送 main 不部署 VPS。
 
