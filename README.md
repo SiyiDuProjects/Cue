@@ -22,7 +22,7 @@
 - `apps/desktop`：Windows Electron 宿主与打包。
 - [云端](apps/cloud/README.md)：私有独立仓库，Sites、D1、R2、模型和设置页。桌面构建不依赖此仓库。
 
-源码版本 0.4.1。实际发布与验收状态见 [发布记录](docs/releases/2026-10-07-cue-0.4.1.md)，不能由源码版本推断安装状态。重构前历史保存在 `baseline-20261007` / `legacy-v12`；VPS 私人历史保留。
+源码版本 0.4.2。实际发布与验收状态见 [发布记录](docs/releases/2026-10-19-cue-0.4.2.md)，不能由源码版本推断安装状态。重构前历史保存在 `baseline-20261007` / `legacy-v12`；VPS 私人历史保留。
 
 ## 验证与打包
 

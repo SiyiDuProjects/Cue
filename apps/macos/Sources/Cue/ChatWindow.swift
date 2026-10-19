@@ -151,6 +151,15 @@ private final class AnswerWebView: WKWebView {
       reply(id, [:] as JSON, nil)
       return
     }
+    if method == "command", let command = args.first as? JSON,
+      let event = command["event"] as? JSON {
+      if command["type"] as? String == "transcription_state" {
+        store.transcriptionState(event); reply(id, [:] as JSON, nil); return
+      }
+      if command["type"] as? String == "transcription_log" {
+        store.transcriptionLog(event); reply(id, [:] as JSON, nil); return
+      }
+    }
     // Preserve receipt order without creating independently scheduled Tasks for
     // commit/ask markers forwarded by the shared transcription module.
     if method == "command", let command = args.first as? JSON,
@@ -183,7 +192,11 @@ private final class AnswerWebView: WKWebView {
   /// transcription client fails, and copies answers.
   private func invoke(_ method: String, _ args: [Any]) async throws -> Any {
     switch method {
-    case "ready": model.sendRender()
+    case "ready":
+      model.sendRender()
+      // The page can load after session_ready. Replay the current connection
+      // state so the local transcription client never starts disconnected.
+      try await store.connect()
     case "audio": try await store.audio(args.first as? Bool == true)
     case "copy":
       if let text = args.first as? String, text.count < 250000 {

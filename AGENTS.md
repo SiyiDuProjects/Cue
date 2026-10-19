@@ -10,14 +10,14 @@ Cue 是回答工具，不是转录工具。Mac / Windows 桌面悬浮条（控�
 
 ## 目录与发布边界
 
-- `packages/transcription/`：两端共用客户端 VAD、OpenAI 转录 WebSocket、轮换和有序截止逻辑。
+- `packages/transcription/`：两端共用客户端 VAD、OpenAI 转录 WebSocket、句子状态、逐个提交与 ordinal、回答截止、保存确认和上游轮换。
 - `packages/chat-ui/`：Windows 悬浮条界面（`App.tsx`：内容决定窗口大小，菜单与提示用原生实现以免被窗口边缘裁切）；`Messages.tsx` 是共用的回答渲染与一次一轮的回答卡片；`Captions.tsx` 是 Windows 与网页共用的可回翻字幕条；`Content.tsx` 是 Mac 回答卡片（一次渲染一轮问答，承载转录客户端，并把面试官字幕交给原生悬浮条）；`Web.tsx` 是网页面试页。依赖由 `apps/desktop` 安装；不依赖云端嵌套仓库。界面用开源 HeroUI v3 + Tailwind，代码块用 HeroUI Pro。
 - HeroUI Pro 来自仓库外的授权包 `/Users/siyi/Projects/_private/vendor/heroui-pro-react-1.0.0-beta.8.tgz`（`file:` 依赖）。外层仓库公开，不得提交该包或其代码。`shiki` 在构建时被替换为 `apps/desktop/src/shiki.ts` 的固定语言集，因为 Mac 页面以 file:// 单脚本加载，不能动态导入。
 - `apps/macos/`：原生 SwiftUI 悬浮条（不激活 Cue 的无边框面板：控制条、可回翻的面试官字幕、回答卡片；`ChatModel` 管理界面状态，`ChatViews` 为原生控件），只把回答卡片内容交给 WKWebView 加载 `content.html`；钥匙串、ScreenCaptureKit 双路采集、手动截图、快捷键。截图仅用 ScreenCaptureKit 截取主屏幕当前画面并排除 Cue 自身，不读取其他应用文字、不识别最近应用或页面，不申请辅助功能权限。Mac 包不含 Node 或 ChatGPT 采集组件；本机 Node 仅用于构建与离线检查。命令行 SwiftPM 构建无法加载 SwiftUI 宏，`@State` 用 `SwiftUI.State` 类型别名代替。
 - `apps/desktop/`：Windows Electron 宿主（无边框透明置顶窗口，点击不取焦点，只在输入框打字时取焦点）、safeStorage、双路 AudioWorklet、截图与打包。
-- `apps/cloud/`：独立私有 Sites 仓库，D1 / R2、转录、Responses、只读 MCP、网页设置（`web/settings.js`）。面试页源码是 `packages/chat-ui/Web.tsx`，由 `npm --prefix apps/desktop run build:web` 生成到 `apps/cloud/web/app/`（字体内联、文件名带哈希）；该生成物含 HeroUI Pro 代码，只能提交到私有云端仓库，不得进入外层公开仓库。改了 `packages/chat-ui` 后先重新生成再构建云端。外层 GitHub 仓库公开，不把云端源码或私人资料直接并入。
+- `apps/cloud/`：独立私有 Sites 仓库，D1 / R2、短期转录凭证与句子保存、Responses、只读 MCP、网页设置（`web/settings.js`）。面试页源码是 `packages/chat-ui/Web.tsx`，由 `npm --prefix apps/desktop run build:web` 生成到 `apps/cloud/web/app/`（字体内联、文件名带哈希）；该生成物含 HeroUI Pro 代码，只能提交到私有云端仓库，不得进入外层公开仓库。改了 `packages/chat-ui` 后先重新生成再构建云端。外层 GitHub 仓库公开，不把云端源码或私人资料直接并入。
 - 网页及新客户端正式地址 `https://cue.siyidu.com`；平台 MCP 地址 `https://cue-app.dusiyi0916.chatgpt.site/mcp`。沿用同一 Sites、App、插件 ID 和所有者权限，不另建插件。旧域名只用于未升级客户端与已存连接的一次迁移。
-- 新协议 `cue-chat-v2`，源码版本 0.4.1。构建、离线验证、部署、安装和真实设备验收分别记录，不互相冒充。
+- 新协议 `cue-chat-v3`，源码版本 0.4.2。构建、离线验证、部署、安装和真实设备验收分别记录，不互相冒充。
 - Mac 正式安装仅使用 `/Applications/Cue.app`；构建产物使用 `apps/macos/output.noindex/`，旧 `.app` 备份使用 `artifacts/apps.noindex/`，避免 Spotlight 出现开发副本。保留旧备份，不在普通可索引目录新增 `.app` 副本。
 - 整理 Mac 应用副本时同时检查 Spotlight 文件索引与 LaunchServices 注册，不能仅凭 `mdfind` 判断搜索界面已恢复。移动后按 Cue bundle ID 注销旧备份的新路径与失效的临时构建路径，保留 `/Applications/Cue.app`；不重置全局注册表或删除备份。
 - `baseline-20261007` 保存重构前两个仓库；外层 `legacy-v12` 保存旧服务；云端 `sites-v12` 对应原部署提交 `0b0c282`。旧 VPS、私有历史、钥匙串和用户资料不删除。
@@ -28,12 +28,12 @@ Cue 是回答工具，不是转录工具。Mac / Windows 桌面悬浮条（控�
 - 启动、连接恢复、截图和普通语音均不自动开启录音、调用回答或重发请求。
 - Mac「更多」提供「开机启动」（SMAppService.mainApp 登录项，开关读取系统实际状态，需批准时打开系统设置）及「隐藏菜单栏图标」。隐藏图标不影响悬浮条和快捷键；取消勾选或重新打开 Cue 恢复图标，不显示 Dock 图标。开机启动只启动应用，不自动录音。
 - 一条认证桌面 WebSocket 仅传控制、转录和回答。客户端双路 24 kHz 单声道 PCM16 分别直接发往 OpenAI，两路永不混音；PCM 和 VAD 不经过 Sites。
-- 桌面回答按键先排入截止前的双路 PCM，再逐路在 Cue 控制队列插入 asr_commit 并提交上游，最后排入 ask。服务器同步固定提交范围后再等待数据库或尾句；生成任务不得阻塞音频、停止或取消。
+- 桌面回答先排入截止前的双路 PCM，客户端同步冻结各路输入边界；若上一提交尚未确认，边界后的 PCM 暂存在本机，等截止提交已发送才放行。每路同时只有一个未确认提交，按 committed 分配 ordinal；等截止内句子定稿并收到精确版本的保存确认，才发送带 cut 的 ask。云端按通道与 ordinal 过滤，不能把先入库的后续发言混进本轮。取消、音频和遥控不被等待阻塞。
 - 每次显式回答有请求 ID 与持久状态；未知结果不自动重试。取消保留可见答案。生成最长 120 秒，不能承诺供应商已停止计费。
 - 电脑端面试官字幕取客户端转录流的实时片段，不经过 Sites、不保存、不决定回答时机；网页字幕取服务器已保存的最近 10 分钟面试官转录。字幕条默认跟随最新两行（网页三行），向上滚动停止跟随，回到底部恢复。
 - 转录使用共享客户端 VAD 分段（约 800 ms 静音 / 30 秒连续上限），原音完整发送，VAD 不决定回答时机。
-- 在用户已开始的会话中约 55 分钟主动替换两路上游。停止、退出、凭证失效或连接被替换后不能复活。意外网络断开停止本地媒体；恢复连接后需明确重新开始转录。
-- 新连接接管桌面所有权，旧连接退出；转录写入带 generation 条件。心跳按时间间隔运行。
+- 在用户已开始的会话中，由电脑在约 55 分钟主动替换两路 OpenAI 上游，旧路保留到尾句处理完。主动轮换 Sites 云端连接暂不实施，先测 CPU 消耗。停止、退出、凭证失效或连接被替换后不能复活。意外网络断开停止本地媒体；恢复连接后需明确重新开始转录。
+- 新连接接管桌面所有权，旧连接退出；转录写入带 generation 条件。客户端保留未确认句子，用同一 ID、revision 重试；云端按该组合幂等插入，确认丢失可重发，读取取最高 revision。每句话所有修订共用服务器最早 created。失败快照同样按终态确认后清理。心跳按时间间隔运行，偶发查询失败记录后再试，连续 30 秒不能确认所有权才断开。停止本机媒体即停止成功，尾句提交、定稿、保存问题单独提示，待保存内容在本进程内继续重试；不自动恢复录音。
 - 截图仅手动触发。Mac / Windows 截图长边不超过 1920 像素，优先 PNG；确实超出 2.5 MiB 时在电脑端自动调整 JPEG 编码与尺寸，始终整张上传，不切块，不要求用户处理大小。用户手动滚动后可继续截图；保存与回答附件独立，已保存截图数量不阻止继续截屏。Cue 下一次回答附最近八张待发截图，超出时仅更新附件选择，不删除云端截图；MCP 不受这八张附件选择限制。不自动滚动、抓全文或回答，截图是不可信参考。
 - 截图与上传分别排队：连拍请求按顺序截屏，每张图保留至上传确认，不再设八张未上传上限。网页每次点击立即显示占位框，逐张转圈；服务器先保存图片对象，再在同一数据库事务中写入图片记录并完成截图命令，此时才显示「已就绪」，不再等待客户端另发成功回执。remote_state 汇报待截/上传中的图片 ID、数量及失败原因；网页截图命令 ID 也作为上传 ID，重试保持不变。回答仍等上传队列清空；失败保留本次运行中的图片，只由用户明确重试，不自动重试。尚在当前在线电脑队列中的截图不按普通指令的 30 秒超时误报失败。
 
@@ -44,7 +44,7 @@ Cue 是回答工具，不是转录工具。Mac / Windows 桌面悬浮条（控�
 - 资料只在网页手动上传、更换、编辑或删除；支持 UTF-8 TXT / Markdown、文字 PDF、DOCX。原文件存 R2，提取文字存 D1。个人资料不提交 Git；面经与 private-notes 不是个人背景资料。
 - 网页遥控经 D1 中转（Sites 只有 D1/R2，连接间无共享内存，无法从网页请求直接推送到桌面连接）：网页经所有者鉴权的 `/api/remote` 写入 `remote_commands`；桌面通过设备鉴权的 `/capture/remote` 独立 HTTPS 请求领取，网页最近 10 分钟内打开过时每次请求完成后约 500 ms 再取，否则约 3 秒检查一次；WebSocket 不轮询指令。指令绑定网页看到的桌面 generation，在 D1 中校验当前所有者并原子领取一次，领取后再校验所有者；领取后到达客户端时已超过 15 秒的指令不执行；及时接收的连拍可排队完成。桌面经 `remote_state` 汇报状态（遥控协议 version 3，其他版本必须更新），只有当前所有者的汇报有效。指令：start、stop、shot、ask（`text` ≤ 16,000、可选 `effort`）、cancel、unselect（`image`）。ask 的回执可带 `answer`（该次回答 ID），网页据此跟随；shot 成功回执由服务器保存图片的事务生成，带已保存的图片 ID。每条指令记录完成/失败回执，普通指令超过 30 秒未确认时明确提示；仍在在线电脑截图/上传队列中的 shot 继续等待，不自动重试。桌面执行与自身按钮相同的代码，遥控开关默认开启；由网页开始的录音在悬浮条标明。网页按 `updated` 增量读取最近一小时的回答（生成中每 2 秒保存一次），读取不写库：超过 20 秒未保存的生成中回答由网页显示为已中断；待发截图的缩略图经所有者鉴权的 `/api/remote/images/:id` 返回。`/api/remote` 等网站接口只接受同源请求，`https://chatgpt.com` 只能访问 `/mcp`。
 - 转录和截图是一条连续时间线，没有场次或「新一场」；数据库旧 recording 列写同一个固定值。回答和界面取最近一小时，MCP 首次也从最近一小时开始；后续位置保留首次的时间下界，避免尚未读完的内容在翻页时因越过一小时而消失。
-- MCP 只有 read_context、list_materials、read_material 三个只读工具，不提供 MCP Apps、通知或自动回答。恢复 9 月 30 日新增与历史分开的语义：首次 read_context() 返回最新一批，并记录首次观察基线；后续追问用 updates_cursor，只返回基线之后的新增与修订；未读完的旧内容通过 history_cursor 单独补读。next_cursor 只翻当前模式的下一页，has_more 也仅表示该模式仍有内容。每页图片清单最多 32 张、附图最多四张，按编码后 JSON 的 3.75 MiB 预算选图并留封装余量；上传端每张最多 2.5 MiB，保证新保存的整图可装入单页。超出本批预算的图留到下一页，不记为已返回。大小先读数据库或对象元数据，仅并行下载实际附带的图片。任何选中图片读取失败则整次失败，不保存新位置；同一输入 cursor 可重试，缓存重放也重新获取图片，不缓存缺图成功结果。位置不可变、各调用者独立，不用对话 ID、全局已读或 ack；位置与页缓存保留七天、最多 512 条，过期明确报错，源材料保留。images 按 ID 回看未移除的图，before 向前读转录，不能与 cursor 混用。旧 ack/history 忽略、旧已读表保留。
+- MCP 只有 read_context、list_materials、read_material 三个只读工具，不提供 MCP Apps、通知或自动回答。read_context 首次返回最新内容并固定一小时下界与首次基线；后续只使用一个 cursor，默认读取基线之后的新增与修订，older=true 补读基线中未给出的历史，两者合并 seen。每次按当前数据库现查，不缓存或重放结果；旧 cursor 可能重复，但不会冻结在旧题。每页清单最多 32 张、原图最多四张，整体编码 JSON（structuredContent、兼容文本块和原图）不超过 3.75 MiB。上传仍最多 2.5 MiB/张，未附上的图不记为已给，more.new/more.older 分别列出剩余数量。只下载预算内原图，任何选中图读取失败则整次失败，不创建新 cursor。cursor 不可变、各调用者独立，不依赖对话 ID、全局已读或 ack，保留七天、最多 512 条；无效、过期或旧协议按首次读取重置并返回 reset。images 按 ID 回看未移除原图，不能与 cursor/older 混用，直接读图的 cursor=null 不替换正常增量位置。删除 before 与三个旧 cursor 字段，旧 ack/history 忽略，旧表和源材料保留。
 - 长期 OpenAI key 仅服务器持有。服务器签发 60 秒有效的 Realtime 连接凭证；它只进入本地聊天渲染进程并连接固定 OpenAI 地址，不入日志、URL、存储或 Git。凭证有效期限制新连接，不等于会话时长。设备凭证仅原生主进程 / 系统安全存储持有，不进网页进程、URL、日志或 Git。Web 设置和 MCP 依靠 Sites 验证后的所有者身份；不能用设备凭证冒充用户。
 - 保留既有 bundle/app ID、钥匙串 service/account 与用户资料目录作为固定存储标识，名称变化不能清除权限或旧登录。源码、打包目标、IPC 和当前配置统一 Cue；已删除 Codex 宿主、其配置读取与资料目录字段，不增加旧功能兼容分支。HTTP 不跟随携凭证的重定向。
 - 数据库迁移只追加 schema，不删除旧用户记录，不用迁移文件上传个人资料。

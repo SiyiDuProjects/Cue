@@ -384,7 +384,11 @@ export default function App() {
         setAudio("idle");
         setSince(0);
         setAudioSource("");
-        if (!e.complete) setError("音频尾句未全部确认，请检查转录。");
+
+      }
+      if (["transcription_tail", "transcription_save"].includes(e.type)) {
+        if (e.detail) setError(e.detail);
+        else setError(old => old === "转录暂未保存，正在重试。" ? "" : old);
       }
       if (e.type === "disconnected" || e.type === "replaced") {
         setConnected(false);

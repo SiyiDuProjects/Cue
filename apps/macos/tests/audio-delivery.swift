@@ -30,16 +30,14 @@ import Security
       let value = try JSONSerialization.jsonObject(with: Data(raw.utf8)) as? JSON else { return }
     sent.append(value)
     switch value["type"] as? String {
-    case "authenticate": push(["type": "session_ready", "protocol": "cue-chat-v2"])
-    case "start":
-      if let startedDelay {
-        Task { @MainActor in
-          try await Task.sleep(for: startedDelay)
-          self.push(["type": "started"])
-        }
-      } else { push(["type": "started"]) }
+    case "authenticate": push(["type": "session_ready", "protocol": "cue-chat-v3"])
     default: break
     }
+  }
+  func localStart(_ store: AppStore) {
+    if let startedDelay {
+      Task { @MainActor in try await Task.sleep(for: startedDelay); store.transcriptionState(["type": "started"]) }
+    } else { store.transcriptionState(["type": "started"]) }
   }
   func receive() async throws -> URLSessionWebSocketTask.Message {
     if !pending.isEmpty {
@@ -128,9 +126,10 @@ final class SyntheticPCM: @unchecked Sendable {
       case "error": errors.append(event["detail"] as? String ?? "unknown")
       case "audio_control":
         let value = event["value"] as! JSON
+        if value["type"] as? String == "start" { socket.localStart(store) }
         if value["type"] as? String == "stop" {
           stoppedBytes = received.values.reduce(0) { $0 + $1.count }
-          socket.push(["type": "stopped", "complete": true])
+
         } else if value["type"] as? String == "ask" {
           askBytes = received.values.reduce(0) { $0 + $1.count }
         }
@@ -217,11 +216,12 @@ final class SyntheticPCM: @unchecked Sendable {
     defer { defaults.removePersistentDomain(forName: domain) }
     let model = ChatModel(store: store, defaults: defaults)
     model.allowRemote = true
-    var asked: [JSON] = [], stopComplete = true
+    var asked: [JSON] = [], tailFailure = false
     store.onEvent = { event in
       if event["type"] as? String == "audio_control", let value = event["value"] as? JSON {
+        if value["type"] as? String == "start" { socket.localStart(store) }
         if value["type"] as? String == "ask" { asked.append(value) }
-        if value["type"] as? String == "stop" { socket.push(["type": "stopped", "complete": stopComplete]) }
+        if value["type"] as? String == "stop", tailFailure { store.transcriptionState(["type": "transcription_tail", "detail": "最后一句尚未保存，正在重试。"]) }
       } else { model.handle(event) }
     }
     func wait(_ condition: () -> Bool) async throws {
@@ -279,9 +279,9 @@ final class SyntheticPCM: @unchecked Sendable {
     require(model.audio == "active", "remote start")
     command("stop", "stop"); try await wait { receipt("stop") != nil }
     require(model.audio == "idle", "remote stop")
-    command("start-again", "start"); try await wait { receipt("start-again") != nil }; stopComplete = false
+    command("start-again", "start"); try await wait { receipt("start-again") != nil }; tailFailure = true
     command("stop-failed", "stop"); try await wait { receipt("stop-failed") != nil }
-    require(receipt("stop-failed")?["ok"] as? Bool == false, "incomplete stop fails")
+    require(receipt("stop-failed")?["ok"] as? Bool == true && model.error.contains("尚未保存"), "local stop succeeds and tail save failure is separate")
     model.allowRemote = false
     command("disabled", "shot"); try await wait { receipt("disabled") != nil }
     require(receipt("disabled")?["ok"] as? Bool == false && shotCalls == 5, "disabled control cannot capture")
@@ -338,16 +338,14 @@ final class SyntheticPCM: @unchecked Sendable {
         let role = event["role"] as! String
         received[role]!.append(Data(base64Encoded: event["data"] as! String)!)
       case "audio_control":
-        if (event["value"] as? JSON)?["type"] as? String == "stop" {
-          socket.push(["type": "stopped", "complete": true])
-        }
+        if (event["value"] as? JSON)?["type"] as? String == "start" { socket.localStart(store) }
       default: break
       }
     }
     for _ in 0..<100 where !link.ready { try await Task.sleep(for: .milliseconds(10)) }
     try await store.audio(true)
     try await Task.sleep(for: .milliseconds(200))
-    socket.push(["type": "stopped", "complete": false])
+    store.transcriptionState(["type": "stopped"])
     for _ in 0..<100 where store.phase != "idle" { try await Task.sleep(for: .milliseconds(10)) }
     // Native stop (60 ms) finishes while the old producer keeps writing its tail.
     try await Task.sleep(for: .milliseconds(200))
@@ -381,9 +379,7 @@ final class SyntheticPCM: @unchecked Sendable {
       if event["type"] as? String == "started" { started += 1 }
       if event["type"] as? String == "pcm" { delivered += 1 }
       if event["type"] as? String == "audio_control",
-        (event["value"] as? JSON)?["type"] as? String == "stop" {
-        socket.push(["type": "stopped", "complete": true])
-      }
+        (event["value"] as? JSON)?["type"] as? String == "start" { socket.localStart(store) }
     }
     for _ in 0..<100 where !link.ready { try await Task.sleep(for: .milliseconds(10)) }
     let pending = Task { try await store.audio(true) }

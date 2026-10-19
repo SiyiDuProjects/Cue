@@ -1,201 +1,351 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { DirectTranscription } from "../../../packages/transcription/direct.mjs";
-
-class Socket extends EventTarget {
-  static instances = [];
-  constructor(url, protocols) {
-    super();
-    Object.assign(this, {
-      url,
-      protocols,
-      sent: [],
-      bufferedAmount: 0,
-      closed: false,
-    });
-    Socket.instances.push(this);
-  }
-  send(value) {
-    this.sent.push(JSON.parse(value));
-  }
-  receive(value) {
-    this.dispatchEvent(
-      new MessageEvent("message", { data: JSON.stringify(value) }),
-    );
-  }
-  close() {
-    this.closed = true;
-    this.dispatchEvent(new Event("close"));
-  }
-  ready() {
-    this.dispatchEvent(new Event("open"));
-    this.receive({ type: "session.updated" });
-  }
-}
-function fixture() {
-  Socket.instances = [];
+const settle = () => new Promise(setImmediate);
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+function fixture(t, options = {}) {
   const sent = [],
+    events = [],
     failures = [],
-    detectors = [];
+    logs = [],
+    sockets = [];
+  let now = 100000,
+    ack = true,
+    token = true;
+  class Socket extends EventTarget {
+    constructor() {
+      super();
+      this.sent = [];
+      this.bufferedAmount = 0;
+      this.closed = false;
+      sockets.push(this);
+      queueMicrotask(() => this.dispatchEvent(new Event("open")));
+    }
+    send(raw) {
+      const v = JSON.parse(raw);
+      this.sent.push(v);
+      if (v.type === "session.update")
+        queueMicrotask(() => this.receive({ type: "session.updated" }));
+    }
+    receive(v) {
+      this.dispatchEvent(
+        new MessageEvent("message", { data: JSON.stringify(v) }),
+      );
+    }
+    close() {
+      this.closed = true;
+      this.dispatchEvent(new Event("close"));
+    }
+    committed(id) {
+      this.receive({ type: "input_audio_buffer.committed", item_id: id });
+    }
+    final(id, text = "synthetic") {
+      this.receive({
+        type: "conversation.item.input_audio_transcription.completed",
+        item_id: id,
+        transcript: text,
+      });
+    }
+  }
   const direct = new DirectTranscription({
     WebSocket: Socket,
-    send: (value) => sent.push(value),
-    fail: (value) => failures.push(value),
-    makeVAD: async () => {
-      const vad = {
-        voice: () => false,
-        destroy() {
-          this.destroyed = true;
-        },
-      };
-      detectors.push(vad);
-      return vad;
+    now: () => now,
+    makeVAD: async () => ({ voice: () => false, destroy() {} }),
+    send(v) {
+      sent.push(v);
+      if (v.type === "asr_token" && token)
+        queueMicrotask(() =>
+          direct.handle({
+            ...v,
+            token: "ek_synthetic",
+            session: { type: "transcription" },
+          }),
+        );
+      if (v.type === "utterance" && ack)
+        queueMicrotask(() =>
+          direct.handle({
+            type: "utterance_saved",
+            id: v.id,
+            revision: v.revision,
+          }),
+        );
     },
+    fail: (v) => failures.push(v),
+    emit: (v) => events.push(v),
+    log: (v) => logs.push(v),
+    ...options,
   });
-  const open = async (role, id) => {
-    await direct.open({
-      role,
-      stream: id,
-      token: "ek_synthetic",
-      session: { type: "transcription" },
-    });
-    const socket = Socket.instances.at(-1);
-    socket.ready();
-    return socket;
-  };
-  return { direct, sent, failures, detectors, open };
-}
-for (const control of ["ask"])
-  test(`PCM only reaches OpenAI; both commits precede ${control} and later audio`, async () => {
-    const { direct, sent, open, detectors } = fixture();
-    const a = await open("interviewer", "a"),
-      b = await open("candidate", "b");
-    direct.pcm("interviewer", new ArrayBuffer(4800));
-    direct.pcm("candidate", new ArrayBuffer(4800));
-    direct.control({ type: control, id: "request" });
-    direct.pcm("interviewer", new ArrayBuffer(4800));
-    direct.control({ type: "stop" });
-    assert.deepEqual(
-      sent.map((v) => v.type),
-      [
-        "asr_ready",
-        "asr_ready",
-        "asr_commit",
-        "asr_commit",
-        control,
-        "asr_commit",
-        "stop",
-      ],
-    );
-    assert(
-      sent.every(
-        (v) => !Object.hasOwn(v, "audio") && !Object.hasOwn(v, "token"),
-      ),
-    );
-    assert.equal(
-      a.sent.filter((v) => v.type === "input_audio_buffer.commit").length,
-      2,
-    );
-    assert.equal(
-      b.sent.filter((v) => v.type === "input_audio_buffer.commit").length,
-      1,
-    );
-    assert.notEqual(detectors[0], detectors[1]);
+  direct.handle({ type: "session_ready" });
+  t.after(() => {
+    direct.connected = false;
     direct.reset();
+    clearInterval(direct.timer);
   });
-test("handover commits old input before activating replacement and keeps its tail open", async () => {
-  const { direct, sent, open } = fixture();
-  const old = await open("candidate", "old");
-  direct.pcm("candidate", new ArrayBuffer(4800));
-  const next = await open("candidate", "next");
-  assert.deepEqual(sent.slice(-2), [
-    { type: "asr_commit", stream: "old" },
-    { type: "asr_ready", stream: "next" },
-  ]);
-  assert.equal(old.closed, false);
-  direct.pcm("candidate", new ArrayBuffer(4800));
-  assert.equal(next.sent.at(-1).type, "input_audio_buffer.append");
-  old.receive({
-    type: "conversation.item.input_audio_transcription.completed",
-    item_id: "x",
-    transcript: "tail",
-  });
-  assert.equal(sent.at(-1).stream, "old");
-  direct.handle({ type: "asr_close", stream: "old" });
-  assert(old.closed);
-  assert(!next.closed);
-  direct.reset();
-});
-test("disconnect and stop close both upstreams without any retry", async () => {
-  const { direct, open, failures } = fixture();
-  const a = await open("interviewer", "a"),
-    b = await open("candidate", "b");
-  a.dispatchEvent(new Event("error"));
-  assert(a.closed && b.closed);
-  assert.equal(failures.length, 1);
-  assert.equal(Socket.instances.length, 2);
-  assert.throws(() => direct.pcm("candidate", new ArrayBuffer(4800)), /未就绪/);
-});
-test("a cancelled opening cannot create a late upstream", async () => {
-  let finish;
-  const vad = {
-    voice: () => false,
-    destroy() {
-      this.destroyed = true;
+  return {
+    direct,
+    sent,
+    events,
+    failures,
+    logs,
+    sockets,
+    setAck: (v) => (ack = v),
+    setToken: (v) => (token = v),
+    advance(ms) {
+      now += ms;
+      direct.tick();
+    },
+    async start() {
+      await direct.start();
+      return sockets;
+    },
+    pcm(role = "interviewer", value = 1) {
+      direct.pcm(role, new Int16Array(2400).fill(value).buffer);
+    },
+    channel(role = "interviewer") {
+      return direct.active.get(role);
     },
   };
-  const direct = new DirectTranscription({
-    WebSocket: Socket,
-    send() {},
-    fail() {},
-    makeVAD: () => new Promise((resolve) => (finish = resolve)),
-  });
-  const count = Socket.instances.length;
-  const opening = direct.open({
-    role: "candidate",
-    stream: "late",
-    token: "ek_synthetic",
-  });
-  direct.reset();
-  finish(vad);
-  await opening;
-  assert.equal(Socket.instances.length, count);
-  assert(vad.destroyed);
-});
-test("partial coalescing preserves complete text and final events", async () => {
-  const { direct, open, sent } = fixture();
-  const socket = await open("candidate", "a");
-  for (const delta of ["hello", " ", "world"])
-    socket.receive({
-      type: "conversation.item.input_audio_transcription.delta",
-      item_id: "x",
-      delta,
+}
+test("both streams stay direct and answer waits for exact final persistence", async (t) => {
+  const f = fixture(t),
+    [a, b] = await f.start();
+  f.setAck(false);
+  f.pcm();
+  f.pcm("candidate");
+  const answer = f.direct.control({ type: "ask", id: "one" });
+  a.committed("a");
+  b.committed("b");
+  a.final("a");
+  b.final("b");
+  await settle();
+  assert(!f.sent.some((v) => v.type === "ask"));
+  const latest = [...f.direct.outbox.values()].map((p) => p.value);
+  for (const v of latest)
+    f.direct.handle({
+      type: "utterance_saved",
+      id: v.id,
+      revision: v.revision - 1,
     });
-  assert.equal(sent.filter((v) => v.type === "asr_event").length, 1);
-  socket.receive({
-    type: "conversation.item.input_audio_transcription.completed",
-    item_id: "x",
-    transcript: "hello world",
-  });
-  assert.equal(sent.at(-1).event.transcript, "hello world");
-  direct.reset();
+  await settle();
+  assert(!f.sent.some((v) => v.type === "ask"));
+  for (const v of latest)
+    f.direct.handle({
+      type: "utterance_saved",
+      id: v.id,
+      revision: v.revision,
+    });
+  await answer;
+  assert.deepEqual(Object.values(f.sent.at(-1).cut), [1, 1]);
+  assert.equal(f.direct.outbox.size, 0);
+  assert(f.sent.every((v) => !("audio" in v) && !("token" in v)));
+  assert.notEqual(f.channel().vad, f.channel("candidate").vad);
 });
-test("a rejected handshake tells the server why, without the token", async () => {
-  const { direct, sent, failures } = fixture();
-  await direct.open({
-    role: "interviewer",
-    stream: "s",
-    token: "ek_synthetic",
-    session: { type: "transcription" },
+test("an earlier unconfirmed commit cannot pull post-click PCM into the answer cutoff", async (t) => {
+  const f = fixture(t),
+    [a] = await f.start(),
+    c = f.channel();
+  f.pcm();
+  f.direct.commit(c);
+  f.pcm("interviewer", 2);
+  const answer = f.direct.control({ type: "ask", id: "cut" });
+  f.pcm("interviewer", 3);
+  assert.equal(a.sent.filter((v) => v.type.endsWith(".append")).length, 2);
+  a.committed("previous");
+  a.final("previous");
+  await settle();
+  const ordered = a.sent.filter((v) => /append|commit/.test(v.type));
+  assert.deepEqual(
+    ordered.map((v) => v.type.split(".").at(-1)),
+    ["append", "commit", "append", "commit", "append"],
+  );
+  a.committed("boundary");
+  f.direct.commit(c);
+  a.committed("after");
+  a.final("after");
+  a.final("boundary");
+  await answer;
+  assert.equal(f.sent.find((v) => v.type === "ask").cut[c.id], 2);
+  assert.equal(c.ordinal, 3);
+});
+test("save outages retain every final, lost ACKs retry idempotently, newer revisions win", async (t) => {
+  const f = fixture(t),
+    [a] = await f.start();
+  f.setAck(false);
+  f.pcm();
+  f.direct.commit(f.channel());
+  a.committed("one");
+  a.receive({
+    type: "conversation.item.input_audio_transcription.delta",
+    item_id: "one",
+    delta: "hello",
   });
-  const socket = Socket.instances[0];
-  socket.dispatchEvent(new Event("open"));
-  socket.receive({ type: "error", error: { code: "invalid_value" } });
-  assert.deepEqual(sent.at(-1), {
-    type: "asr_failed",
-    stream: "s",
-    reason: "invalid_value",
+  a.final("one", "hello world");
+  f.pcm();
+  f.direct.commit(f.channel());
+  a.committed("two");
+  a.final("two");
+  const versions = [...f.direct.outbox.values()].map((p) => p.value);
+  for (const v of versions)
+    f.direct.handle({
+      type: "utterance_failed",
+      id: v.id,
+      revision: v.revision,
+      code: "db_error",
+    });
+  assert.equal(f.failures.length, 0);
+  f.advance(3100);
+  assert.equal(f.direct.outbox.size, 2);
+  f.direct.handle({ type: "disconnected" });
+  assert.equal(f.direct.active.size, 0);
+  f.setAck(true);
+  f.direct.handle({ type: "session_ready" });
+  await settle();
+  assert.equal(f.direct.outbox.size, 0);
+  assert.equal(f.direct.phase, "idle");
+  assert.deepEqual(
+    f.sent
+      .filter((v) => v.type === "utterance")
+      .slice(-2)
+      .map((v) => v.text),
+    ["hello world", "synthetic"],
+  );
+});
+test("matched commit rejection is a failed boundary even without an item or ordinal", async (t) => {
+  const f = fixture(t),
+    [a] = await f.start();
+  f.pcm();
+  const answer = f.direct.control({ type: "ask", id: "bad" });
+  const commit = a.sent.at(-1);
+  a.receive({
+    type: "error",
+    event_id: "server-event",
+    error: { event_id: commit.event_id, code: "invalid_value" },
   });
-  assert.match(failures[0], /invalid_value/);
-  assert(!JSON.stringify(sent).includes("ek_synthetic"));
+  await assert.rejects(answer, /提交失败/);
+  assert(!f.sent.some((v) => v.type === "ask"));
+  assert.equal(f.direct.phase, "active");
+  f.pcm();
+  f.direct.commit(f.channel());
+  a.committed("next");
+  a.final("next");
+  await settle();
+  assert.equal(f.channel().ordinal, 1);
+});
+test("a failed transcription is terminal for ACK retirement but cannot start an answer", async (t) => {
+  const f = fixture(t),
+    [a] = await f.start();
+  f.setAck(false);
+  f.pcm();
+  const answer = f.direct.control({ type: "ask" });
+  a.committed("x");
+  a.receive({
+    type: "conversation.item.input_audio_transcription.failed",
+    item_id: "x",
+    error: { code: "audio_unintelligible" },
+  });
+  await assert.rejects(answer, /audio_unintelligible/);
+  const v = f.direct.outbox.values().next().value.value;
+  f.direct.handle({ type: "utterance_saved", id: v.id, revision: v.revision });
+  assert.equal(f.direct.outbox.size, 0);
+  assert.equal(f.channel().turns.size, 0);
+});
+test("stop is immediate; tail saves survive closure and new recording can start", async (t) => {
+  const f = fixture(t, { tailMs: 30 }),
+    [a, b] = await f.start();
+  f.setAck(false);
+  f.pcm();
+  f.direct.stop();
+  assert.equal(f.direct.phase, "idle");
+  a.committed("tail");
+  a.final("tail");
+  await f.direct.start();
+  await sleep(40);
+  assert(a.closed && b.closed);
+  assert.equal(f.direct.phase, "active");
+  assert.equal(f.direct.outbox.size, 1);
+  f.setAck(true);
+  f.advance(31000);
+  await settle();
+  assert.equal(f.direct.outbox.size, 0);
+  assert(f.events.some((v) => v.type === "transcription_tail" && v.detail));
+});
+test("recoverable provider errors and malformed events do not kill either stream", async (t) => {
+  const f = fixture(t),
+    [a, b] = await f.start();
+  a.dispatchEvent(new MessageEvent("message", { data: "invalid" }));
+  a.receive({
+    type: "error",
+    event_id: "server",
+    error: { type: "server_error" },
+  });
+  assert(!a.closed && !b.closed);
+  assert.equal(f.failures.length, 0);
+  assert.equal(f.logs.length, 2);
+  a.bufferedAmount = 65000;
+  f.advance(500);
+  f.advance(9500);
+  assert(!a.closed);
+  a.bufferedAmount = 0;
+  f.advance(500);
+  assert(!a.closed);
+  a.bufferedAmount = 65000;
+  f.advance(1);
+  f.advance(10000);
+  assert(a.closed && b.closed);
+  assert.match(f.failures[0], /积压/);
+});
+test("unacknowledged commit closes ambiguous streams without guessing a pairing", async (t) => {
+  const f = fixture(t, { commitMs: 15 }),
+    [a, b] = await f.start();
+  f.pcm();
+  const answer = f.direct.control({ type: "ask" });
+  const checked = assert.rejects(answer, /已取消|未获确认|断开/);
+  await sleep(30);
+  await checked;
+  assert(a.closed && b.closed);
+  assert.match(f.failures[0], /未获确认/);
+});
+test("cancel releases a waiting answer and never sends it", async (t) => {
+  const f = fixture(t),
+    [a] = await f.start();
+  f.pcm();
+  const answer = f.direct.control({ type: "ask", id: "one" });
+  await f.direct.control({ type: "cancel", id: "one" });
+  await assert.rejects(answer);
+  a.committed("x");
+  a.final("x");
+  await settle();
+  assert(!f.sent.some((v) => v.type === "ask"));
+});
+test("cancelled token acquisition cannot revive a stopped recording", async (t) => {
+  const f = fixture(t);
+  f.setToken(false);
+  const starting = f.direct.start();
+  f.direct.stop();
+  await assert.rejects(starting, /取消/);
+  for (const v of f.sent)
+    if (v.type === "asr_token")
+      f.direct.handle({ ...v, token: "ek_synthetic" });
+  assert.equal(f.sockets.length, 0);
+  assert.equal(f.direct.phase, "idle");
+});
+test("55-minute handover preserves old tails and answers include both sides of the handover", async (t) => {
+  const f = fixture(t),
+    [a, b] = await f.start();
+  f.pcm();
+  f.pcm("candidate");
+  f.advance(55 * 60000);
+  await settle();
+  assert.equal(f.sockets.length, 4);
+  assert.notEqual(f.channel().ws, a);
+  assert(!a.closed && !b.closed);
+  const answer = f.direct.control({ type: "ask" });
+  a.committed("old-a");
+  b.committed("old-b");
+  a.final("old-a");
+  b.final("old-b");
+  await answer;
+  await settle();
+  assert(a.closed && b.closed);
+  assert.equal(Object.keys(f.sent.find((v) => v.type === "ask").cut).length, 4);
 });

@@ -40,7 +40,7 @@ test(`Windows ${type} flushes both worklets before its marker and holds later PC
     }
     send(raw) {
       const value = JSON.parse(raw);
-      if (value.type === "authenticate") this.emit({ type: "session_ready", protocol: "cue-chat-v2" });
+      if (value.type === "authenticate") this.emit({ type: "session_ready", protocol: "cue-chat-v3" });
       if (value.type === "start") this.emit({ type: "started" });
       if (value.type === "stop") this.emit({ type: "stopped", complete: stopComplete });
     }
@@ -60,14 +60,14 @@ test(`Windows ${type} flushes both worklets before its marker and holds later PC
       if (name.endsWith("audioCapture")) return {
         requestCaptureStream: async (role) => ({ role, getTracks: () => [] }),
         startLocalAudioCapture: ({ stream, onChunk }) => {
-          const h = { onChunk, stop() {}, finish: async () => true,
+          const h = { onChunk, stop() {}, finish: async () => stopComplete,
             flush: () => new Promise((resolve) => { h.flushTail = (n) => { onChunk(bytes(n)); resolve(); }; }) };
           handles.set(stream.role, h); return h;
         },
       };
       if (name.endsWith("bridge")) return { receive: (e) => events.push(e) };
       if (name.endsWith("directTranscription")) return { directTranscription: (send) => ({
-        handle: () => false, reset() {},
+        handle: () => false, reset() {}, start: async () => {}, stop: () => {},
         pcm: (role, data) => calls.push(`${role}:${new Int16Array(data)[0]}`),
         control: (value) => { calls.push(value.type); send(value); },
       }) };
@@ -88,7 +88,8 @@ test(`Windows ${type} flushes both worklets before its marker and holds later PC
   assert.equal(events.at(-1).type, "stopped");
   await window.cue.audio(true);
   stopComplete = false;
-  await assert.rejects(window.cue.audio(false), /尾句未全部确认/);
+  await window.cue.audio(false);
+  assert(events.some(e => /本机音频收尾失败/.test(e.detail)));
 });
 
 function audioFixture({ addModule = () => Promise.resolve() } = {}) {

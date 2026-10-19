@@ -20,7 +20,6 @@ if (host) {
     lastMessage = 0;
   let remoteEpoch = 0;
   let stopping: Promise<void> | undefined,
-    stopComplete = false,
     marking = false;
   const handles = new Map<string, AudioCaptureHandle>(),
     held = new Map<string, ArrayBuffer[]>(),
@@ -63,10 +62,7 @@ if (host) {
       const frames = held.get(role) || [];
       frames.push(data);
       held.set(role, frames);
-      if (frames.reduce((n, f) => n + f.byteLength, 0) > 24000) {
-        frames.shift();
-        report("音频出现缺口，请检查转录。");
-      }
+      // Worklet flush is bounded to one second. Retain its entire tail.
       return;
     }
     try {
@@ -101,7 +97,7 @@ if (host) {
     current.binaryType = "arraybuffer";
     current.onopen = () =>
       current.send(
-        JSON.stringify({ type: "authenticate", protocol: "cue-chat-v2" }),
+        JSON.stringify({ type: "authenticate", protocol: "cue-chat-v3" }),
       );
     current.onmessage = (e) => {
       if (socket !== current) return;
@@ -109,7 +105,7 @@ if (host) {
       const value = JSON.parse(e.data);
       if (direct.handle(value)) return;
       if (value.type === "session_ready") {
-        if (value.protocol !== "cue-chat-v2") {
+        if (value.protocol !== "cue-chat-v3") {
           stopped = true;
           current.close();
           return;
@@ -119,11 +115,6 @@ if (host) {
         void pollRemote(value.generation, ++remoteEpoch);
       }
       if (value.type === "started") phase = "active";
-      if (value.type === "stopped") {
-        stopComplete = value.complete === true;
-        endLocal();
-        phase = "idle";
-      }
       if (value.type === "replaced") {
         stopped = true;
         endLocal();
@@ -134,6 +125,7 @@ if (host) {
     current.onclose = () => {
       if (socket !== current) return;
       ready = false;
+      direct.handle({ type: "disconnected" });
       remoteEpoch++;
       endLocal();
       queue.length = 0;
@@ -180,20 +172,21 @@ if (host) {
     if (stopping) return stopping;
     generation++;
     phase = "stopping";
-    stopComplete = false;
     stopping = (async () => {
       let complete = true;
       for (const h of handles.values())
         if (!(await h.finish())) complete = false;
       handles.clear();
-      if (ready) {
-        direct.control({ type: "stop" });
-        await wait(() => phase === "idle", 12000);
-      }
-      if (!complete || !stopComplete || !ready)
-        throw Error("音频尾句未全部确认。");
+      direct.stop();
+      receive({ type: "stopped" });
+      phase = "idle";
+      if (!complete) report("本机音频收尾失败，最后一段声音可能缺失。");
     })().finally(() => {
-      endLocal();
+      generation++;
+      handles.clear();
+      held.clear();
+      holding.clear();
+      phase = "idle";
       stopping = undefined;
     });
     return stopping;
@@ -209,8 +202,8 @@ if (host) {
         streams.set(role, await requestCaptureStream(role));
         if (epoch !== generation) throw Error("启动已取消。");
       }
-      send({ type: "start" });
-      await wait(() => phase === "active" || !ready, 15000);
+      await direct.start();
+      phase = "active";
       if (!ready || epoch !== generation) throw Error("转录启动已取消。");
       for (const [role, stream] of streams)
         handles.set(
@@ -244,7 +237,12 @@ if (host) {
             holding.add(role);
           }),
         );
-        direct.control(value);
+        const command = direct.control(value);
+        holding.clear();
+        for (const [role, frames] of held)
+          for (const frame of frames) pcm(role, frame);
+        held.clear();
+        await command;
       } finally {
         holding.clear();
         for (const [role, frames] of held)
@@ -252,7 +250,7 @@ if (host) {
         held.clear();
         marking = false;
       }
-    } else direct.control(value);
+    } else await direct.control(value);
   }
   window.cue = {
     connect: open,

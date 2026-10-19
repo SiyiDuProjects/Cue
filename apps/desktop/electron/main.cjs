@@ -109,7 +109,7 @@ async function connect() {
     signal: AbortSignal.timeout(8000),
   });
   const health = await response.json();
-  if (!response.ok || health.capture_protocol !== "cue-chat-v2")
+  if (!response.ok || health.capture_protocol !== "cue-chat-v3")
     throw Error("此服务器尚未切换采集版本，请保留已安装的客户端。");
   return { origin };
 }

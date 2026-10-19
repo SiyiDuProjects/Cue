@@ -7,7 +7,6 @@ import CueCore
   static let serviceURL = "https://cue.siyidu.com"
   var onEvent: (JSON) -> Void = { _ in }
   var phase = "idle"
-  private var stopComplete = false
   private let http = HTTPClient()
   private let capture: CaptureController
   private let screenshotProvider: (() async throws -> JSON)?
@@ -118,7 +117,6 @@ import CueCore
       phase = "prepared"
       return  // Publish only after the native devices have actually started.
     case "stopped":
-      stopComplete = value["complete"] as? Bool == true
       audioGeneration = UUID()
       phase = "idle"
       Task { _ = await self.capture.finish() }
@@ -182,6 +180,21 @@ import CueCore
       Task { try? await self.audio(false) }
     }
   }
+  func transcriptionState(_ value: JSON) {
+    guard let type = value["type"] as? String,
+      ["started", "stopped", "error", "transcription_tail", "transcription_save"].contains(type) else { return }
+    if type == "error", phase == "starting" { phase = "idle"; audioGeneration = UUID() }
+    event(value)
+  }
+  func transcriptionLog(_ value: JSON) {
+    // Only allow fixed diagnostic fields from the local page. No text or tokens.
+    let stage = String((value["stage"] as? String ?? "unknown").prefix(60))
+    let code = String((value["code"] as? String ?? "unknown").prefix(80))
+    let kind = String((value["error_type"] as? String ?? "").prefix(80))
+    let eventID = String((value["event_id"] as? String ?? "").prefix(100))
+    let closeCode = value["close_code"] as? Int ?? 0
+    audioLog.error("transcription_failed type=\(kind, privacy: .public) event_id=\(eventID, privacy: .public) close_code=\(closeCode) stage=\(stage, privacy: .public) code=\(code, privacy: .public)")
+  }
   func forwardTranscription(_ value: JSON) throws {
     guard let link, link.ready else { throw CueError("连接尚未就绪。") }
     try link.enqueue(value)
@@ -213,8 +226,8 @@ import CueCore
       try link.enqueue(message)
       return
     }
-    if value["type"] as? String == "ask" {
-      guard !["starting", "prepared", "stopping"].contains(phase) else {
+    if ["ask", "cancel"].contains(value["type"] as? String ?? "") {
+      guard value["type"] as? String != "ask" || !["starting", "prepared", "stopping"].contains(phase) else {
         throw CueError("请等待音频就绪。")
       }
       // PCM and its marker enter WebKit in native order; the shared client
@@ -237,7 +250,7 @@ import CueCore
       phase = "starting"
       do {
         guard audioGeneration == epoch else { throw CueError("转录启动已取消。") }
-        try await link.send(["type": "start"])
+        onEvent(["type": "audio_control", "value": ["type": "start"]])
         for _ in 0..<300 {
           guard audioGeneration == epoch else { throw CueError("转录启动已取消。") }
           if phase == "prepared" {
@@ -261,17 +274,13 @@ import CueCore
       if phase == "stopping" { throw CueError("转录正在收尾。") }
       audioGeneration = UUID()
       phase = "stopping"
-      stopComplete = false
       let complete = await capture.finish()
       pump(force: true)
-      onEvent(["type": "audio_control", "value": ["type": "stop"]])
-      for _ in 0..<240 {
-        if phase == "idle" { break }
-        try await Task.sleep(for: .milliseconds(50))
-      }
-      let confirmed = phase == "idle" && complete && stopComplete && link.ready
       phase = "idle"
-      if !confirmed { throw CueError("音频尾句未全部确认。") }
+      onEvent(["type": "stopped"])
+      onEvent(["type": "audio_control", "value": ["type": "stop"]])
+      if !complete { onEvent(["type": "transcription_tail", "detail": "本机音频收尾失败，最后一段声音可能缺失。"] ) }
+
     }
   }
   func request(_ path: String, method: String = "GET", body: JSON? = nil) async throws -> JSON {

@@ -74,7 +74,7 @@ print("\(checked) offline checks passed")
   func receive() async throws -> URLSessionWebSocketTask.Message {
     if !receivedReady {
       receivedReady = true
-      return .string("{\"type\":\"session_ready\",\"protocol\":\"cue-chat-v2\"}")
+      return .string("{\"type\":\"session_ready\",\"protocol\":\"cue-chat-v3\"}")
     }
     return try await withCheckedThrowingContinuation { receiver = $0 }
   }
@@ -94,16 +94,16 @@ print("\(checked) offline checks passed")
     await Task.yield()
   }
   check(link.ready && fake.sent == ["authenticate"], "connection does not start audio or ask")
-  try link.enqueue(["type": "asr_commit", "stream": "interviewer"])
-  try link.enqueue(["type": "asr_commit", "stream": "candidate"])
+  try link.enqueue(["type": "utterance", "stream": "interviewer"])
+  try link.enqueue(["type": "utterance", "stream": "candidate"])
   try link.enqueue(["type": "ask"])
-  try link.enqueue(["type": "asr_event"])
+  try link.enqueue(["type": "utterance"])
   for _ in 0..<100 {
     if fake.sent.count == 5 { break }
     await Task.yield()
   }
   check(
-    fake.sent == ["authenticate", "asr_commit", "asr_commit", "ask", "asr_event"],
+    fake.sent == ["authenticate", "utterance", "utterance", "ask", "utterance"],
     "both ASR commits precede ask and later transcription events")
   fake.receiver?.resume(returning: .string("{\"type\":\"replaced\"}"))
   fake.receiver = nil

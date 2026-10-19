@@ -29,22 +29,21 @@ app.whenReady().then(async () => {
   try {
     await win.loadFile(path.join(__dirname, "../dist-mac/content.html"));
     await wait("!!document.querySelector('.content-view')");
-    await run(
-      "for(const role of ['interviewer','candidate'])window.cueReceive({type:'asr_config',role,stream:role,token:'ek_synthetic',session:{type:'transcription',tag:role}})",
-    );
-    await wait(
-      "window.directControls.filter(e=>e.type==='asr_ready').length===2",
-    );
-    await run(
-      "for(const role of ['interviewer','candidate'])window.cueReceive({type:'pcm',role,data:btoa('\\0'.repeat(9600))});window.cueReceive({type:'audio_control',value:{type:'ask',id:'cut'}})",
-    );
-    assert.deepEqual(await run("window.directControls.map(e=>e.type)"), [
-      "asr_ready",
-      "asr_ready",
-      "asr_commit",
-      "asr_commit",
-      "ask",
-    ]);
+    await run("window.cueReceive({type:'session_ready'})");
+    await run("window.cueReceive({type:'audio_control',value:{type:'start'}})");
+    await wait("window.directStates.some(e=>e.type==='started')");
+    for (const id of ["native", "web"]) {
+      await run(
+        `for(const role of ['interviewer','candidate'])window.cueReceive({type:'pcm',role,data:btoa('\\0'.repeat(9600))});window.cueReceive({type:'audio_control',value:{type:'ask',id:'${id}',chat:'chat',images:['shot']}})`,
+      );
+      await wait(
+        `window.directControls.some(e=>e.type==='ask'&&e.id==='${id}')`,
+      );
+      const answer = await run("window.directControls.at(-1)");
+      assert.equal(answer.id, id);
+      assert.deepEqual(answer.images, ["shot"]);
+      assert.equal(Object.keys(answer.cut).length, 2);
+    }
     assert.equal(
       await run(
         "window.directSockets.every(s=>s.sent.some(e=>e.type==='input_audio_buffer.append'))",
@@ -53,47 +52,16 @@ app.whenReady().then(async () => {
     );
     assert.equal(
       await run(
-        "window.directControls.every(e=>!('audio' in e)&&!('token' in e))",
+        "window.directControls.every(e=>!('audio'in e)&&!('token'in e))",
       ),
       true,
     );
-    await run(
-      "for(const role of ['interviewer','candidate'])window.cueReceive({type:'pcm',role,data:btoa('\\0'.repeat(9600))});window.cueReceive({type:'audio_control',value:{type:'ask',id:'web',chat:'chat',images:['shot']}})",
-    );
+    await run(`window.captions=[];const socket=window.directSockets.find(s=>s.sent[0].session.tag==='interviewer');
+      socket.receive({type:'conversation.item.input_audio_transcription.delta',item_id:'preview',delta:'你好'});
+      socket.receive({type:'conversation.item.input_audio_transcription.delta',item_id:'preview',delta:'，请介绍'});`);
     assert.deepEqual(
-      await run("window.directControls.slice(-3).map(e=>e.type)"),
-      ["asr_commit", "asr_commit", "ask"],
-    );
-    assert.deepEqual(await run("window.directControls.at(-1)"), {
-      type: "ask",
-      id: "web",
-      chat: "chat",
-      images: ["shot"],
-    });
-    // Captions: every interviewer partial reaches the overlay at once, while
-    // the server still gets one coalesced partial; the candidate has none.
-    await run(`(() => {
-      const socket = (role) => window.directSockets.find((s) => s.sent[0].session.tag === role);
-      const emit = (role, event) => socket(role).dispatchEvent(new MessageEvent("message", { data: JSON.stringify(event) }));
-      const delta = "conversation.item.input_audio_transcription.delta";
-      emit("interviewer", { type: delta, item_id: "i1", delta: "你好" });
-      emit("interviewer", { type: delta, item_id: "i1", delta: "，请介绍" });
-      emit("candidate", { type: delta, item_id: "c1", delta: "我" });
-      emit("interviewer", { type: "conversation.item.input_audio_transcription.completed", item_id: "i1", transcript: "你好，请介绍一下。" });
-    })()`);
-    assert.deepEqual(await run("window.captions"), [
-      { item: "i1", text: "你好" },
-      { item: "i1", text: "你好，请介绍" },
-      { item: "i1", text: "你好，请介绍一下。" },
-    ]);
-    assert.deepEqual(
-      await run(
-        "window.directControls.filter(e=>e.type==='asr_event'&&e.event.item_id==='i1').map(e=>e.event.type)",
-      ),
-      [
-        "conversation.item.input_audio_transcription.full",
-        "conversation.item.input_audio_transcription.completed",
-      ],
+      (await run("window.captions")).map((c) => c.text),
+      ["你好", "你好，请介绍"],
     );
     await run("window.cueReceive({type:'disconnected'})");
     assert.equal(await run("window.directSockets.every(s=>s.closed)"), true);

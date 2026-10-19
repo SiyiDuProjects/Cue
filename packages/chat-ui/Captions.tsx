@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useLayoutEffect, useRef } from "react";
 
 /** How far back the caption strip can be scrolled. */
 export const CAPTION_WINDOW = 10 * 60000;
@@ -26,7 +26,7 @@ export const joinCaptions = (parts: string[]) =>
 export function CaptionStrip({ text }: { text: string }) {
   const box = useRef<HTMLDivElement>(null),
     follow = useRef(true);
-  useEffect(() => {
+  useLayoutEffect(() => {
     const el = box.current;
     if (el && follow.current) el.scrollTop = el.scrollHeight;
   }, [text]);

@@ -197,7 +197,10 @@ struct Caption: Identifiable {
       audio = "idle"
       audioSince = nil
       audioSource = ""
-      if e["complete"] as? Bool == false { error = "音频尾句未全部确认，请检查转录。" }
+    case "transcription_tail", "transcription_save":
+      let detail = e["detail"] as? String ?? ""
+      if !detail.isEmpty { error = detail }
+      else if error == "转录暂未保存，正在重试。" { error = "" }
     case "remote": remoteOpen = e["connected"] as? Bool == true
     // A web button runs exactly what this window's button runs.
     case "remote_command":

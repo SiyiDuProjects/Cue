@@ -1,7 +1,7 @@
 import Foundation
 
 public typealias JSON = [String: Any]
-public let protocolVersion = "cue-chat-v2"
+public let protocolVersion = "cue-chat-v3"
 
 public struct CueError: LocalizedError {
   public let message: String
