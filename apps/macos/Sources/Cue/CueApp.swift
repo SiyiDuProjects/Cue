@@ -30,6 +30,9 @@ import ScreenCaptureKit
     chat = ChatWindow(store: store)
     status = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
     status?.button?.title = "Cue"
+    chat?.model.setMenuBarVisible = { [weak self] visible in
+      self?.status?.isVisible = visible
+    }
     let menu = NSMenu()
     for (title, action) in [
       ("显示或隐藏 Cue", #selector(toggle)), ("回答", #selector(answer)), ("截图", #selector(shot)),
@@ -155,6 +158,7 @@ import ScreenCaptureKit
   @objc private func shot() { chat?.model.shot() }
   @objc private func quit() { NSApp.terminate(nil) }
   func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows: Bool) -> Bool {
+    chat?.model.menuBarHidden = false
     show()
     return true
   }

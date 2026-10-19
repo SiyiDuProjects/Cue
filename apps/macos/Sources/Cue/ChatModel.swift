@@ -1,6 +1,7 @@
 import AppKit
 import Combine
 import CueCore
+import ServiceManagement
 
 /// One interviewer utterance from the page's local transcription stream.
 struct Caption: Identifiable {
@@ -38,6 +39,12 @@ struct Caption: Identifiable {
   }
   /// The answer card under the control bar; asking opens it.
   @Published var expanded = false
+  /// Reopening Cue restores this entry point, even when the overlay is hidden.
+  @Published var menuBarHidden = false {
+    didSet { setMenuBarVisible(!menuBarHidden) }
+  }
+  @Published private(set) var launchAtLogin = false
+  @Published private(set) var loginItemBusy = false
   @Published var captionsOn = UserDefaults.standard.object(forKey: "cue.captions") as? Bool ?? true
   {
     didSet { if persist { defaults.set(captionsOn, forKey: "cue.captions") } }
@@ -63,9 +70,11 @@ struct Caption: Identifiable {
   /// Overlay content size, so the window hugs it.
   var resize: (CGSize) -> Void = { _ in }
   var hide: () -> Void = {}
+  var setMenuBarVisible: (Bool) -> Void = { _ in }
   init(store: AppStore, defaults: UserDefaults = .standard) {
     self.store = store
     self.defaults = defaults
+    refreshLaunchAtLogin()
     // Any change may alter what the web page shows; send it once things settle.
     reporter =
       objectWillChange
@@ -75,6 +84,33 @@ struct Caption: Identifiable {
   /// Preview mode shares the installed app's defaults domain; never write it.
   private var persist: Bool { !store.preview }
   private let defaults: UserDefaults
+
+  func refreshLaunchAtLogin() {
+    let enabled = !store.preview && SMAppService.mainApp.status == .enabled
+    if launchAtLogin != enabled { launchAtLogin = enabled }
+  }
+  func setLaunchAtLogin(_ enabled: Bool) {
+    guard !store.preview, !loginItemBusy else { return }
+    loginItemBusy = true
+    Task {
+      defer { refreshLaunchAtLogin(); loginItemBusy = false }
+      do {
+        let service = SMAppService.mainApp
+        if enabled {
+          if service.status != .enabled && service.status != .requiresApproval {
+            try service.register()
+          }
+          if service.status == .requiresApproval {
+            SMAppService.openSystemSettingsLoginItems()
+          }
+        } else if service.status != .notRegistered {
+          try await service.unregister()
+        }
+      } catch {
+        self.error = "开机启动设置失败：" + error.localizedDescription
+      }
+    }
+  }
 
   var sending: Bool { !pending.isEmpty || messages.contains(where: Self.busy) }
   var audioBusy: Bool { audio == "starting" || audio == "stopping" }

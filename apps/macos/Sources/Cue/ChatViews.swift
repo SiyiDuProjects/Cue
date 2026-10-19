@@ -239,6 +239,13 @@ private struct MoreMenu: View {
       }
       .pickerStyle(.menu)
       Toggle("允许网页遥控", isOn: $model.allowRemote)
+      Toggle("开机启动", isOn: Binding(
+        get: { model.launchAtLogin }, set: { model.setLaunchAtLogin($0) }
+      ))
+        .disabled(model.loginItemBusy || model.store.preview)
+        .help("登录 Mac 时启动 Cue")
+      Toggle("隐藏菜单栏图标", isOn: $model.menuBarHidden)
+        .help("再次打开 Cue 可恢复图标")
       Divider()
       Button("网页设置…", action: model.openWebSettings)
       Button("连接设置…", action: model.importConnection)
@@ -255,6 +262,9 @@ private struct MoreMenu: View {
     .menuIndicator(.hidden)
     .fixedSize()
     .help("更多")
+    .onReceive(NSWorkspace.shared.notificationCenter.publisher(
+      for: NSWorkspace.didActivateApplicationNotification
+    )) { _ in model.refreshLaunchAtLogin() }
   }
 }
 
