@@ -11,7 +11,7 @@
     "build:mac": "tsc && vite build --mode mac",
     "build:web": "tsc && vite build --mode web",
     "start:local": "npm run build && electron .",
-    "test:ui": "electron tests/chat-ui-smoke.cjs && electron tests/direct-ui.cjs",
+    "test:ui": "electron tests/capture-continuity.cjs && electron tests/chat-ui-smoke.cjs && electron tests/direct-ui.cjs",
     "test:capture": "node --test tests/capture.test.cjs electron/desktop-connection.test.cjs electron/desktop-environment.test.cjs electron/preload.test.cjs electron/screen-capture.test.cjs tests/direct-transcription.test.mjs tests/upload-queue.test.mjs",
     "prestart:desktop": "npm run build",
     "start:desktop": "electron .",

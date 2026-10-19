@@ -76,7 +76,7 @@ window.cue = {
     if (window.holdShot) await new Promise((r) => (window.finishShot = r));
     if (window.failShot) throw Error("录屏权限未开启");
     return {
-      id: "shot",
+      id: window.uniqueShots ? `shot-${window.shotCalls}` : "shot",
       created: Date.now(),
       image_url:
         "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jv3cAAAAASUVORK5CYII=",

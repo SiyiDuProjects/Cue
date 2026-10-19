@@ -141,10 +141,19 @@ export default function App() {
     (shot: Event) => window.cue.uploadScreenshot!(shot),
     (image: Event) => {
       if (!current.current.selected.includes(image.id))
-        current.current.selected = [...current.current.selected, image.id];
+        current.current.selected = [
+          ...current.current.selected,
+          image.id,
+        ].slice(-8);
       setSelected(current.current.selected);
-      if (image.image_url)
-        setPreviews((p) => ({ ...p, [image.id]: image.image_url }));
+      const preview = image.image_url;
+      if (typeof preview === "string")
+        setPreviews((p) => {
+          const next: Record<string, string> = { ...p, [image.id]: preview };
+          for (const id of Object.keys(next))
+            if (!current.current.selected.includes(id)) delete next[id];
+          return next;
+        });
     },
     (count: number, error: string) => {
       setUploading(count);
@@ -211,11 +220,9 @@ export default function App() {
   }
   async function captureShot() {
     if (shooting.current) throw Error("截图尚未完成。");
-    if (
-      current.current.selected.length + uploadQueue.current!.items.length >=
-      8
-    )
-      throw Error("最多待发 8 张截图，请先回答或移除。");
+    // Saved references never block capture; only unsaved originals fill this queue.
+    if (uploadQueue.current!.items.length >= 8)
+      throw Error("8 张截图仍未上传，请等待或重试上传。");
     shooting.current = true;
     setWorking(true);
     try {
@@ -558,7 +565,7 @@ export default function App() {
             <Subtitles weight={captionsOn ? "fill" : "regular"} />
           </Button>
         </Tip>
-        <Tip label={"截图（Ctrl+Alt+S），随下一次提问发送"}>
+        <Tip label={"截图并同步（Ctrl+Alt+S）；Cue 回答附最近 8 张"}>
           <Button
             size="sm"
             variant="ghost"
@@ -654,6 +661,11 @@ export default function App() {
             {uploading} 张截图上传中
           </div>
         )
+      )}
+      {!uploadError && uploading === 0 && selected.length === 8 && (
+        <div className="notice glass" role="status">
+          截图已同步；Cue 回答附最近 8 张
+        </div>
       )}
       {error && (
         <div className="notice glass" role="alert">

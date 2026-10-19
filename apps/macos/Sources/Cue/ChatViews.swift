@@ -30,6 +30,8 @@ struct ChatRootView: View {
         }
       } else if model.uploading > 0 {
         Notice(text: "\(model.uploading) 张截图上传中", tint: .secondary) { EmptyView() }
+      } else if model.selected.count == 8 {
+        Notice(text: "截图已同步；Cue 回答附最近 8 张", tint: .secondary) { EmptyView() }
       }
       if !model.error.isEmpty {
         Notice(text: model.error, tint: .red) {
@@ -161,7 +163,7 @@ private struct ControlBar: View {
         }
       }
       .disabled(!model.connected || model.working)
-      .help("截图（⌃⌥⌘S），随下一次提问发送")
+      .help("截图并同步（⌃⌥⌘S）；Cue 回答附最近 8 张")
       if model.sending {
         Button(action: model.cancel) {
           Label("停止", systemImage: "stop.fill")

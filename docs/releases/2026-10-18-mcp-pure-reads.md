@@ -1,5 +1,7 @@
 # Cue MCP pure context reads
 
+Follow-up: this read-path acceptance did not cover sustained capture without a Cue answer. The later eight-attachment capture regression and its ten-image real-device verification are recorded in [continuous capture](2026-10-18-continuous-capture.md).
+
 ## Published source
 
 Private cloud source and verified GitHub backup: `b48bd287fcfa795f866d4b29f809b50843040d1b`.

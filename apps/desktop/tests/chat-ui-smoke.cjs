@@ -21,6 +21,8 @@ app
         preload: path.join(__dirname, "chat-ui-preload.cjs"),
         contextIsolation: false,
         nodeIntegration: false,
+        // Hidden test windows still need normal effect/scroll scheduling.
+        backgroundThrottling: false,
       },
     });
     const js = (code) =>

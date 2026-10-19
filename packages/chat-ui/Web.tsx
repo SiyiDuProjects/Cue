@@ -306,7 +306,7 @@ export default function Web() {
             )}
           </Button>
         </Tip>
-        <Tip label="截图，随下一次提问发送">
+        <Tip label="截图并同步；Cue 回答附最近 8 张">
           <Button
             size="sm"
             variant="ghost"
@@ -411,6 +411,11 @@ export default function Web() {
         </div>
       )}
       {audio === "active" && <CaptionStrip text={caption} />}
+      {view?.attachments.length === 8 && !d?.uploading && !d?.upload_error && (
+        <div className="notice glass" role="status">
+          截图已同步；Cue 回答附最近 8 张
+        </div>
+      )}
       <section className="card glass" aria-label="回答">
         <div className="conversation exchange-view">
           <div className="column">

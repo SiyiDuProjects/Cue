@@ -285,6 +285,33 @@ final class SyntheticPCM: @unchecked Sendable {
     model.allowRemote = false
     command("disabled", "shot"); try await wait { receipt("disabled") != nil }
     require(receipt("disabled")?["ok"] as? Bool == false && shotCalls == 5, "disabled control cannot capture")
+    // The user's MCP-only workflow never sends a Cue answer to clear selected.
+    model.allowRemote = true
+    failShot = false
+    let asksBeforeCapture = asked.count
+    for n in 6...17 {
+      command("continuous-\(n)", "shot")
+      try await wait { receipt("continuous-\(n)") != nil }
+      require(receipt("continuous-\(n)")?["ok"] as? Bool == true, "saved attachments must not block the next capture")
+      try await wait { !uploadEnds.isEmpty }
+      uploadEnds.removeFirst().resume(returning: ["id": "shot-\(n)"])
+      try await wait { model.uploading == 0 }
+    }
+    require(asked.count == asksBeforeCapture && uploaded == 17, "continuous capture uploads every image without generating an answer")
+    require(model.selected == (10...17).map { "shot-\($0)" }, "Cue answer attachments keep the latest eight saved originals")
+    // Only unuploaded originals apply backpressure; keep them all on failure.
+    for n in 18...25 {
+      command("queued-\(n)", "shot")
+      try await wait { receipt("queued-\(n)") != nil }
+      require(receipt("queued-\(n)")?["ok"] as? Bool == true, "capture queue accepts eight unsaved originals")
+    }
+    command("queue-full", "shot"); try await wait { receipt("queue-full") != nil }
+    require(shotCalls == 25 && model.uploading == 8 && receipt("queue-full")?["ok"] as? Bool == false, "only a full upload queue blocks capture with an explicit error")
+    for n in 18...25 {
+      try await wait { !uploadEnds.isEmpty }
+      uploadEnds.removeFirst().resume(returning: ["id": "shot-\(n)"])
+    }
+    try await wait { model.uploading == 0 }
     try await wait { socket.sent.contains { $0["type"] as? String == "remote_state" && $0["version"] as? Int == 3 } }
     await store.disconnect()
   }

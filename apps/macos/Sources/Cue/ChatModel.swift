@@ -318,7 +318,9 @@ struct Caption: Identifiable {
   func shot() { attempt { try await self.captureShot() } }
   private func captureShot() async throws {
     guard !working else { throw CueError("截图尚未完成。") }
-    guard selected.count + uploads.count < 8 else { throw CueError("最多待发 8 张截图，请先回答或移除。") }
+    // Saved references are independent of the next Cue answer's attachments.
+    // Only unsaved originals occupy the bounded upload queue.
+    guard uploads.count < 8 else { throw CueError("8 张截图仍未上传，请等待或重试上传。") }
     working = true
     defer { working = false }
     let shot = try await store.screenshot()
@@ -338,7 +340,8 @@ struct Caption: Identifiable {
         do {
           let image = try await store.uploadShot(shot)
           guard let id = image["id"] as? String else { throw CueError("截图上传结果未确认。") }
-          if !selected.contains(id) { selected.append(id) }
+          if !selected.contains(id) { selected = Array((selected + [id]).suffix(8)) }
+          previews = previews.filter { selected.contains($0.key) }
           if let url = image["image_url"] as? String, let picture = Self.image(dataURL: url) { previews[id] = picture }
           uploads.removeFirst()
           uploading = uploads.count
