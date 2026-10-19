@@ -57,6 +57,7 @@ Mac 可加载 `/Users/siyi/Projects/_tools/env.sh`。Windows 使用 `npm.cmd`。
 
 - 云端：`npm --prefix apps/cloud test`、`npm --prefix apps/cloud run build`。
 - 桌面：`npm --prefix apps/desktop run test:capture`、`npm --prefix apps/desktop run build`（Windows）、`npm --prefix apps/desktop run build:mac`（Mac 回答页）、`npm --prefix apps/desktop run test:ui`（需先完成两种构建）。
+- 跨端上下文回归：`node --test tests/interview-context.test.mjs`（需要现有私有 `apps/cloud`；真实状态机与 SQLite，模拟上游及故障，不使用真实音频或凭证）。
 - 网页真实 DOM / 文件解析测试：`apps/desktop/node_modules/.bin/electron apps/cloud/tests/settings-ui.cjs`（仅 loopback，合成文件）。
 - Mac：`bash apps/macos/scripts/check-offline.sh`；发布包 `bash apps/macos/scripts/build-app.sh`。
 - 云端真实长测：明确获准后运行 `bash apps/macos/scripts/check-live.sh --run-live 65`。使用合成 PCM、原生钥匙串和真实付费服务，会接管当前桌面连接；期间不要启动另一个客户端或部署云端。它不替代麦克风、系统音频和 Windows 真机验收。

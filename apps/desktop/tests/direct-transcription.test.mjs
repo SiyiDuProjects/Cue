@@ -269,6 +269,26 @@ test("stop is immediate; tail saves survive closure and new recording can start"
   assert.equal(f.direct.outbox.size, 0);
   assert(f.events.some((v) => v.type === "transcription_tail" && v.detail));
 });
+test("stop and an immediate answer share one final commit boundary", async (t) => {
+  const f = fixture(t),
+    [a] = await f.start(),
+    c = f.channel();
+  f.pcm();
+  f.direct.commit(c);
+  f.pcm();
+  f.direct.stop();
+  const answer = f.direct.control({ type: "ask", id: "stopped-tail" });
+  a.committed("previous");
+  a.final("previous");
+  await settle();
+  a.committed("tail");
+  await settle();
+  assert(!f.sent.some((v) => v.type === "ask"));
+  a.final("tail", "required tail");
+  await answer;
+  assert.equal(f.sent.find((v) => v.type === "ask").cut[c.id], 2);
+  assert.equal(a.sent.filter((v) => v.type.endsWith(".commit")).length, 2);
+});
 test("recoverable provider errors and malformed events do not kill either stream", async (t) => {
   const f = fixture(t),
     [a, b] = await f.start();
@@ -316,6 +336,27 @@ test("cancel releases a waiting answer and never sends it", async (t) => {
   a.final("x");
   await settle();
   assert(!f.sent.some((v) => v.type === "ask"));
+});
+test("cancelling an answer releases its wait without cancelling the shared stop tail", async (t) => {
+  const f = fixture(t),
+    [a] = await f.start();
+  f.pcm();
+  f.direct.stop();
+  const answer = f.direct.control({ type: "ask", id: "stop-cancel" });
+  const rejected = assert.rejects(answer);
+  await f.direct.control({ type: "cancel", id: "stop-cancel" });
+  await settle();
+  assert.equal(
+    f.direct.asking,
+    null,
+    "cancel must release a shared-tail waiter immediately",
+  );
+  await rejected;
+  a.committed("tail");
+  a.final("tail");
+  await settle();
+  assert(!f.sent.some((v) => v.type === "ask"));
+  assert(f.events.some((v) => v.type === "transcription_tail" && !v.detail));
 });
 test("cancelled token acquisition cannot revive a stopped recording", async (t) => {
   const f = fixture(t);

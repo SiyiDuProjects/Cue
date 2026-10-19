@@ -8,6 +8,28 @@ const later = (fn, ms) => {
   id.unref?.();
   return id;
 };
+// Cancelling one reader must not cancel the channel's shared final boundary.
+const observe = (promise, signal) => {
+  if (!signal) return promise;
+  return new Promise((resolve, reject) => {
+    const abort = () => {
+      signal.removeEventListener("abort", abort);
+      reject(signal.reason ?? Error("已取消。"));
+    };
+    signal.addEventListener("abort", abort, { once: true });
+    promise.then(
+      (value) => {
+        signal.removeEventListener("abort", abort);
+        resolve(value);
+      },
+      (error) => {
+        signal.removeEventListener("abort", abort);
+        reject(error);
+      },
+    );
+    if (signal.aborted) abort();
+  });
+};
 export class DirectTranscription {
   constructor({
     send,
@@ -301,7 +323,9 @@ export class DirectTranscription {
     });
     ws.addEventListener("close", (e) => {
       if (!c.closed)
-        this.failed(`语音连接已断开（${e.code ?? 0}）。`, "openai_closed", {close_code: e.code ?? 0});
+        this.failed(`语音连接已断开（${e.code ?? 0}）。`, "openai_closed", {
+          close_code: e.code ?? 0,
+        });
     });
     ws.addEventListener("error", () => {
       if (!c.closed) this.failed("语音连接发生网络错误。", "openai_network");
@@ -524,7 +548,7 @@ export class DirectTranscription {
     const snapshots = await Promise.all(
       channels.map(async (c) => {
         if (c.retirement) {
-          const result = await c.retirement;
+          const result = await observe(c.retirement, signal);
           Object.assign(cuts, result.cut);
           return result.records;
         }
@@ -629,6 +653,12 @@ export class DirectTranscription {
       this.notify();
     }
   }
+  retire(channel, signal) {
+    // An upstream has exactly one final boundary. Stop, handover and an
+    // overlapping answer must all observe the same submitted tail.
+    channel.retirement ??= this.boundary([channel], signal);
+    return channel.retirement;
+  }
   stop() {
     if (this.phase === "idle" && !this.channels.size) return;
     this.asking?.abort();
@@ -650,9 +680,12 @@ export class DirectTranscription {
         () => abort.abort(Error("尾句收尾超时，未保存内容仍会重试。")),
         this.tailMs,
       );
+    const boundaries = channels.map((c) => this.retire(c, abort.signal));
     void (async () => {
       try {
-        const { records } = await this.boundary(channels, abort.signal);
+        const records = (await Promise.all(boundaries)).flatMap(
+          (value) => value.records,
+        );
         await this.saved(records, abort.signal);
         this.emit({ type: "transcription_tail", detail: "" });
       } catch (e) {
@@ -677,7 +710,7 @@ export class DirectTranscription {
       old.rotating = false;
       return;
     }
-    old.retirement = this.boundary([old]);
+    this.retire(old);
     this.active.set(old.role, next);
     try {
       const { records } = await old.retirement;
