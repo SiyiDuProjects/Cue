@@ -26,6 +26,7 @@ type Desktop = {
   phase: string;
   since: number;
   uploading: number;
+  uploads?: string[];
   upload_error: string;
   pending: string;
   error: string;
@@ -35,7 +36,7 @@ type Receipt = {
   id: string;
   status: string;
   detail: string;
-  result: { answer?: string };
+  result: { answer?: string; image?: string };
 };
 type View = {
   desktop: Desktop;
@@ -92,6 +93,7 @@ export default function Web() {
     [answers, setAnswers] = useState<Record<string, Answer>>({}),
     // command id → type, until its receipt settles
     [pending, setPending] = useState<Record<string, string>>({}),
+    [shots, setShots] = useState<Record<string, { state: "pending" | "ready" | "failed"; detail?: string }>>({}),
     [error, setError] = useState(""),
     [text, setText] = useState(stored("cue.draft")),
     [effort, setEffort] = useState(stored("cue.effort")),
@@ -118,6 +120,11 @@ export default function Web() {
       return next;
     });
     for (const r of done) {
+      if (waiting.current[r.id] === "shot") {
+        setShots((s) => ({ ...s, [r.id]: r.status === "completed" && r.result.image === r.id
+          ? { state: "ready" }
+          : { state: "failed", detail: r.detail || "截图保存未确认。" } }));
+      }
       if (
         r.status === "completed" &&
         r.result.answer &&
@@ -143,6 +150,9 @@ export default function Web() {
           (ids.length ? "&commands=" + ids.join(",") : ""),
       );
       setView(v);
+      // Once the server lists the saved attachment it owns its display, also
+      // after an explicit retry of a previously failed upload.
+      setShots((s) => Object.fromEntries(Object.entries(s).filter(([id]) => !v.attachments.some((a: { id: string }) => a.id === id))));
       if (v.answers.length) {
         after.current = Math.max(
           after.current,
@@ -169,6 +179,7 @@ export default function Web() {
     }
     const id = crypto.randomUUID();
     if (type === "ask") drafts.current[id] = textNow.current;
+    if (type === "shot") setShots((s) => ({ ...s, [id]: { state: "pending" } }));
     setPending((p) => ({ ...p, [id]: type }));
     waiting.current = { ...waiting.current, [id]: type };
     setError("");
@@ -178,6 +189,7 @@ export default function Web() {
       ]);
       return true;
     } catch (e) {
+      if (type === "shot") setShots((s) => ({ ...s, [id]: { state: "failed", detail: e instanceof Error ? e.message : String(e) } }));
       setPending((p) => {
         const { [id]: _, ...rest } = p;
         return rest;
@@ -259,6 +271,13 @@ export default function Web() {
           : "已连接";
   // The server sends the interviewer's last ten minutes while transcribing.
   const caption = joinCaptions((view?.captions ?? []).map((c) => c.text));
+  const savedIDs = new Set((view?.attachments ?? []).map((a) => a.id));
+  const shotSlots = new Map(Object.entries(shots).filter(([id]) => !savedIDs.has(id)));
+  for (const id of d?.uploads ?? []) {
+    if (!savedIDs.has(id) && !shotSlots.has(id)) shotSlots.set(id, {
+      state: d?.upload_error ? "failed" : "pending", detail: d?.upload_error,
+    });
+  }
   async function ask() {
     if (asking || generating) return;
     await send("ask", { text: text.trim(), ...(effort ? { effort } : {}) });
@@ -426,16 +445,17 @@ export default function Web() {
           <p className="empty-note">点「回答」，用最近的转录和截图生成回答。</p>
         )}
         <div className="composer">
-          {((view?.attachments.length ?? 0) > 0 ||
+          {((view?.attachments.length ?? 0) > 0 || shotSlots.size > 0 ||
             !!d?.uploading ||
             !!d?.upload_error) && (
             <div className="attachments">
-              {view!.attachments.map((a, index) => (
-                <div className="attachment" key={a.id}>
+              {(view?.attachments ?? []).map((a, index) => (
+                <div className="attachment" key={a.id} data-state="ready">
                   <img
                     src={"/api/remote/images/" + encodeURIComponent(a.id)}
                     alt={"截图 " + (index + 1)}
                   />
+                  <span className="attachment-state"><Check weight="bold" />已就绪</span>
                   <button
                     aria-label="移除附件"
                     onClick={() => void send("unselect", { image: a.id })}
@@ -444,12 +464,21 @@ export default function Web() {
                   </button>
                 </div>
               ))}
-              {!!d?.uploading && (
-                <div className="attachment uploading">
-                  <Spinner size="sm" color="current" />
-                  <span>{d.uploading}</span>
+              {[...shotSlots].map(([id, shot]) => (
+                <div className="attachment shot-status" key={id} data-state={shot.state} role="status" title={shot.detail}>
+                  {shot.state === "ready" ? <>
+                    <img src={"/api/remote/images/" + encodeURIComponent(id)} alt="截图" />
+                    <span className="attachment-state"><Check weight="bold" />已就绪</span>
+                  </> : shot.state === "failed" ? <>
+                    <span>未就绪</span>
+                    <button aria-label="关闭失败提示" onClick={() => setShots((s) => { const next = { ...s }; delete next[id]; return next; })}><X /></button>
+                  </> : <>
+                    <Spinner size="sm" color="current" />
+                    <span>{d?.uploads?.includes(id) ? "上传中" : "截图中"}</span>
+                  </>}
                 </div>
-              )}
+              ))}
+              {!d?.uploads && !!d?.uploading && !shotSlots.size && <div className="attachment uploading" role="status"><Spinner size="sm" color="current" /><span>上传中</span></div>}
               {!!d?.upload_error && (
                 <span className="upload-error">{d.upload_error}</span>
               )}

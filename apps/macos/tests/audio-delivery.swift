@@ -241,8 +241,8 @@ final class SyntheticPCM: @unchecked Sendable {
     require(shotCalls == 0 && receipt("expired")?["ok"] as? Bool == false, "stale/expired remote cannot capture")
     for n in 1...3 {
       command("capture-\(n)", "shot")
-      try await wait { receipt("capture-\(n)") != nil }
-      require(receipt("capture-\(n)")?["ok"] as? Bool == true && receipt("capture-\(n)")?["image"] == nil, "captured receipt precedes upload")
+      try await wait { shotCalls == n && !model.working }
+      require(receipt("capture-\(n)") == nil, "capture alone cannot report success")
     }
     require(model.uploading == 3 && model.selected.isEmpty && uploaded == 1, "three originals queue sequentially without blocking capture")
     command("answer", "ask", extra: ["text": "follow-up", "effort": "low"])
@@ -253,25 +253,25 @@ final class SyntheticPCM: @unchecked Sendable {
     model.text = "local question"; model.ask()
     for n in 1...3 {
       try await wait { !uploadEnds.isEmpty }
-      uploadEnds.removeFirst().resume(returning: ["id": "shot-\(n)", "created": Date().timeIntervalSince1970 * 1000])
+      uploadEnds.removeFirst().resume(returning: ["id": "capture-\(n)", "created": Date().timeIntervalSince1970 * 1000])
     }
     try await wait { asked.count == 1 }
-    require(asked[0]["images"] as? [String] == ["shot-1", "shot-2", "shot-3"], "native answer waits and includes all three uploads")
+    require(asked[0]["images"] as? [String] == ["capture-1", "capture-2", "capture-3"], "native answer waits and includes all three uploads")
     model.handle(["type":"answer", "message":["id":model.pending,"text":"local question","status":"completed","context":"{}"]])
-    command("remove", "unselect", extra:["image":"shot-2"]); try await wait { receipt("remove") != nil }
-    require(model.selected == ["shot-1", "shot-3"], "web unselect changes desktop attachments")
+    command("remove", "unselect", extra:["image":"capture-2"]); try await wait { receipt("remove") != nil }
+    require(model.selected == ["capture-1", "capture-3"], "web unselect changes desktop attachments")
     command("remote-answer", "ask", extra:["text":"remote question","effort":"low"])
     try await wait { asked.count == 2 && receipt("remote-answer") != nil }
     require(asked[1]["text"] as? String == "remote question" && asked[1]["effort"] as? String == "low", "web answer uses native ordered ask path with supplied text and effort")
     model.handle(["type":"answer", "message":["id":model.pending,"text":"remote question","status":"completed","context":"{}"]])
     failUpload = true
-    command("failed-upload", "shot"); try await wait { !model.uploadError.isEmpty }
-    require(receipt("failed-upload")?["ok"] as? Bool == true && model.uploading == 1, "upload failure retains captured original")
+    command("failed-upload", "shot"); try await wait { receipt("failed-upload") != nil }
+    require(receipt("failed-upload")?["ok"] as? Bool == false && model.uploading == 1, "upload failure retains captured original")
     model.ask(); try await Task.sleep(for:.milliseconds(20))
     require(asked.count == 2, "failed upload blocks answer")
     failUpload = false; model.retryUploads(); try await wait { !uploadEnds.isEmpty }
-    uploadEnds.removeFirst().resume(returning:["id":"shot-4"]); try await wait { model.uploading == 0 }
-    require(model.selected.contains("shot-4"), "manual upload retry preserves shot")
+    uploadEnds.removeFirst().resume(returning:["id":"failed-upload"]); try await wait { model.uploading == 0 }
+    require(model.selected.contains("failed-upload"), "manual upload retry preserves shot")
     failShot = true
     command("failure", "shot"); try await wait { receipt("failure") != nil }
     require(receipt("failure")?["ok"] as? Bool == false, "capture failure reports failure")
@@ -291,25 +291,26 @@ final class SyntheticPCM: @unchecked Sendable {
     let asksBeforeCapture = asked.count
     for n in 6...17 {
       command("continuous-\(n)", "shot")
-      try await wait { receipt("continuous-\(n)") != nil }
-      require(receipt("continuous-\(n)")?["ok"] as? Bool == true, "saved attachments must not block the next capture")
       try await wait { !uploadEnds.isEmpty }
-      uploadEnds.removeFirst().resume(returning: ["id": "shot-\(n)"])
+      require(receipt("continuous-\(n)") == nil, "receipt waits for original storage")
+      uploadEnds.removeFirst().resume(returning: ["id": "continuous-\(n)"])
+      try await wait { receipt("continuous-\(n)") != nil }
+      require(receipt("continuous-\(n)")?["ok"] as? Bool == true, "saved attachments do not block another capture")
       try await wait { model.uploading == 0 }
     }
     require(asked.count == asksBeforeCapture && uploaded == 17, "continuous capture uploads every image without generating an answer")
-    require(model.selected == (10...17).map { "shot-\($0)" }, "Cue answer attachments keep the latest eight saved originals")
+    require(model.selected == (10...17).map { "continuous-\($0)" }, "Cue answer attachments keep the latest eight saved originals")
     // Only unuploaded originals apply backpressure; keep them all on failure.
     for n in 18...25 {
       command("queued-\(n)", "shot")
-      try await wait { receipt("queued-\(n)") != nil }
-      require(receipt("queued-\(n)")?["ok"] as? Bool == true, "capture queue accepts eight unsaved originals")
+      try await wait { shotCalls == n && !model.working }
+      require(receipt("queued-\(n)") == nil, "queued originals have no successful receipt")
     }
     command("queue-full", "shot"); try await wait { receipt("queue-full") != nil }
     require(shotCalls == 25 && model.uploading == 8 && receipt("queue-full")?["ok"] as? Bool == false, "only a full upload queue blocks capture with an explicit error")
     for n in 18...25 {
       try await wait { !uploadEnds.isEmpty }
-      uploadEnds.removeFirst().resume(returning: ["id": "shot-\(n)"])
+      uploadEnds.removeFirst().resume(returning: ["id": "queued-\(n)"])
     }
     try await wait { model.uploading == 0 }
     try await wait { socket.sent.contains { $0["type"] as? String == "remote_state" && $0["version"] as? Int == 3 } }

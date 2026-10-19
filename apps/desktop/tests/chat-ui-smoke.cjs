@@ -255,7 +255,7 @@ app
       await wait("window.remoteResults.some(r=>r.id==='blocked'&&!r.ok)");
       await js("window.holdShot=false;window.finishShot()");
       await wait(
-        "window.remoteResults.some(r=>r.id==='delayed'&&r.ok&&!r.image)",
+        "window.remoteResults.some(r=>r.id==='delayed'&&r.ok&&r.image==='delayed')",
       );
       await js("window.failShot=true");
       await remote("failure", "shot");
@@ -269,7 +269,7 @@ app
       await js("window.holdUpload=true");
       await remote("queued-shot", "shot");
       await wait(
-        "window.finishUpload && window.remoteResults.some(r=>r.id==='queued-shot'&&r.ok)",
+        "window.finishUpload && !window.remoteResults.some(r=>r.id==='queued-shot')",
       );
       await wait("window.remoteStates.at(-1).uploading===1");
       const oldAsk = await js("window.lastAsk?.id");
@@ -292,7 +292,7 @@ app
       });
       await wait("window.lastAsk?.text==='remote follow-up'");
       assert.equal(await js("window.lastAsk.effort"), "low");
-      assert.ok((await js("window.lastAsk.images")).includes("shot"));
+      assert.ok((await js("window.lastAsk.images")).includes("queued-shot"));
       await wait(
         "!document.querySelector('.bar .answer-button')?.textContent.includes('停止')",
       );

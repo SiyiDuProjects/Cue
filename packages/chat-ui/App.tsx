@@ -89,7 +89,7 @@ export default function App() {
     // The latest handlers, for web commands arriving in the event listener.
     actions = useRef<{
       toggleAudio: (source?: string) => Promise<void>;
-      shot: () => Promise<void>;
+      shot: (receipt?: Event) => Promise<void>;
     }>({ toggleAudio: async () => {}, shot: async () => {} }),
     current = useRef({
       text,
@@ -137,6 +137,13 @@ export default function App() {
     void attempt(() => command({ type: "history", chat: id, scope: "recent" }));
   }
   const uploadQueue = useRef<UploadQueue | null>(null);
+  const uploadReceipts = useRef(new Map<string, Event>());
+  function finishShot(id: string, failure?: string) {
+    const receipt = uploadReceipts.current.get(id);
+    uploadReceipts.current.delete(id);
+    if (!receipt || !current.current.connected || receipt.generation !== remoteGeneration.current) return;
+    void command({ ...receipt, ok: !failure, ...(failure ? { detail: failure.slice(0, 300) } : { image: id }) }).catch(() => {});
+  }
   uploadQueue.current ??= new UploadQueue(
     (shot: Event) => window.cue.uploadScreenshot!(shot),
     (image: Event) => {
@@ -146,6 +153,7 @@ export default function App() {
           image.id,
         ].slice(-8);
       setSelected(current.current.selected);
+      finishShot(image.id);
       const preview = image.image_url;
       if (typeof preview === "string")
         setPreviews((p) => {
@@ -158,6 +166,7 @@ export default function App() {
     (count: number, error: string) => {
       setUploading(count);
       setUploadError(error);
+      if (error) for (const id of uploadReceipts.current.keys()) finishShot(id, error);
     },
   );
   function beginAnswer(value?: { text: string; effort?: string }) {
@@ -218,7 +227,7 @@ export default function App() {
     setPending("");
     if (id) await command({ type: "cancel", id });
   }
-  async function captureShot() {
+  async function captureShot(receipt?: Event) {
     if (shooting.current) throw Error("截图尚未完成。");
     // Saved references never block capture; only unsaved originals fill this queue.
     if (uploadQueue.current!.items.length >= 8)
@@ -226,7 +235,12 @@ export default function App() {
     shooting.current = true;
     setWorking(true);
     try {
-      uploadQueue.current!.add(await window.cue.screenshot());
+      const shot = await window.cue.screenshot();
+      if (receipt) {
+        shot.request_id = receipt.id;
+        uploadReceipts.current.set(receipt.id, receipt);
+      }
+      uploadQueue.current!.add(shot);
     } finally {
       shooting.current = false;
       setWorking(false);
@@ -259,7 +273,10 @@ export default function App() {
         const phase = current.current.audio;
         if (["starting", "stopping"].includes(phase))
           throw Error("请等待音频就绪。");
-        if (type === "shot") await actions.current.shot();
+        if (type === "shot") {
+          await actions.current.shot({ type: "remote_result", id, generation });
+          return; // Upload completion sends success without blocking another capture.
+        }
         else if (
           (type === "start" && phase === "idle") ||
           (type === "stop" && phase === "active")
@@ -422,6 +439,7 @@ export default function App() {
       selected,
       pending,
       uploading,
+      uploads: uploadQueue.current!.items.map((shot) => shot.request_id),
       upload_error: uploadError.slice(0, 300),
       error: error.slice(0, 300),
       source: audio === "active" ? audioSource : "",

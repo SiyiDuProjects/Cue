@@ -30,6 +30,7 @@ struct Caption: Identifiable {
   @Published private(set) var uploading = 0
   @Published private(set) var uploadError = ""
   private var uploads: [JSON] = []
+  private var uploadReceipts: [String: JSON] = [:]
   private var uploadTask: Task<Void, Never>?
   @Published var effort = UserDefaults.standard.string(forKey: "cue.effort") ?? "" {
     didSet { if persist { defaults.set(effort, forKey: "cue.effort") } }
@@ -215,7 +216,10 @@ struct Caption: Identifiable {
           remoteBusy = true
           locked = true
           guard !audioBusy else { throw CueError("请等待音频就绪。") }
-          if value["type"] as? String == "shot" { try await captureShot() }
+          if value["type"] as? String == "shot" {
+            try await captureShot(receipt: result)
+            return // Upload completion sends the receipt; capture is unlocked now.
+          }
           if value["type"] as? String == "start", audio == "idle" { try await changeAudio(source: "remote") }
           if value["type"] as? String == "stop", audio == "active" { try await changeAudio(source: "") }
         default: throw CueError("遥控指令无效。")
@@ -236,6 +240,7 @@ struct Caption: Identifiable {
       "type": "remote_state", "version": 3, "allow": allowRemote, "phase": audio,
       "since": Int((audioSince?.timeIntervalSince1970 ?? 0) * 1000), "selected": selected,
       "pending": pending, "uploading": uploading, "upload_error": String(uploadError.prefix(300)),
+      "uploads": uploads.compactMap { $0["request_id"] as? String },
       "error": String(error.prefix(300)), "source": audio == "active" ? audioSource : "",
     ]
     guard let data = try? JSONSerialization.data(withJSONObject: value, options: [.sortedKeys]),
@@ -316,17 +321,24 @@ struct Caption: Identifiable {
     if !id.isEmpty { try await store.command(["type": "cancel", "id": id]) }
   }
   func shot() { attempt { try await self.captureShot() } }
-  private func captureShot() async throws {
+  private func captureShot(receipt: JSON? = nil) async throws {
     guard !working else { throw CueError("截图尚未完成。") }
     // Saved references are independent of the next Cue answer's attachments.
     // Only unsaved originals occupy the bounded upload queue.
     guard uploads.count < 8 else { throw CueError("8 张截图仍未上传，请等待或重试上传。") }
     working = true
     defer { working = false }
-    let shot = try await store.screenshot()
+    var shot = try await store.screenshot()
+    if let receipt, let id = receipt["id"] as? String {
+      shot["request_id"] = id
+      uploadReceipts[id] = receipt
+    }
     uploads.append(shot)
     uploading = uploads.count
     startUploads()
+    if !uploadError.isEmpty, let id = shot["request_id"] as? String {
+      await finishShot(id: id, failure: uploadError)
+    }
   }
   func retryUploads() {
     uploadError = ""
@@ -345,12 +357,22 @@ struct Caption: Identifiable {
           if let url = image["image_url"] as? String, let picture = Self.image(dataURL: url) { previews[id] = picture }
           uploads.removeFirst()
           uploading = uploads.count
+          await finishShot(id: id)
         } catch {
           uploadError = "截图上传失败，原图已保留：" + error.localizedDescription
+          for id in Array(uploadReceipts.keys) { await finishShot(id: id, failure: uploadError) }
           return
         }
       }
     }
+  }
+  private func finishShot(id: String, failure: String? = nil) async {
+    guard var receipt = uploadReceipts.removeValue(forKey: id),
+      connected, receipt["generation"] as? String == remoteGeneration else { return }
+    receipt["ok"] = failure == nil
+    if let failure { receipt["detail"] = String(failure.prefix(300)) }
+    else { receipt["image"] = id }
+    try? await store.command(receipt)
   }
   func loadPreview(_ id: String) {
     guard previews[id] == nil else { return }

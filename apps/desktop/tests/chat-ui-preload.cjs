@@ -88,7 +88,7 @@ window.cue = {
         window.finishUpload = r;
       });
     if (window.failUpload) throw Error("upload offline");
-    return shot;
+    return { ...shot, id: shot.request_id || shot.id };
   },
   request: async () => ({}),
   sources: async () => {

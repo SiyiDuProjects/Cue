@@ -584,6 +584,28 @@ body:has(.overlay.web) {
   grid-auto-flow: column;
   gap: 4px;
 }
+.web .attachment {
+  width: 80px;
+  height: 64px;
+}
+.web .shot-status:not([data-state="ready"]) {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 4px;
+}
+.web .shot-status[data-state="failed"] { color: var(--danger); }
+.attachment-state {
+  position: absolute;
+  inset: auto 0 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
+  padding: 2px;
+  background: rgb(0 0 0 / 0.65);
+  color: white;
+}
 .upload-error {
   align-self: center;
   font-size: 12px;
