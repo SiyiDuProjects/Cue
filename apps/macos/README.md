@@ -24,7 +24,9 @@ bash apps/macos/scripts/check-offline.sh
 bash apps/macos/scripts/build-app.sh
 ```
 
-产物为 `apps/macos/output/Cue.app`，使用固定的本地签名身份，未公证。构建时先验证原生核心，再构建共用 UI。Node 仅用于构建，不打包进应用。
+产物为 `apps/macos/output.noindex/Cue.app`，使用固定的本地签名身份，未公证。构建时先验证原生核心，再构建共用 UI。Node 仅用于构建，不打包进应用。
+
+正式安装路径为 `/Applications/Cue.app`。构建产物放在 `output.noindex/`，旧应用备份放在 `artifacts/apps.noindex/`，避免 Spotlight 把它们显示成多个 Cue。历史备份保持原相对目录结构，迁移对应表保存在该归档目录的 `migration.json`。
 
 离线检查覆盖原生连接、转录队列、截止顺序与音频生命周期，并确认产物不导入跨应用辅助功能读取接口。真实屏幕原图上传与 MCP 读回另行验收。
 

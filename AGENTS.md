@@ -18,6 +18,7 @@ Cue 是回答工具，不是转录工具。Mac / Windows 桌面悬浮条（控�
 - `apps/cloud/`：独立私有 Sites 仓库，D1 / R2、转录、Responses、只读 MCP、网页设置（`web/settings.js`）。面试页源码是 `packages/chat-ui/Web.tsx`，由 `npm --prefix apps/desktop run build:web` 生成到 `apps/cloud/web/app/`（字体内联、文件名带哈希）；该生成物含 HeroUI Pro 代码，只能提交到私有云端仓库，不得进入外层公开仓库。改了 `packages/chat-ui` 后先重新生成再构建云端。外层 GitHub 仓库公开，不把云端源码或私人资料直接并入。
 - 网页及新客户端正式地址 `https://cue.siyidu.com`；平台 MCP 地址 `https://cue-app.dusiyi0916.chatgpt.site/mcp`。沿用同一 Sites、App、插件 ID 和所有者权限，不另建插件。旧域名只用于未升级客户端与已存连接的一次迁移。
 - 新协议 `cue-chat-v2`，源码版本 0.4.1。构建、离线验证、部署、安装和真实设备验收分别记录，不互相冒充。
+- Mac 正式安装仅使用 `/Applications/Cue.app`；构建产物使用 `apps/macos/output.noindex/`，旧 `.app` 备份使用 `artifacts/apps.noindex/`，避免 Spotlight 出现开发副本。保留旧备份，不在普通可索引目录新增 `.app` 副本。
 - `baseline-20261007` 保存重构前两个仓库；外层 `legacy-v12` 保存旧服务；云端 `sites-v12` 对应原部署提交 `0b0c282`。旧 VPS、私有历史、钥匙串和用户资料不删除。
 - 云端只走 Sites 发布；VPS 工作流仅允许手动从 `legacy-v12` 部署。推送 main 不部署 VPS。
 

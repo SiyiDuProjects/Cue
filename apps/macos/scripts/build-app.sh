@@ -2,6 +2,7 @@
 set -euo pipefail
 MAC_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 REPO_ROOT="$(cd "$MAC_ROOT/../.." && pwd)"
+OUTPUT_DIR="$MAC_ROOT/output.noindex"
 CONFIGURATION="${CONFIGURATION:-release}"
 SIGN_IDENTITY="${CUE_SIGN_IDENTITY:-}"
 if [[ -z "$SIGN_IDENTITY" ]] && ! python3 "$MAC_ROOT/scripts/local-signing.py" configured; then
@@ -30,8 +31,8 @@ if nm -u "$BIN_DIR/Cue" | grep -E '_AX(UIElement|IsProcessTrusted)' >/dev/null; 
   exit 1
 fi
 # Stage into a fresh directory; a failed build never replaces a working app.
-mkdir -p "$MAC_ROOT/output"
-STAGE="$(mktemp -d "$MAC_ROOT/output/staging.XXXXXX")"
+mkdir -p "$OUTPUT_DIR"
+STAGE="$(mktemp -d "$OUTPUT_DIR/staging.XXXXXX")"
 trap 'rm -rf "$STAGE"' EXIT
 APP="$STAGE/Cue.app"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
@@ -51,15 +52,15 @@ else
   python3 "$MAC_ROOT/scripts/local-signing.py" sign "$APP"
 fi
 codesign --verify --deep --strict "$APP"
-if [[ -e "$MAC_ROOT/output/Cue.app" ]]; then
-  mv "$MAC_ROOT/output/Cue.app" "$STAGE/previous.app"
+if [[ -e "$OUTPUT_DIR/Cue.app" ]]; then
+  mv "$OUTPUT_DIR/Cue.app" "$STAGE/previous.app"
 fi
-mv "$APP" "$MAC_ROOT/output/Cue.app"
+mv "$APP" "$OUTPUT_DIR/Cue.app"
 if [[ "$SIGN_IDENTITY" == "-" ]]; then
-  echo "Built $MAC_ROOT/output/Cue.app (ad-hoc: changed builds may require macOS permission again)."
+  echo "Built $OUTPUT_DIR/Cue.app (ad-hoc: changed builds may require macOS permission again)."
 elif [[ -z "$SIGN_IDENTITY" ]]; then
-  echo "Built $MAC_ROOT/output/Cue.app with the fixed local certificate."
+  echo "Built $OUTPUT_DIR/Cue.app with the fixed local certificate."
   echo "Local signing does not preserve Keychain partition authorization across changed builds; a new build may prompt again."
 else
-  echo "Built $MAC_ROOT/output/Cue.app with the configured stable signing identity."
+  echo "Built $OUTPUT_DIR/Cue.app with the configured stable signing identity."
 fi
