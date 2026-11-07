@@ -38,10 +38,7 @@ import CueCore
   }
   func connect() async throws {
     if preview {
-      onEvent([
-        "type": "session_ready",
-        "chats": [["id": "preview", "title": "新聊天"]],
-      ])
+      onEvent(["type": "session_ready"])
       return
     }
     if link?.ready == true, let cached {
@@ -206,14 +203,14 @@ import CueCore
         let answer =
           "## 思路\n\n用 **哈希表** 记录出现过的数，一次遍历。\n\n```python\ndef two_sum(nums, target):\n    seen = {}\n    for i, x in enumerate(nums):\n        if target - x in seen:\n            return [seen[target - x], i]\n        seen[x] = i\n```\n\n时间 $O(n)$，空间 $O(n)$。"
         onEvent([
-          "type": "history", "chat": "preview",
+          "type": "history",
           "messages": [
             [
-              "id": "preview-intro", "chat": "preview", "text": "", "status": "completed",
+              "id": "preview-intro", "text": "", "status": "completed",
               "answer": "先用一句话概括背景，再讲一个最能体现能力的项目。", "detail": "", "context": "{}",
             ],
             [
-              "id": "preview", "chat": "preview", "text": "两数之和怎么做？", "answer": answer,
+              "id": "preview", "text": "两数之和怎么做？", "answer": answer,
               "status": "completed", "detail": "", "context": "{}",
             ],
           ],

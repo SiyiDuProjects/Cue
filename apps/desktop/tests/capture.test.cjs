@@ -40,7 +40,7 @@ test(`Windows ${type} flushes both worklets before its marker and holds later PC
     }
     send(raw) {
       const value = JSON.parse(raw);
-      if (value.type === "authenticate") this.emit({ type: "session_ready", protocol: "cue-chat-v3" });
+      if (value.type === "authenticate") this.emit({ type: "session_ready", protocol: "cue-chat-v4" });
       if (value.type === "start") this.emit({ type: "started" });
       if (value.type === "stop") this.emit({ type: "stopped", complete: stopComplete });
     }

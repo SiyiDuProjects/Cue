@@ -129,7 +129,7 @@ private final class AnswerWebView: WKWebView {
     ) { _ in }
   }
   func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
-    // Events sent before the page loaded were dropped; show the current chat.
+    // Events sent before the page loaded were dropped; show the current answers.
     model.sendRender()
   }
   func userContentController(
@@ -188,7 +188,7 @@ private final class AnswerWebView: WKWebView {
       in: .page
     ) { _ in }
   }
-  /// The page asks for the current chat when ready, stops audio when its
+  /// The page asks for the current answers when ready, stops audio when its
   /// transcription client fails, and copies answers.
   private func invoke(_ method: String, _ args: [Any]) async throws -> Any {
     switch method {

@@ -15,8 +15,8 @@ import CueCore
       print("Candidate backend not deployed; no capture or model started.")
       return
     }
-    let state = try await http.request(address, "/capture/state", token: keys.device)
-    print("Saved state readable; chat count:", (state["chats"] as? [JSON])?.count ?? 0)
+    _ = try await http.request(address, "/capture/state", token: keys.device)
+    print("Saved state readable")
     print("PASS authenticated read-only connection; no microphone, screenshot or model call")
   }
 }

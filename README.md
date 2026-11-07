@@ -10,7 +10,7 @@
 
 `/settings` 的「回答设置」和「个人资料」可编辑回答提示词、上传或更换 TXT、Markdown、PDF、Word 资料。修改从下一次提问生效。
 
-在 ChatGPT 中，现有 Cue 插件使用 `https://cue-app.dusiyi0916.chatgpt.site/mcp`，只提供只读工具：让 ChatGPT 读取 Cue 的转录、截图和资料后回答。同一对话自动只给未读内容和修正，每次最多四张截图；需要更早转录时可请求历史。没有会话编号的客户端保持普通读取。
+在 ChatGPT 中，现有 Cue 插件使用 `https://cue-app.dusiyi0916.chatgpt.site/mcp`，只提供只读工具：让 ChatGPT 读取 Cue 的转录、截图和资料后回答。首次读取最新内容并返回 cursor，之后带上 cursor 只给新增和修订；旧 cursor 只会重复，不会跳过内容。每次最多四张原图，需要更早内容时可补读历史。
 
 当前发布与真实设备验证范围见[网页遥控发布记录](docs/releases/2026-10-11-web-remote.md)。
 
@@ -22,7 +22,7 @@
 - `apps/desktop`：Windows Electron 宿主与打包。
 - [云端](apps/cloud/README.md)：私有独立仓库，Sites、D1、R2、模型和设置页。桌面构建不依赖此仓库。
 
-源码版本 0.4.2。实际发布与验收状态见 [发布记录](docs/releases/2026-10-19-cue-0.4.2.md)，不能由源码版本推断安装状态。重构前历史保存在 `baseline-20261007` / `legacy-v12`；VPS 私人历史保留。
+源码版本 0.4.3。实际发布与验收状态见 [发布记录](docs/releases/2026-11-07-cue-0.4.3.md)，不能由源码版本推断安装状态。重构前历史保存在 `baseline-20261007` / `legacy-v12`；VPS 私人历史保留。
 
 ## 验证与打包
 

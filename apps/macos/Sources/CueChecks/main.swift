@@ -74,7 +74,7 @@ print("\(checked) offline checks passed")
   func receive() async throws -> URLSessionWebSocketTask.Message {
     if !receivedReady {
       receivedReady = true
-      return .string("{\"type\":\"session_ready\",\"protocol\":\"cue-chat-v3\"}")
+      return .string("{\"type\":\"session_ready\",\"protocol\":\"cue-chat-v4\"}")
     }
     return try await withCheckedThrowingContinuation { receiver = $0 }
   }

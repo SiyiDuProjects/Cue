@@ -30,7 +30,7 @@ import Security
       let value = try JSONSerialization.jsonObject(with: Data(raw.utf8)) as? JSON else { return }
     sent.append(value)
     switch value["type"] as? String {
-    case "authenticate": push(["type": "session_ready", "protocol": "cue-chat-v3"])
+    case "authenticate": push(["type": "session_ready", "protocol": "cue-chat-v4"])
     default: break
     }
   }
@@ -229,7 +229,7 @@ final class SyntheticPCM: @unchecked Sendable {
       throw CueError("Native remote test timed out")
     }
     try await wait { link.ready }
-    model.handle(["type": "session_ready", "remote": true, "generation": "native-test", "chats": [["id": "chat"]]])
+    model.handle(["type": "session_ready", "remote": true, "generation": "native-test"])
     func command(_ id: String, _ type: String, extra: JSON = [:], generation: String = "native-test", expires: Double = Date().timeIntervalSince1970 * 1000 + 15000) {
       var value: JSON = ["id": id, "type": type, "generation": generation, "expires": expires]
       value.merge(extra) { _, new in new }

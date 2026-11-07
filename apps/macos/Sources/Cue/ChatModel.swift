@@ -15,9 +15,7 @@ struct Caption: Identifiable {
   @Published var connected = false
   @Published var status = "正在连接…"
   @Published var error = ""
-  /// Answers are one timeline, the last hour, like transcripts. This is the
-  /// server row new answers are stored under: the newest chat, never shown.
-  private var chat = ""
+  /// Answers are one timeline, the last hour, like transcripts.
   @Published private(set) var messages: [JSON] = []
   @Published var selected: [String] = []
   @Published private(set) var previews: [String: NSImage] = [:]
@@ -150,15 +148,8 @@ struct Caption: Identifiable {
         audioSource = ""
         remoteGeneration = e["generation"] as? String ?? ""
         reported = ""
-        // The server lists chats newest first.
-        if let id = (e["chats"] as? [JSON])?.first?["id"] as? String {
-          use(id)
-        } else {
-          attempt { try await self.store.command(["type": "new_chat"]) }
-        }
+        loadHistory()
       }
-    case "chat_created":
-      if let id = (e["chat"] as? JSON)?["id"] as? String { use(id) }
     case "history":
       messages = Self.lastHour(e["messages"] as? [JSON] ?? [])
       pending = ""
@@ -227,7 +218,7 @@ struct Caption: Identifiable {
     default: break
     }
   }
-  func sendRender() { render(["type": "render", "chat": chat, "messages": messages]) }
+  func sendRender() { render(["type": "render", "messages": messages]) }
   private func runRemote(_ value: JSON) {
     guard let id = value["id"] as? String,
       let generation = value["generation"] as? String,
@@ -322,13 +313,10 @@ struct Caption: Identifiable {
       self.error = error.localizedDescription
     }
   }
-  private func use(_ id: String) {
-    chat = id
+  private func loadHistory() {
     messages = []
     sendRender()
-    attempt {
-      try await self.store.command(["type": "history", "chat": id, "scope": "recent"])
-    }
+    attempt { try await self.store.command(["type": "history"]) }
   }
   func ask() {
     do { _ = try beginAnswer(text: text, effort: effort) }
@@ -336,7 +324,7 @@ struct Caption: Identifiable {
   }
   /// Reserve the answer before waiting, so cancel also works during upload.
   private func beginAnswer(text: String, effort: String) throws -> String {
-    guard connected, !sending, !audioBusy, !chat.isEmpty else { throw CueError("请等待连接或上一轮回答完成。") }
+    guard connected, !sending, !audioBusy else { throw CueError("请等待连接或上一轮回答完成。") }
     guard uploadError.isEmpty else { throw CueError(uploadError) }
     let id = UUID().uuidString.lowercased(), generation = remoteGeneration
     pending = id
@@ -351,7 +339,7 @@ struct Caption: Identifiable {
         }
         guard uploadError.isEmpty, uploads.isEmpty else { throw CueError(uploadError.isEmpty ? "截图尚未上传。" : uploadError) }
         guard pending == id, connected, generation == remoteGeneration else { return }
-        var value: JSON = ["type": "ask", "id": id, "chat": chat, "text": text, "images": selected]
+        var value: JSON = ["type": "ask", "id": id, "text": text, "images": selected]
         if !effort.isEmpty { value["effort"] = effort }
         try await store.command(value)
       } catch {

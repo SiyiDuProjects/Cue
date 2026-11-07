@@ -67,7 +67,7 @@ import Security
     }
     if type == "error" { failure = event["detail"] as? String ?? "Server error" }
     if [
-      "session_ready", "started", "stopped", "state", "replaced", "rotated", "chat_created",
+      "session_ready", "started", "stopped", "state", "replaced", "rotated",
       "history", "error",
     ].contains(type) {
       events.append(event)
@@ -125,13 +125,13 @@ import Security
     link.close()
     network.invalidateAndCancel()
   }
-  func ask(chat: String, text: String, effort: String, cancel: Bool = false) async throws -> JSON {
+  func ask(text: String, effort: String, cancel: Bool = false) async throws -> JSON {
     let id = UUID().uuidString.lowercased()
     let start = Date()
     try bridge.send([
       "kind": "control",
       "value": [
-        "type": "ask", "id": id, "chat": chat, "text": text, "effort": effort, "images": [],
+        "type": "ask", "id": id, "text": text, "effort": effort, "images": [],
       ],
     ])
     var didCancel = false
@@ -145,7 +145,7 @@ import Security
         ["completed", "cancelled", "failed"].contains(status)
       {
         report([
-          "event": "answer_result", "id": id, "chat": chat, "effort": effort,
+          "event": "answer_result", "id": id, "effort": effort,
           "seconds": Date().timeIntervalSince(start), "status": status,
           "answer": result["answer"] ?? "", "detail": result["detail"] ?? "",
         ])
@@ -154,25 +154,19 @@ import Security
         }
         // Terminal publication precedes the server task's finally cleanup.
         try await Task.sleep(for: .milliseconds(250))
-        return result
+        var value = result
+        value["id"] = id
+        return value
       }
       try await Task.sleep(for: .milliseconds(100))
     }
     throw CueError("Answer timed out without a terminal state")
   }
-  func chat(_ title: String) async throws -> String {
-    let event = try await command(["type": "new_chat"], expecting: "chat_created")
-    guard let chat = event["chat"] as? JSON, let id = chat["id"] as? String else {
-      throw CueError("No chat ID")
-    }
-    _ = try await command(["type": "rename_chat", "chat": id, "title": title], expecting: "state")
-    return id
-  }
 }
 
 @main struct LiveAcceptance {
   @MainActor static func chatChecks(_ client: LiveClient, report: (JSON) -> Void) async throws {
-    let longChat = try await client.chat("验收：长对话与取消")
+    var asked: [String] = []
     for round in 1...18 {
       let prompt: String
       if round == 17 {
@@ -182,7 +176,8 @@ import Security
       } else {
         prompt = "这是长对话验收第\(round)轮。只回复数字\(round)。"
       }
-      let answer = try await client.ask(chat: longChat, text: prompt, effort: "low")
+      let answer = try await client.ask(text: prompt, effort: "low")
+      asked.append(answer["id"] as? String ?? "")
       if round == 18 {
         guard (answer["answer"] as? String ?? "").contains("玉兰十七"),
           (answer["detail"] as? String ?? "").contains("近期上下文")
@@ -191,9 +186,10 @@ import Security
         }
       }
     }
-    let history = try await client.command(
-      ["type": "history", "chat": longChat], expecting: "history")
-    guard (history["messages"] as? [JSON])?.count == 18 else {
+    // Answers are one timeline: history is the last hour, which holds all 18.
+    let history = try await client.command(["type": "history"], expecting: "history")
+    let saved = Set((history["messages"] as? [JSON] ?? []).compactMap { $0["id"] as? String })
+    guard asked.allSatisfy(saved.contains) else {
       throw CueError("Long conversation history was lost")
     }
     report([
@@ -201,13 +197,12 @@ import Security
       "saved_history": 18,
     ])
     _ = try await client.ask(
-      chat: longChat, text: "这是取消功能测试。请从1到10000逐行输出整数，每行一个。", effort: "xhigh", cancel: true)
+      text: "这是取消功能测试。请从1到10000逐行输出整数，每行一个。", effort: "xhigh", cancel: true)
     report(["event": "pass_cancel_while_streaming"])
     let prompt =
       "实现 Python 函数 min_window(s, t)，返回 s 中涵盖 t 全部字符的最短连续子串；重复字符按次数计算，区分大小写，t 为空或无解返回空串；同长度返回最先出现的一个。给出完整函数、简短思路和复杂度。不要读取输入、打印或使用测试框架。"
     for effort in ["low", "medium", "xhigh"] {
-      let id = try await client.chat("验收：最小覆盖子串 · " + effort)
-      _ = try await client.ask(chat: id, text: prompt, effort: effort)
+      _ = try await client.ask(text: prompt, effort: effort)
     }
     report(["event": "pass_reasoning_samples", "efforts": ["low", "medium", "xhigh"]])
   }

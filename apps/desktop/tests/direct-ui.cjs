@@ -34,7 +34,7 @@ app.whenReady().then(async () => {
     await wait("window.directStates.some(e=>e.type==='started')");
     for (const id of ["native", "web"]) {
       await run(
-        `for(const role of ['interviewer','candidate'])window.cueReceive({type:'pcm',role,data:btoa('\\0'.repeat(9600))});window.cueReceive({type:'audio_control',value:{type:'ask',id:'${id}',chat:'chat',images:['shot']}})`,
+        `for(const role of ['interviewer','candidate'])window.cueReceive({type:'pcm',role,data:btoa('\\0'.repeat(9600))});window.cueReceive({type:'audio_control',value:{type:'ask',id:'${id}',images:['shot']}})`,
       );
       await wait(
         `window.directControls.some(e=>e.type==='ask'&&e.id==='${id}')`,

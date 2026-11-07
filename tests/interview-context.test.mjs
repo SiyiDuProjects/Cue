@@ -63,12 +63,6 @@ async function setup(t) {
     });
   let session = createSession();
   await session.ready();
-  await store.run(
-    "INSERT INTO chats VALUES(?,?,?)",
-    "test-chat",
-    "synthetic",
-    Date.now(),
-  );
   class Socket extends EventTarget {
     constructor() {
       super();
@@ -185,7 +179,6 @@ async function setup(t) {
       await client.control({
         type: "ask",
         id,
-        chat: "test-chat",
         text: "synthetic question",
         images: [],
       });
@@ -369,7 +362,6 @@ test("stopping a pending answer cancels it while still saving the complete recor
   const answering = f.client.control({
     type: "ask",
     id: "cancelled",
-    chat: "test-chat",
   });
   const rejected = assert.rejects(answering, /取消/);
   f.client.stop();

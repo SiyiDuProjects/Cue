@@ -84,7 +84,7 @@ function headers() {
 function permitted(endpoint, method) {
   return (
     /^(GET|POST|DELETE)$/.test(method) &&
-    /^\/capture\/(state|materials|remote|images(?:\/[a-zA-Z0-9_-]+)?)$/.test(
+    /^\/capture\/(state|remote|images(?:\/[a-zA-Z0-9_-]+)?)$/.test(
       endpoint,
     )
   );
@@ -109,7 +109,7 @@ async function connect() {
     signal: AbortSignal.timeout(8000),
   });
   const health = await response.json();
-  if (!response.ok || health.capture_protocol !== "cue-chat-v3")
+  if (!response.ok || health.capture_protocol !== "cue-chat-v4")
     throw Error("此服务器尚未切换采集版本，请保留已安装的客户端。");
   return { origin };
 }

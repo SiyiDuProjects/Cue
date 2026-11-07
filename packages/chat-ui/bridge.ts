@@ -3,7 +3,7 @@ export interface CueBridge {
   openSettings(): Promise<unknown>;
   /** Mac only: opens the system privacy page without requesting access. */
   openPrivacy?(): Promise<unknown>;
-  /** Mac answer view: asks the native window to resend the current chat. */
+  /** Mac answer view: asks the native window to resend the current answers. */
   ready?(): Promise<unknown>;
   /** Mac answer view: content height, so the overlay hugs the answer. */
   height?(value: number): Promise<unknown>;

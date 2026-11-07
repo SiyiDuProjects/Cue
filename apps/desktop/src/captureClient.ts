@@ -97,7 +97,7 @@ if (host) {
     current.binaryType = "arraybuffer";
     current.onopen = () =>
       current.send(
-        JSON.stringify({ type: "authenticate", protocol: "cue-chat-v3" }),
+        JSON.stringify({ type: "authenticate", protocol: "cue-chat-v4" }),
       );
     current.onmessage = (e) => {
       if (socket !== current) return;
@@ -105,7 +105,7 @@ if (host) {
       const value = JSON.parse(e.data);
       if (direct.handle(value)) return;
       if (value.type === "session_ready") {
-        if (value.protocol !== "cue-chat-v3") {
+        if (value.protocol !== "cue-chat-v4") {
           stopped = true;
           current.close();
           return;

@@ -23,7 +23,6 @@ import {
 // Message rendering shared by the Windows overlay and the Mac answer card.
 export type Message = {
   id: string;
-  chat: string;
   text: string;
   answer: string;
   status: string;

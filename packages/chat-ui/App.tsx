@@ -79,9 +79,6 @@ export default function App() {
     list = useRef<HTMLDivElement>(null),
     input = useRef<HTMLTextAreaElement>(null),
     follow = useRef(true),
-    // Answers are one timeline, the last hour, like transcripts. This is the
-    // server row new answers are stored under: the newest chat, never shown.
-    chat = useRef(""),
     remoteGeneration = useRef(""),
     remoteBusy = useRef(false),
     shooting = useRef(false),
@@ -130,11 +127,11 @@ export default function App() {
       setError(e instanceof Error ? e.message : String(e));
     }
   }
-  function use(id: string) {
-    chat.current = id;
+  /** Answers are one timeline like transcripts: the last hour. */
+  function loadHistory() {
     setMessages([]);
     follow.current = true;
-    void attempt(() => command({ type: "history", chat: id, scope: "recent" }));
+    void attempt(() => command({ type: "history" }));
   }
   const uploadQueue = useRef<UploadQueue | null>(null);
   const captureTail = useRef<Promise<void>>(Promise.resolve());
@@ -166,7 +163,6 @@ export default function App() {
     const s = current.current;
     if (
       !s.connected ||
-      !chat.current ||
       s.pending ||
       s.messages.some(busy) ||
       ["starting", "stopping"].includes(s.audio)
@@ -195,7 +191,6 @@ export default function App() {
         await command({
           type: "ask",
           id,
-          chat: chat.current,
           text: value?.text ?? s.text,
           images: current.current.selected,
           effort: (value ? value.effort : s.effort) || undefined,
@@ -324,12 +319,9 @@ export default function App() {
           setAudioSource("");
           remoteGeneration.current = e.generation ?? "";
           reported.current = "";
-          // The server lists chats newest first.
-          if (e.chats?.[0]?.id) use(e.chats[0].id);
-          else void attempt(() => command({ type: "new_chat" }));
+          loadHistory();
         }
       }
-      if (e.type === "chat_created") use(e.chat.id);
       if (e.type === "history") {
         setMessages(lastHour(e.messages));
         setPending("");

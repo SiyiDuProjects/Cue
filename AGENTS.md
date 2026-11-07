@@ -17,7 +17,7 @@ Cue 是回答工具，不是转录工具。Mac / Windows 桌面悬浮条（控�
 - `apps/desktop/`：Windows Electron 宿主（无边框透明置顶窗口，点击不取焦点，只在输入框打字时取焦点）、safeStorage、双路 AudioWorklet、截图与打包。
 - `apps/cloud/`：独立私有 Sites 仓库，D1 / R2、短期转录凭证与句子保存、Responses、只读 MCP、网页设置（`web/settings.js`）。面试页源码是 `packages/chat-ui/Web.tsx`，由 `npm --prefix apps/desktop run build:web` 生成到 `apps/cloud/web/app/`（字体内联、文件名带哈希）；该生成物含 HeroUI Pro 代码，只能提交到私有云端仓库，不得进入外层公开仓库。改了 `packages/chat-ui` 后先重新生成再构建云端。外层 GitHub 仓库公开，不把云端源码或私人资料直接并入。
 - 网页及新客户端正式地址 `https://cue.siyidu.com`；平台 MCP 地址 `https://cue-app.dusiyi0916.chatgpt.site/mcp`。沿用同一 Sites、App、插件 ID 和所有者权限，不另建插件。旧域名只用于未升级客户端与已存连接的一次迁移。
-- 新协议 `cue-chat-v3`，源码版本 0.4.2。构建、离线验证、部署、安装和真实设备验收分别记录，不互相冒充。
+- 新协议 `cue-chat-v4`，源码版本 0.4.3。构建、离线验证、部署、安装和真实设备验收分别记录，不互相冒充。
 - Mac 正式安装仅使用 `/Applications/Cue.app`；构建产物使用 `apps/macos/output.noindex/`，旧 `.app` 备份使用 `artifacts/apps.noindex/`，避免 Spotlight 出现开发副本。保留旧备份，不在普通可索引目录新增 `.app` 副本。
 - 整理 Mac 应用副本时同时检查 Spotlight 文件索引与 LaunchServices 注册，不能仅凭 `mdfind` 判断搜索界面已恢复。移动后按 Cue bundle ID 注销旧备份的新路径与失效的临时构建路径，保留 `/Applications/Cue.app`；不重置全局注册表或删除备份。
 - `baseline-20261007` 保存重构前两个仓库；外层 `legacy-v12` 保存旧服务；云端 `sites-v12` 对应原部署提交 `0b0c282`。旧 VPS、私有历史、钥匙串和用户资料不删除。
@@ -39,7 +39,7 @@ Cue 是回答工具，不是转录工具。Mac / Windows 桌面悬浮条（控�
 
 ## 上下文、资料与安全
 
-- Responses 采用 `store:false`，服务器保存完整完成输出（含 encrypted reasoning）并在后续轮次重放。回答与转录一样是一条时间线：后续轮次重放最近一小时内完成的回答（最多 16 轮），不分聊天；界面不再有聊天切换、新聊天或重命名。客户端仍把新回答写到最新的旧聊天行，旧聊天与记录不删。输入预算耗尽时明确说明只采用近期上下文，不假称模型看到了全部历史。
+- Responses 采用 `store:false`，服务器保存完整完成输出（含 encrypted reasoning）并在后续轮次重放。回答与转录一样是一条时间线：后续轮次重放最近一小时内完成的回答（最多 16 轮），不分聊天；协议和界面都没有聊天概念：ask、history 不带聊天标识，也没有新聊天或重命名指令。新回答写入旧 `chat` 列的固定值 `timeline`；旧聊天行与回答保留并照常参与回放。输入预算耗尽时明确说明只采用近期上下文，不假称模型看到了全部历史。
 - 资料作为用户参考内容置于输入前部，不作为 instructions。模型与推理档位、可调提示词通过网页保存；客户端可覆盖推理档位。默认 xhigh 保留，不能把离线测试当作速度或质量结论。
 - 资料只在网页手动上传、更换、编辑或删除；支持 UTF-8 TXT / Markdown、文字 PDF、DOCX。原文件存 R2，提取文字存 D1。个人资料不提交 Git；面经与 private-notes 不是个人背景资料。
 - 网页遥控经 D1 中转（Sites 只有 D1/R2，连接间无共享内存，无法从网页请求直接推送到桌面连接）：网页经所有者鉴权的 `/api/remote` 写入 `remote_commands`；桌面通过设备鉴权的 `/capture/remote` 独立 HTTPS 请求领取，网页最近 10 分钟内打开过时每次请求完成后约 500 ms 再取，否则约 3 秒检查一次；WebSocket 不轮询指令。指令绑定网页看到的桌面 generation，在 D1 中校验当前所有者并原子领取一次，领取后再校验所有者；领取后到达客户端时已超过 15 秒的指令不执行；及时接收的连拍可排队完成。桌面经 `remote_state` 汇报状态（遥控协议 version 3，其他版本必须更新），只有当前所有者的汇报有效。指令：start、stop、shot、ask（`text` ≤ 16,000、可选 `effort`）、cancel、unselect（`image`）。ask 的回执可带 `answer`（该次回答 ID），网页据此跟随；shot 成功回执由服务器保存图片的事务生成，带已保存的图片 ID。每条指令记录完成/失败回执，普通指令超过 30 秒未确认时明确提示；仍在在线电脑截图/上传队列中的 shot 继续等待，不自动重试。桌面执行与自身按钮相同的代码，遥控开关默认开启；由网页开始的录音在悬浮条标明。网页按 `updated` 增量读取最近一小时的回答（生成中每 2 秒保存一次），读取不写库：超过 20 秒未保存的生成中回答由网页显示为已中断；待发截图的缩略图经所有者鉴权的 `/api/remote/images/:id` 返回。`/api/remote` 等网站接口只接受同源请求，`https://chatgpt.com` 只能访问 `/mcp`。

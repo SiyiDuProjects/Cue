@@ -53,12 +53,8 @@ app
       await wait(
         "document.querySelector('.connection')?.textContent==='已连接'",
       );
-      // One timeline: no chat controls; the newest chat is used silently.
+      // One timeline: no chat controls and no chat in any command.
       await wait("window.lastHistory");
-      assert.deepEqual(
-        await js("[window.lastHistory.chat, window.lastHistory.scope]"),
-        ["chat", "recent"],
-      );
       assert.equal(
         await js("document.body.textContent.includes('聊天')"),
         false,
@@ -97,7 +93,8 @@ app
       );
       assert.equal(await js("window.lastAsk.images[0]"), "shot");
       assert.equal(await js("window.lastAsk.text"), "如何处理重复元素？");
-      assert.equal(await js("window.lastAsk.chat"), "chat");
+      assert.equal(await js("'chat' in window.lastAsk"), false);
+      assert.equal(await js("window.chatCommands===undefined"), true);
       assert.equal(
         await js("document.querySelectorAll('.katex').length>0"),
         true,
@@ -338,7 +335,7 @@ app
         true,
       );
       console.log(
-        "PASS overlay: hidden newest chat and recent history, web remote status/commands/switch, content-sized window, focus only for typing, screenshot attachment, streaming reasoning/Markdown/table/math, copy, one exchange with paging, native menu depth/source/failure, scrollable interviewer captions and manual reconnect; all network blocked",
+        "PASS overlay: one answer timeline without chat commands, web remote status/commands/switch, content-sized window, focus only for typing, screenshot attachment, streaming reasoning/Markdown/table/math, copy, one exchange with paging, native menu depth/source/failure, scrollable interviewer captions and manual reconnect; all network blocked",
       );
     } finally {
       win.destroy();

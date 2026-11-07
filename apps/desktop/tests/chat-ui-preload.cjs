@@ -10,7 +10,6 @@ window.cue = {
         emit({
           type: "session_ready",
           generation: "test-desktop",
-          chats: [{ id: "chat", title: "离线检查" }],
         }),
       50,
     ),
@@ -21,12 +20,11 @@ window.cue = {
     if (v.type === "remote_state")
       window.remoteStates = [...(window.remoteStates || []), v];
     if (v.type === "history")
-      setTimeout(() => emit({ type: "history", chat: v.chat, messages }), 0);
+      setTimeout(() => emit({ type: "history", messages }), 0);
     if (v.type === "ask") {
       window.lastAsk = v;
       const message = {
         id: v.id,
-        chat: v.chat,
         text: v.text,
         answer: "",
         status: "running",
@@ -66,8 +64,8 @@ window.cue = {
         }, 700);
       }, 10);
     }
-    if (v.type === "new_chat")
-      emit({ type: "chat_created", chat: { id: "new", title: "新聊天" } });
+    if (["new_chat", "rename_chat"].includes(v.type) || "chat" in v)
+      window.chatCommands = [...(window.chatCommands || []), v];
   },
   audio: async (start) =>
     emit({ type: start ? "started" : "stopped", complete: true }),
