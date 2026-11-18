@@ -152,7 +152,7 @@ struct Caption: Identifiable {
       }
     case "history":
       messages = Self.lastHour(e["messages"] as? [JSON] ?? [])
-      pending = ""
+      if messages.contains(where: { $0["id"] as? String == pending }) { pending = "" }
       sendRender()
     case "answer":
       guard let message = e["message"] as? JSON, let id = message["id"] as? String
@@ -161,8 +161,8 @@ struct Caption: Identifiable {
         if text == message["text"] as? String ?? "" { text = "" }
         let used = Self.images(in: message)
         selected.removeAll { used.contains($0) }
+        pending = ""
       }
-      pending = ""
       if let index = messages.firstIndex(where: { $0["id"] as? String == id }) {
         messages[index] = message
       } else {
@@ -214,7 +214,7 @@ struct Caption: Identifiable {
       sendRender()
     case "error":
       error = e["detail"] as? String ?? "操作未完成。"
-      if e["id"] == nil || e["id"] as? String == pending { pending = "" }
+      if e["id"] as? String == pending { pending = "" }
     default: break
     }
   }
@@ -224,51 +224,59 @@ struct Caption: Identifiable {
       let generation = value["generation"] as? String,
       !generation.isEmpty, generation == remoteGeneration
     else { return }
-    let receivedAt = Self.now
-    let previous = value["type"] as? String == "shot" ? captureTail : nil
-    if value["type"] as? String == "shot" { captureIDs.append(id) }
-    let task = Task {
-      if let previous { await previous.value }
-      defer { captureIDs.removeAll { $0 == id } }
-      var locked = false
-      defer { if locked { remoteBusy = false } }
-      var result: JSON = ["type": "remote_result", "id": id, "generation": generation]
-      do {
-        guard connected, allowRemote, generation == remoteGeneration else {
-          throw CueError("电脑上已关闭遥控或连接已断开。")
-        }
-        guard let expires = value["expires"] as? Double, expires > receivedAt else {
-          throw CueError("指令已过期，没有执行。")
-        }
-        switch value["type"] as? String {
-        case "cancel": try await cancelAnswer()
-        case "unselect":
-          guard let image = value["image"] as? String else { throw CueError("截图标识无效。") }
-          selected.removeAll { $0 == image }
-        case "ask":
-          result["answer"] = try beginAnswer(text: value["text"] as? String ?? "", effort: value["effort"] as? String ?? "")
-        case "shot", "start", "stop":
-          guard !remoteBusy, !working else { throw CueError("电脑正在完成上一个操作。") }
-          remoteBusy = true
-          locked = true
-          guard !audioBusy else { throw CueError("请等待音频就绪。") }
-          if value["type"] as? String == "shot" {
-            try await captureShot(receipt: result)
-            return // The server completes the shot command when its image is saved.
-          }
-          if value["type"] as? String == "start", audio == "idle" { try await changeAudio(source: "remote") }
-          if value["type"] as? String == "stop", audio == "active" { try await changeAudio(source: "") }
-        default: throw CueError("遥控指令无效。")
-        }
-        result["ok"] = true
-      } catch {
-        self.error = error.localizedDescription
-        result["ok"] = false
-        result["detail"] = String(self.error.prefix(300))
+    let kind = value["type"] as? String
+    func receipt(answer: String? = nil, failure: Error? = nil) {
+      var result: JSON = ["type": "remote_result", "id": id, "generation": generation, "ok": failure == nil]
+      if let answer { result["answer"] = answer }
+      if let failure {
+        error = failure.localizedDescription
+        result["detail"] = String(error.prefix(300))
       }
-      if connected && generation == remoteGeneration { try? await store.command(result) }
+      Task {
+        if connected && generation == remoteGeneration { try? await store.command(result) }
+      }
     }
-    if value["type"] as? String == "shot" { captureTail = task }
+    do {
+      guard connected, allowRemote else { throw CueError("电脑上已关闭遥控或连接已断开。") }
+      guard let expires = value["expires"] as? Double, expires > Self.now else {
+        throw CueError("指令已过期，没有执行。")
+      }
+      // Apply the answer marker and selection in receipt order, before the next
+      // command in this batch can add a screenshot to the queue.
+      switch kind {
+      case "ask":
+        receipt(answer: try beginAnswer(text: value["text"] as? String ?? "", effort: value["effort"] as? String ?? ""))
+      case "cancel":
+        try cancelAnswer()
+        receipt()
+      case "unselect":
+        guard let image = value["image"] as? String else { throw CueError("截图标识无效。") }
+        selected.removeAll { $0 == image }
+        receipt()
+      case "shot", "start", "stop":
+        let previous = kind == "shot" ? captureTail : nil
+        if kind == "shot" { captureIDs.append(id) }
+        let task = Task {
+          if let previous { await previous.value }
+          defer { captureIDs.removeAll { $0 == id } }
+          do {
+            guard connected, allowRemote, generation == remoteGeneration else { throw CueError("电脑上已关闭遥控或连接已断开。") }
+            guard !remoteBusy, !working, !audioBusy else { throw CueError("电脑正在完成上一个操作。") }
+            remoteBusy = true
+            defer { remoteBusy = false }
+            if kind == "shot" {
+              try await captureShot(id: id)
+              return // Saving the image completes the command.
+            }
+            if kind == "start", audio == "idle" { try await changeAudio(source: "remote") }
+            if kind == "stop", audio == "active" { try await changeAudio(source: "") }
+            receipt()
+          } catch { receipt(failure: error) }
+        }
+        if kind == "shot" { captureTail = task }
+      default: throw CueError("遥控指令无效。")
+      }
+    } catch { receipt(failure: error) }
   }
   /// What the web page shows about this computer; sent when it changes.
   private func reportRemote() {
@@ -326,51 +334,54 @@ struct Caption: Identifiable {
   private func beginAnswer(text: String, effort: String) throws -> String {
     guard connected, !sending, !audioBusy else { throw CueError("请等待连接或上一轮回答完成。") }
     guard uploadError.isEmpty else { throw CueError(uploadError) }
-    let id = UUID().uuidString.lowercased(), generation = remoteGeneration
+    let id = UUID().uuidString.lowercased()
+    var images = selected
+    for image in uploads.compactMap({ $0["request_id"] as? String }) + captureIDs where !images.contains(image) {
+      images.append(image)
+    }
     pending = id
     error = ""
     expanded = true
-    Task {
-      do {
-        while working || uploadTask != nil {
-          guard pending == id, connected, generation == remoteGeneration else { throw CueError("回答已取消或连接已变化。") }
-          if let task = uploadTask { await task.value }
-          else { try await Task.sleep(for: .milliseconds(20)) }
-        }
-        guard uploadError.isEmpty, uploads.isEmpty else { throw CueError(uploadError.isEmpty ? "截图尚未上传。" : uploadError) }
-        guard pending == id, connected, generation == remoteGeneration else { return }
-        var value: JSON = ["type": "ask", "id": id, "text": text, "images": selected]
-        if !effort.isEmpty { value["effort"] = effort }
-        try await store.command(value)
-      } catch {
-        if pending == id { pending = ""; self.error = error.localizedDescription }
-      }
-    }
+    var value: JSON = ["type": "ask", "id": id, "text": text, "images": Array(images.suffix(8))]
+    if !effort.isEmpty { value["effort"] = effort }
+    do { try store.answerControl(value) } catch { pending = ""; throw error }
     return id
   }
-  func cancel() { attempt { try await self.cancelAnswer() } }
-  private func cancelAnswer() async throws {
+  func waitForImages(_ id: String, _ images: [String]) async throws {
+    let wanted = Set(images)
+    while pending == id && connected {
+      let queued = captureIDs + uploads.compactMap { $0["request_id"] as? String }
+      if wanted.isDisjoint(with: queued) { return }
+      if !uploadError.isEmpty { throw CueError(uploadError) }
+      try await Task.sleep(for: .milliseconds(30))
+    }
+    throw CueError("回答已取消或连接已变化。")
+  }
+  func cancel() {
+    do { try cancelAnswer() } catch { self.error = error.localizedDescription }
+  }
+  private func cancelAnswer() throws {
     let id = messages.first(where: Self.busy)?["id"] as? String ?? pending
     pending = ""  // Cancels a reserved answer which has not reached the server.
-    if !id.isEmpty { try await store.command(["type": "cancel", "id": id]) }
+    if !id.isEmpty { try store.answerControl(["type": "cancel", "id": id]) }
   }
   func shot() {
-    let previous = captureTail
+    let previous = captureTail, id = UUID().uuidString.lowercased()
+    captureIDs.append(id)
     captureTail = Task {
+      defer { captureIDs.removeAll { $0 == id } }
       if let previous { await previous.value }
-      do { try await captureShot() } catch { self.error = error.localizedDescription }
+      do { try await captureShot(id: id) } catch { self.error = error.localizedDescription }
     }
   }
-  private func captureShot(receipt: JSON? = nil) async throws {
+  private func captureShot(id: String) async throws {
     guard !working else { throw CueError("截图尚未完成。") }
     // Saved references are independent of the next Cue answer's attachments.
     // Every captured image stays queued until the server confirms its save.
     working = true
     defer { working = false }
     var shot = try await store.screenshot()
-    if let receipt, let id = receipt["id"] as? String {
-      shot["request_id"] = id
-    }
+    shot["request_id"] = id
     uploads.append(shot)
     uploading = uploads.count
     startUploads()

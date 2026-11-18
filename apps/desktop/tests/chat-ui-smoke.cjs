@@ -91,7 +91,10 @@ app
         ),
         true,
       );
-      assert.equal(await js("window.lastAsk.images[0]"), "shot");
+      assert.equal(
+        await js("window.lastAsk.images[0]"),
+        await js("window.savedImages[0]"),
+      );
       assert.equal(await js("window.lastAsk.text"), "如何处理重复元素？");
       assert.equal(await js("'chat' in window.lastAsk"), false);
       assert.equal(await js("window.chatCommands===undefined"), true);
@@ -260,9 +263,9 @@ app
         "window.remoteResults.some(r=>r.id==='failure'&&!r.ok&&r.detail.includes('录屏权限'))",
       );
       await js("window.failShot=false");
-      await remote("remove", "unselect", { image: "shot" });
+      await remote("remove", "unselect", { image: "delayed" });
       await wait("window.remoteResults.some(r=>r.id==='remove'&&r.ok)");
-      await wait("!window.remoteStates.at(-1).selected.includes('shot')");
+      await wait("!window.remoteStates.at(-1).selected.includes('delayed')");
       await js("window.holdUpload=true");
       await remote("queued-shot", "shot");
       await wait(
@@ -276,6 +279,9 @@ app
       });
       await wait(
         "window.remoteResults.some(r=>r.id==='web-ask'&&r.ok&&r.answer)",
+      );
+      assert.ok(
+        (await js("window.preparedAsk.images")).includes("queued-shot"),
       );
       assert.equal(await js("window.lastAsk?.id"), oldAsk);
       await remote("web-cancel", "cancel");

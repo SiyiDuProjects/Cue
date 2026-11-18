@@ -13,7 +13,7 @@ window.cue = {
         }),
       50,
     ),
-  command: async (v) => {
+  command: async (v, waitForImages) => {
     if (v.type === "history") window.lastHistory = v;
     if (v.type === "remote_result")
       window.remoteResults = [...(window.remoteResults || []), v];
@@ -22,6 +22,8 @@ window.cue = {
     if (v.type === "history")
       setTimeout(() => emit({ type: "history", messages }), 0);
     if (v.type === "ask") {
+      window.preparedAsk = v;
+      if (waitForImages) await waitForImages(new AbortController().signal);
       window.lastAsk = v;
       const message = {
         id: v.id,

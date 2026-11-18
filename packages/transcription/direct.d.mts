@@ -12,7 +12,10 @@ export class DirectTranscription {
   pcm(role: string, buffer: ArrayBuffer): void;
   start(): Promise<void>;
   stop(): void;
-  control(value: any): Promise<void>;
+  control(
+    value: any,
+    waitForImages?: (signal: AbortSignal) => Promise<unknown>,
+  ): Promise<void>;
   reset(): void;
 }
 export function decodePCM(base64: string): ArrayBuffer;

@@ -72,9 +72,15 @@ const stored = (key: string) => {
     return "";
   }
 };
-async function api(method: string, body?: object, query = "") {
+async function api(
+  method: string,
+  body?: object,
+  query = "",
+  signal?: AbortSignal,
+) {
   const r = await fetch("/api/remote" + query, {
     method,
+    signal,
     headers: { "Content-Type": "application/json" },
     ...(body ? { body: JSON.stringify(body) } : {}),
   });
@@ -102,6 +108,7 @@ export default function Web() {
     [, tick] = useState(0);
   const after = useRef(0),
     waiting = useRef(pending),
+    submitting = useRef<Promise<Receipt> | null>(null),
     refreshing = useRef(false),
     drafts = useRef<Record<string, string>>({}),
     textNow = useRef(text);
@@ -196,10 +203,22 @@ export default function Web() {
     setPending((p) => ({ ...p, [id]: type }));
     waiting.current = { ...waiting.current, [id]: type };
     setError("");
+    // Order desktop commands by click, even if two HTTP requests would arrive out of order.
+    // Only wait for D1 to enqueue the preceding command, never for its desktop action.
+    const deadline = Date.now() + 15000;
+    const submitted = Promise.resolve(submitting.current).then(() => {
+      const remaining = deadline - Date.now();
+      if (remaining <= 0) throw Error("指令已过期，请检查电脑状态。");
+      return api(
+        "POST",
+        { id, type, generation: d.generation, ...extra },
+        "",
+        AbortSignal.timeout(remaining),
+      );
+    });
+    submitting.current = submitted;
     try {
-      settle([
-        await api("POST", { id, type, generation: d.generation, ...extra }),
-      ]);
+      settle([await submitted]);
       return true;
     } catch (e) {
       if (type === "shot")
@@ -214,8 +233,11 @@ export default function Web() {
         const { [id]: _, ...rest } = p;
         return rest;
       });
+      delete drafts.current[id];
       setError(e instanceof Error ? e.message : String(e));
       return false;
+    } finally {
+      if (submitting.current === submitted) submitting.current = null;
     }
   }
 

@@ -20,10 +20,8 @@ if (host) {
     lastMessage = 0;
   let remoteEpoch = 0;
   let stopping: Promise<void> | undefined,
-    marking = false;
-  const handles = new Map<string, AudioCaptureHandle>(),
-    held = new Map<string, ArrayBuffer[]>(),
-    holding = new Set<string>();
+    marking: { id: string; held: Map<string, ArrayBuffer[]> } | undefined;
+  const handles = new Map<string, AudioCaptureHandle>();
   const queue: string[] = [];
   const report = (detail: string) => receive({ type: "error", detail });
   const direct = directTranscription(
@@ -58,11 +56,9 @@ if (host) {
     drain();
   }
   function pcm(role: string, data: ArrayBuffer) {
-    if (holding.has(role)) {
-      const frames = held.get(role) || [];
+    const frames = marking?.held.get(role);
+    if (frames) {
       frames.push(data);
-      held.set(role, frames);
-      // Worklet flush is bounded to one second. Retain its entire tail.
       return;
     }
     try {
@@ -75,10 +71,9 @@ if (host) {
   function endLocal() {
     direct.reset();
     generation++;
+    marking = undefined;
     handles.forEach((h) => h.stop());
     handles.clear();
-    held.clear();
-    holding.clear();
     phase = "idle";
   }
   async function open() {
@@ -171,6 +166,7 @@ if (host) {
   async function stop() {
     if (stopping) return stopping;
     generation++;
+    releaseMark();
     phase = "stopping";
     stopping = (async () => {
       let complete = true;
@@ -184,8 +180,6 @@ if (host) {
     })().finally(() => {
       generation++;
       handles.clear();
-      held.clear();
-      holding.clear();
       phase = "idle";
       stopping = undefined;
     });
@@ -224,33 +218,38 @@ if (host) {
       throw e;
     }
   }
-  async function command(value: Event) {
+  function releaseMark() {
+    const previous = marking;
+    marking = undefined;
+    if (previous)
+      for (const [role, frames] of previous.held)
+        for (const frame of frames) pcm(role, frame);
+  }
+  async function command(
+    value: Event,
+    waitForImages?: (signal: AbortSignal) => Promise<unknown>,
+  ) {
+    if (value.type === "cancel" && marking?.id === value.id) releaseMark();
     if (value.type === "ask" && ["starting", "stopping"].includes(phase))
       throw Error("请等待音频就绪。");
     if (value.type === "ask" && handles.size) {
       if (marking) throw Error("正在准备上一轮问题。");
-      marking = true;
+      const mark = { id: value.id, held: new Map<string, ArrayBuffer[]>() };
+      marking = mark;
       try {
         await Promise.all(
           [...handles].map(async ([role, h]) => {
             await h.flush();
-            holding.add(role);
+            if (marking === mark) mark.held.set(role, []);
           }),
         );
-        const command = direct.control(value);
-        holding.clear();
-        for (const [role, frames] of held)
-          for (const frame of frames) pcm(role, frame);
-        held.clear();
-        await command;
+        if (marking !== mark) throw Error("回答已取消或连接已变化。");
+        // control() freezes its boundary before its first await.
+        return direct.control(value, waitForImages);
       } finally {
-        holding.clear();
-        for (const [role, frames] of held)
-          for (const frame of frames) pcm(role, frame);
-        held.clear();
-        marking = false;
+        if (marking === mark) releaseMark();
       }
-    } else await direct.control(value);
+    } else await direct.control(value, waitForImages);
   }
   window.cue = {
     connect: open,
@@ -268,10 +267,7 @@ if (host) {
     resize: host.resize,
     focus: host.focus,
     menu: host.menu,
-    screenshot: async () => ({
-      ...(await host.screenshot()),
-      request_id: crypto.randomUUID(),
-    }),
+    screenshot: host.screenshot,
     uploadScreenshot: async (shot: Event) => ({
       ...(await host.request("/capture/images", "POST", shot)),
       image_url: shot.image_data,

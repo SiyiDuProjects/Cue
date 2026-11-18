@@ -11,7 +11,11 @@ export interface CueBridge {
   caption?(value: { item: string; text: string }): Promise<unknown>;
   copy(text: string): Promise<unknown>;
   connect(): Promise<unknown>;
-  command(value: Event): Promise<unknown>;
+  waitForImages?(id: string, images: string[]): Promise<unknown>;
+  command(
+    value: Event,
+    waitForImages?: (signal: AbortSignal) => Promise<unknown>,
+  ): Promise<unknown>;
   request(path: string, method?: string, body?: Event): Promise<any>;
   audio(start: boolean): Promise<unknown>;
   screenshot(): Promise<any>;

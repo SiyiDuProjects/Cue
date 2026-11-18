@@ -86,7 +86,7 @@ export default function App() {
     // The latest handlers, for web commands arriving in the event listener.
     actions = useRef<{
       toggleAudio: (source?: string) => Promise<void>;
-      shot: (receipt?: Event) => Promise<void>;
+      shot: (id: string) => Promise<void>;
     }>({ toggleAudio: async () => {}, shot: async () => {} }),
     current = useRef({
       text,
@@ -175,34 +175,53 @@ export default function App() {
     setPending(id);
     setError("");
     setExpanded(true);
-    void (async () => {
-      try {
-        while (shooting.current) {
-          if (current.current.pending !== id) return;
-          await new Promise((r) => setTimeout(r, 20));
-        }
-        await uploadQueue.current!.wait();
+    const queue = uploadQueue.current!;
+    const images = [
+      ...new Set([
+        ...s.selected,
+        ...queue.items.map((shot) => shot.request_id),
+        ...captureIDs.current,
+      ]),
+    ].slice(-8);
+    const waitForImages = async (signal: AbortSignal) => {
+      // Wait only for the images selected by this click.
+      for (;;) {
+        signal.throwIfAborted();
         if (
           current.current.pending !== id ||
-          !current.current.connected ||
-          generation !== remoteGeneration.current
+          remoteGeneration.current !== generation
+        )
+          throw Error("回答已取消或连接已变化。");
+        if (
+          !images.some(
+            (image) =>
+              captureIDs.current.includes(image) ||
+              queue.items.some((shot) => shot.request_id === image),
+          )
         )
           return;
-        await command({
+        if (queue.error) throw Error(queue.error);
+        await new Promise((resolve) => setTimeout(resolve, 30));
+      }
+    };
+    void window.cue
+      .command(
+        {
           type: "ask",
           id,
           text: value?.text ?? s.text,
-          images: current.current.selected,
+          images,
           effort: (value ? value.effort : s.effort) || undefined,
-        });
-      } catch (e) {
+        },
+        waitForImages,
+      )
+      .catch((e) => {
         if (current.current.pending === id) {
           current.current.pending = "";
           setPending("");
-          setError(String(e));
+          setError(e instanceof Error ? e.message : String(e));
         }
-      }
-    })();
+      });
     return id;
   }
   async function ask() {
@@ -215,16 +234,14 @@ export default function App() {
     setPending("");
     if (id) await command({ type: "cancel", id });
   }
-  async function captureShot(receipt?: Event) {
+  async function captureShot(id: string) {
     if (shooting.current) throw Error("截图尚未完成。");
     // Retain every accepted manual capture until its upload is confirmed.
     shooting.current = true;
     setWorking(true);
     try {
       const shot = await window.cue.screenshot();
-      if (receipt) {
-        shot.request_id = receipt.id;
-      }
+      shot.request_id = id;
       uploadQueue.current!.add(shot);
     } finally {
       shooting.current = false;
@@ -232,7 +249,15 @@ export default function App() {
     }
   }
   async function shot() {
-    const work = captureTail.current.then(() => attempt(captureShot));
+    const id = crypto.randomUUID();
+    captureIDs.current.push(id);
+    const work = captureTail.current
+      .then(() => attempt(() => captureShot(id)))
+      .finally(() => {
+        captureIDs.current = captureIDs.current.filter(
+          (pending) => pending !== id,
+        );
+      });
     captureTail.current = work.catch(() => {});
     await work;
   }
@@ -273,7 +298,7 @@ export default function App() {
         if (["starting", "stopping"].includes(phase))
           throw Error("请等待音频就绪。");
         if (type === "shot") {
-          await actions.current.shot({ type: "remote_result", id, generation });
+          await actions.current.shot(id);
           return; // Saving the image completes its command on the server.
         } else if (
           (type === "start" && phase === "idle") ||
@@ -323,8 +348,9 @@ export default function App() {
         }
       }
       if (e.type === "history") {
-        setMessages(lastHour(e.messages));
-        setPending("");
+        const recent = lastHour(e.messages);
+        setMessages(recent);
+        if (recent.some((m) => m.id === current.current.pending)) setPending("");
       }
       if (e.type === "answer") {
         if (e.message.id === current.current.pending) {
@@ -334,8 +360,8 @@ export default function App() {
           }
           const used = JSON.parse(e.message.context || "{}").images || [];
           setSelected((s) => s.filter((id) => !used.includes(id)));
+          setPending("");
         }
-        setPending("");
         setMessages((ms) =>
           ms.some((m) => m.id === e.message.id)
             ? ms.map((m) => (m.id === e.message.id ? e.message : m))
@@ -402,7 +428,7 @@ export default function App() {
       }
       if (e.type === "error") {
         setError(e.detail);
-        if (!e.id || e.id === current.current.pending) setPending("");
+        if (e.id === current.current.pending) setPending("");
       }
       if (e.type === "answer_requested") void ask();
       if (e.type === "shot_requested") void shot();

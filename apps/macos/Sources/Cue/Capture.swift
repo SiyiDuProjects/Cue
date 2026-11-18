@@ -191,7 +191,7 @@ final class AudioSink: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Se
     config.showsCursor = false
     let image = try await SCScreenshotManager.captureImage(
       contentFilter: filter, configuration: config)
-    let capturedAt = ISO8601DateFormatter().string(from: Date())
+    let capturedAt = Date().ISO8601Format(.init(includingFractionalSeconds: true))
     var prepared = image
     var data = NSBitmapImageRep(cgImage: prepared).representation(using: .png, properties: [:])
     var mime = "image/png"

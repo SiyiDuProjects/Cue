@@ -197,6 +197,9 @@ private final class AnswerWebView: WKWebView {
       // The page can load after session_ready. Replay the current connection
       // state so the local transcription client never starts disconnected.
       try await store.connect()
+    case "waitForImages":
+      guard let id = args.first as? String, let images = args.last as? [String] else { throw CueError("回答附件无效。") }
+      try await model.waitForImages(id, images)
     case "audio": try await store.audio(args.first as? Bool == true)
     case "copy":
       if let text = args.first as? String, text.count < 250000 {
@@ -237,7 +240,7 @@ private final class AnswerWebView: WKWebView {
         error?p.reject(new Error(error)):p.resolve(result);
       };
       window.cueReceive = value => window.dispatchEvent(new CustomEvent('cue:event',{detail:value}));
-      window.cue = Object.fromEntries(['command','audio','copy','ready','caption','height'].map(method=>[method,(...args)=>call(method,...args)]));
+      window.cue = Object.fromEntries(['command','audio','copy','ready','caption','height','waitForImages'].map(method=>[method,(...args)=>call(method,...args)]));
     })();
     """
 }

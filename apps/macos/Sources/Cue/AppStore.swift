@@ -17,6 +17,8 @@ import CueCore
   private var timer: Timer?
   private var remotePoll: Task<Void, Never>?
   private var remoteEpoch = UUID()
+  private let diagnosticDefaults: UserDefaults?
+  private var recordingStarted: Date?
   private var lastPump = ContinuousClock.now
   private let audioLog = Logger(subsystem: "com.siyidu.cue.mac", category: "AudioDelivery")
   private var audioGeneration = UUID()
@@ -28,8 +30,9 @@ import CueCore
   init(
     preview: Bool = false, capture: CaptureController? = nil,
     connection: SocketLink? = nil, screenshot: (() async throws -> JSON)? = nil,
-    upload: ((JSON) async throws -> JSON)? = nil
+    upload: ((JSON) async throws -> JSON)? = nil, diagnosticDefaults: UserDefaults? = nil
   ) {
+    self.diagnosticDefaults = diagnosticDefaults ?? (capture == nil && connection == nil && !preview ? .standard : nil)
     self.preview = preview
     self.capture = capture ?? CaptureController()
     self.screenshotProvider = screenshot
@@ -79,6 +82,7 @@ import CueCore
     next.onState = { [weak self] ready, detail in
       guard let self else { return }
       if !ready {
+        recordStop("cloud_disconnected")
         stopRemotePoll()
         audioGeneration = UUID()
         phase = "idle"
@@ -114,10 +118,12 @@ import CueCore
       phase = "prepared"
       return  // Publish only after the native devices have actually started.
     case "stopped":
+      recordStop("transcription_stopped")
       audioGeneration = UUID()
       phase = "idle"
       Task { _ = await self.capture.finish() }
     case "replaced":
+      recordStop("connection_replaced")
       stopRemotePoll()
       audioGeneration = UUID()
       phase = "idle"
@@ -173,6 +179,7 @@ import CueCore
       }
     }
     if let error = sink.error() {
+      recordStop("capture_error")
       onEvent(["type": "error", "detail": error])
       Task { try? await self.audio(false) }
     }
@@ -183,6 +190,16 @@ import CueCore
     if type == "error", phase == "starting" { phase = "idle"; audioGeneration = UUID() }
     event(value)
   }
+  // Record one cause per recording, on this Mac. Keep diagnostic codes only.
+  private func recordStop(_ reason: String, closeCode: Int = 0) {
+    guard let started = recordingStarted else { return }
+    recordingStarted = nil
+    guard let defaults = diagnosticDefaults else { return }
+    let key = "cue.recentRecordingStops", stopped = Date()
+    var entries = defaults.array(forKey: key) as? [[String: Any]] ?? []
+    entries.append(["at": stopped, "seconds": Int(stopped.timeIntervalSince(started)), "reason": reason, "close_code": closeCode])
+    defaults.set(Array(entries.suffix(20)), forKey: key)
+  }
   func transcriptionLog(_ value: JSON) {
     // Only allow fixed diagnostic fields from the local page. No text or tokens.
     let stage = String((value["stage"] as? String ?? "unknown").prefix(60))
@@ -190,6 +207,10 @@ import CueCore
     let kind = String((value["error_type"] as? String ?? "").prefix(80))
     let eventID = String((value["event_id"] as? String ?? "").prefix(100))
     let closeCode = value["close_code"] as? Int ?? 0
+    if stage == "connection" {
+      let known = ["openai_closed", "openai_network", "backlog", "commit_timeout", "not_owner", "invalid", "invalid_state"]
+      recordStop(known.contains(code) ? code : "transcription_error", closeCode: closeCode)
+    }
     audioLog.error("transcription_failed type=\(kind, privacy: .public) event_id=\(eventID, privacy: .public) close_code=\(closeCode) stage=\(stage, privacy: .public) code=\(code, privacy: .public)")
   }
   func forwardTranscription(_ value: JSON) throws {
@@ -224,16 +245,21 @@ import CueCore
       return
     }
     if ["ask", "cancel"].contains(value["type"] as? String ?? "") {
-      guard value["type"] as? String != "ask" || !["starting", "prepared", "stopping"].contains(phase) else {
-        throw CueError("请等待音频就绪。")
-      }
-      // PCM and its marker enter WebKit in native order; the shared client
-      // commits both OpenAI streams before sending the ordered ask to Sites.
-      pump()
-      onEvent(["type": "audio_control", "value": value])
+      try answerControl(value)
       return
     }
     try await link.send(value)
+  }
+  func answerControl(_ value: JSON) throws {
+    if preview { return }
+    guard link?.ready == true else { throw CueError("连接尚未就绪。") }
+    guard value["type"] as? String != "ask" || !["starting", "prepared", "stopping"].contains(phase) else {
+      throw CueError("请等待音频就绪。")
+    }
+    // PCM and its marker enter WebKit in native order; the shared client
+    // commits both OpenAI streams before sending the ordered ask to Sites.
+    pump()
+    onEvent(["type": "audio_control", "value": value])
   }
   func audio(_ start: Bool) async throws {
     guard !preview else { throw CueError("预览模式不会采集声音。") }
@@ -256,6 +282,7 @@ import CueCore
               _ = await capture.finish()
               throw CueError("转录启动已取消。")
             }
+            recordingStarted = Date()
             phase = "active"
             onEvent(["type": "started"])
             return
@@ -268,6 +295,7 @@ import CueCore
         throw error
       }
     } else {
+      recordStop("requested_stop")
       if phase == "stopping" { throw CueError("转录正在收尾。") }
       audioGeneration = UUID()
       phase = "stopping"
@@ -292,9 +320,8 @@ import CueCore
   func screenshot() async throws -> JSON {
     if let screenshotProvider { return try await screenshotProvider() }
     guard !preview else { throw CueError("预览模式不会截图。") }
-    var shot = try await capture.screenshot()
+    let shot = try await capture.screenshot()
     try Task.checkCancellation()
-    shot["request_id"] = UUID().uuidString.lowercased()
     return shot
   }
   func uploadShot(_ shot: JSON) async throws -> JSON {

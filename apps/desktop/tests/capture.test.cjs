@@ -61,7 +61,7 @@ test(`Windows ${type} flushes both worklets before its marker and holds later PC
         requestCaptureStream: async (role) => ({ role, getTracks: () => [] }),
         startLocalAudioCapture: ({ stream, onChunk }) => {
           const h = { onChunk, stop() {}, finish: async () => stopComplete,
-            flush: () => new Promise((resolve) => { h.flushTail = (n) => { onChunk(bytes(n)); resolve(); }; }) };
+            flush: () => new Promise((resolve, reject) => { h.rejectFlush = reject; h.flushTail = (n) => { onChunk(bytes(n)); resolve(); }; }) };
           handles.set(stream.role, h); return h;
         },
       };
@@ -84,6 +84,19 @@ test(`Windows ${type} flushes both worklets before its marker and holds later PC
   handles.get("candidate").flushTail(2);
   await mark;
   assert.deepEqual(calls, ["interviewer:1", "candidate:2", type, "interviewer:3"]);
+  const interrupted = window.cue.command({ type, id: "cancel-flush", images: [] });
+  await window.cue.command({ type: "cancel", id: "cancel-flush" });
+  handles.get("interviewer").flushTail(4);
+  handles.get("candidate").flushTail(5);
+  await assert.rejects(interrupted, /取消/);
+  const rejected = window.cue.command({ type, id: "failed-flush", images: [] });
+  handles.get("candidate").rejectFlush(Error("flush failed"));
+  await assert.rejects(rejected, /flush failed/);
+  handles.get("interviewer").flushTail(6);
+  await new Promise(setImmediate);
+  handles.get("interviewer").onChunk(bytes(7));
+  assert.equal(calls.at(-1), "interviewer:7");
+  assert.equal(calls.filter(item => item === "ask").length, 1);
   await window.cue.audio(false);
   assert.equal(events.at(-1).type, "stopped");
   await window.cue.audio(true);

@@ -62,12 +62,23 @@ export function installMacTranscription() {
     try {
       if (event.type === "pcm") direct.pcm(event.role, decodePCM(event.data));
       else if (event.type === "audio_control")
-        void direct.control(event.value).catch((error: Error) => {
-          void host.command({
-            type: "transcription_state",
-            event: { type: "error", id: event.value.id, detail: error.message },
+        void direct
+          .control(
+            event.value,
+            event.value.type === "ask" && host.waitForImages
+              ? () => host.waitForImages!(event.value.id, event.value.images)
+              : undefined,
+          )
+          .catch((error: Error) => {
+            void host.command({
+              type: "transcription_state",
+              event: {
+                type: "error",
+                id: event.value.id,
+                detail: error.message,
+              },
+            });
           });
-        });
       else if (!direct.handle(event)) receive(event);
     } catch (error) {
       direct.reset();

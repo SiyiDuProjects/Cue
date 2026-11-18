@@ -202,6 +202,9 @@ final class SyntheticPCM: @unchecked Sendable {
     let link = SocketLink(url: URL(string: "wss://example.invalid/capture/socket")!, token: "synthetic", role: "desktop", connectionFactory: { _ in socket })
     var shotCalls = 0, failShot = false, failUpload = false, uploaded = 0
     var uploadEnds: [CheckedContinuation<JSON, Error>] = []
+    let domain = "cue-test-" + UUID().uuidString
+    let defaults = UserDefaults(suiteName: domain)!
+    defer { defaults.removePersistentDomain(forName: domain) }
     let store = AppStore(capture: CaptureController { sink, _ in SyntheticSession(sink: sink, stopDelay: .zero) }, connection: link, screenshot: {
       shotCalls += 1
       if failShot { throw CueError("录屏权限未开启") }
@@ -210,17 +213,20 @@ final class SyntheticPCM: @unchecked Sendable {
       uploaded += 1
       if failUpload { throw CueError("网络中断") }
       return try await withCheckedThrowingContinuation { uploadEnds.append($0) }
-    })
-    let domain = "cue-test-" + UUID().uuidString
-    let defaults = UserDefaults(suiteName: domain)!
-    defer { defaults.removePersistentDomain(forName: domain) }
+    }, diagnosticDefaults: defaults)
     let model = ChatModel(store: store, defaults: defaults)
     model.allowRemote = true
-    var asked: [JSON] = [], tailFailure = false
+    var asked: [JSON] = [], marked: [JSON] = [], tailFailure = false
     store.onEvent = { event in
       if event["type"] as? String == "audio_control", let value = event["value"] as? JSON {
         if value["type"] as? String == "start" { socket.localStart(store) }
-        if value["type"] as? String == "ask" { asked.append(value) }
+        if value["type"] as? String == "ask", let id = value["id"] as? String, let images = value["images"] as? [String] {
+          marked.append(value)
+          Task {
+            do { try await model.waitForImages(id, images); asked.append(value) }
+            catch { model.handle(["type": "error", "id": id, "detail": error.localizedDescription]) }
+          }
+        }
         if value["type"] as? String == "stop", tailFailure { store.transcriptionState(["type": "transcription_tail", "detail": "最后一句尚未保存，正在重试。"]) }
       } else { model.handle(event) }
     }
@@ -247,7 +253,7 @@ final class SyntheticPCM: @unchecked Sendable {
     require(model.uploading == 3 && model.selected.isEmpty && uploaded == 1, "three originals queue sequentially without blocking capture")
     command("answer", "ask", extra: ["text": "follow-up", "effort": "low"])
     try await wait { receipt("answer") != nil }
-    require(receipt("answer")?["answer"] as? String == model.pending && asked.isEmpty, "ask reserves an id while waiting for all uploads")
+    require(receipt("answer")?["answer"] as? String == model.pending && asked.isEmpty && marked.first?["id"] as? String == model.pending, "ask reserves an id while waiting for all uploads")
     command("cancel", "cancel"); try await wait { receipt("cancel") != nil }
     require(model.pending.isEmpty, "cancel interrupts upload-waiting answer")
     model.text = "local question"; model.ask()
@@ -280,8 +286,11 @@ final class SyntheticPCM: @unchecked Sendable {
     command("stop", "stop"); try await wait { receipt("stop") != nil }
     require(model.audio == "idle", "remote stop")
     command("start-again", "start"); try await wait { receipt("start-again") != nil }; tailFailure = true
+    store.transcriptionLog(["stage": "connection", "code": "openai_closed", "close_code": 1006])
     command("stop-failed", "stop"); try await wait { receipt("stop-failed") != nil }
     require(receipt("stop-failed")?["ok"] as? Bool == true && model.error.contains("尚未保存"), "local stop succeeds and tail save failure is separate")
+    let stops = defaults.array(forKey: "cue.recentRecordingStops") as? [JSON] ?? []
+    require(stops.compactMap { $0["reason"] as? String } == ["requested_stop", "openai_closed"] && stops.last?["close_code"] as? Int == 1006, "native stop log preserves the first reason and code for each recording")
     model.allowRemote = false
     command("disabled", "shot"); try await wait { receipt("disabled") != nil }
     require(receipt("disabled")?["ok"] as? Bool == false && shotCalls == 5, "disabled control cannot capture")
@@ -310,6 +319,17 @@ final class SyntheticPCM: @unchecked Sendable {
       try await wait { !uploadEnds.isEmpty }
       uploadEnds.removeFirst().resume(returning: ["id": "queued-\(n)"])
     }
+    try await wait { model.uploading == 0 }
+    command("before-question", "shot")
+    command("batch-question", "ask")
+    command("after-question", "shot")
+    let pages = marked.last?["images"] as? [String] ?? []
+    require(pages.last == "before-question" && !pages.contains("after-question"), "remote answer fixes selected pages before the next command in the batch")
+    try await wait { !uploadEnds.isEmpty }
+    uploadEnds.removeFirst().resume(returning: ["id": "before-question"])
+    try await wait { asked.last?["id"] as? String == model.pending && !uploadEnds.isEmpty }
+    require(model.uploading == 1, "an upload from the next question does not delay the preceding answer")
+    uploadEnds.removeFirst().resume(returning: ["id": "after-question"])
     try await wait { model.uploading == 0 }
     try await wait { socket.sent.contains { $0["type"] as? String == "remote_state" && $0["version"] as? Int == 3 } }
     await store.disconnect()

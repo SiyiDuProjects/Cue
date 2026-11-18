@@ -116,6 +116,7 @@ export class DirectTranscription {
       return false;
     }
     if (["disconnected", "replaced"].includes(event.type)) {
+      if (this.phase === "active") this.record("connection", event.type);
       this.connected = false;
       this.reset();
       return false;
@@ -175,7 +176,7 @@ export class DirectTranscription {
     for (const c of this.channels.values()) {
       for (const t of c.turns.values())
         if (t.dirty && now - t.published >= 1000) this.publish(c, t);
-      if (c.ws.bufferedAmount > 64000) {
+      if (this.active.get(c.role) === c && c.ws.bufferedAmount > 64000) {
         c.backlog ??= now;
         if (now - c.backlog >= 10000) {
           this.failed("音频连接持续积压超过 10 秒，转录已停止。", "backlog");
@@ -186,11 +187,18 @@ export class DirectTranscription {
         this.phase === "active" &&
         !this.asking &&
         this.active.get(c.role) === c &&
-        now - c.opened >= this.rotationMs &&
+        now >= c.rotateAt &&
         !c.rotating
       ) {
         c.rotating = true;
-        void this.rotate(c).catch((e) => this.failed(e.message, "rotation"));
+        const epoch = this.epoch;
+        void this.rotate(c).catch(() => {
+          if (epoch !== this.epoch || this.active.get(c.role) !== c) return;
+          // A replacement failed to open. The existing upstream still carries audio.
+          c.rotating = false;
+          c.rotateAt = this.now() + 30000;
+          this.record("rotation", "replacement_unavailable");
+        });
       }
     }
     if (this.connected)
@@ -239,6 +247,7 @@ export class DirectTranscription {
   async start() {
     if (this.phase !== "idle" || !this.connected)
       throw Error("连接未就绪或转录已开启。");
+    this.asking?.abort(Error("录音状态已变化，请重新回答。"));
     this.phase = "starting";
     const epoch = ++this.epoch;
     try {
@@ -277,6 +286,7 @@ export class DirectTranscription {
     );
     const c = {
       id: config.stream,
+      epoch,
       role: config.role,
       ws,
       vad,
@@ -289,16 +299,29 @@ export class DirectTranscription {
       remainder: [],
       ordinal: 0,
       pending: null,
+      commitFailure: null,
       requested: false,
       turns: new Map(),
       finished: new Set(),
-      failures: [],
       held: [],
       holding: false,
-      opened: this.now(),
+      rotateAt: this.now() + this.rotationMs,
     };
     this.channels.set(c.id, c);
     this.ensureTimer();
+    const disconnect = (detail, code, extra) => {
+      if (c.closed) return;
+      // A retiring or not-yet-selected upstream must not stop a healthy pair.
+      if (
+        epoch === this.epoch &&
+        (this.active.get(c.role) === c || this.phase === "starting")
+      )
+        this.failed(detail, code, extra);
+      else {
+        this.record("upstream", code, extra);
+        this.close(c);
+      }
+    };
     ws.addEventListener("open", () => {
       if (!c.closed)
         ws.send(
@@ -318,26 +341,31 @@ export class DirectTranscription {
         this.event(c, e);
       } catch (error) {
         this.record("event", "invalid_state");
-        this.failed(error.message, "invalid_state");
+        disconnect(error.message, "invalid_state");
       }
     });
     ws.addEventListener("close", (e) => {
       if (!c.closed)
-        this.failed(`语音连接已断开（${e.code ?? 0}）。`, "openai_closed", {
+        disconnect(`语音连接已断开（${e.code ?? 0}）。`, "openai_closed", {
           close_code: e.code ?? 0,
         });
     });
     ws.addEventListener("error", () => {
-      if (!c.closed) this.failed("语音连接发生网络错误。", "openai_network");
+      disconnect("语音连接发生网络错误。", "openai_network");
     });
-    await this.wait(
-      () => {
-        if (c.closed) throw Error("语音连接已关闭。");
-        return c.ready;
-      },
-      "语音连接超时。",
-      10000,
-    );
+    try {
+      await this.wait(
+        () => {
+          if (c.closed) throw Error("语音连接已关闭。");
+          return c.ready;
+        },
+        "语音连接超时。",
+        10000,
+      );
+    } catch (error) {
+      this.close(c);
+      throw error;
+    }
     return c;
   }
   event(c, e) {
@@ -363,15 +391,18 @@ export class DirectTranscription {
           ? null
           : Error(`音频提交失败（${code}）。`);
         if (error) {
-          c.failures.push(error);
-          this.emit({ type: "error", detail: error.message });
+          c.commitFailure = error;
+          this.emit({ type: "transcription_tail", detail: error.message });
         }
         pending.error = error;
         pending.done = true;
         this.notify();
         if (c.requested && !c.holding) this.commit(c);
-      } else if (!c.ready) this.failed(`语音配置被拒绝（${code}）。`, code);
-      else
+      } else if (!c.ready) {
+        if (c.epoch === this.epoch && this.phase === "starting")
+          this.failed(`语音配置被拒绝（${code}）。`, code);
+        else this.close(c);
+      } else
         this.emit({ type: "error", detail: `语音服务报告错误（${code}）。` });
       return;
     }
@@ -523,8 +554,9 @@ export class DirectTranscription {
     p.timer = later(() => {
       if (c.pending === p) {
         p.error = Error("语音提交在 5 秒内未获确认，转录已停止。");
-        c.failures.push(p.error);
-        this.failed(p.error.message, "commit_timeout");
+        if (this.active.get(c.role) === c)
+          this.failed(p.error.message, "commit_timeout");
+        else this.close(c);
       }
     }, this.commitMs);
     c.ws.send(
@@ -553,7 +585,8 @@ export class DirectTranscription {
           return result.records;
         }
         const records = [...c.turns.values()],
-          previous = c.pending;
+          previous = c.pending,
+          earlierFailure = c.commitFailure;
         try {
           if (previous)
             await this.wait(
@@ -583,8 +616,11 @@ export class DirectTranscription {
             );
           cuts[c.id] =
             p?.turn?.ordinal ?? previous?.turn?.ordinal ?? frozenOrdinal;
-          const error = previous?.error || p?.error || c.failures[0];
-          if (error) throw error;
+          const error = p?.error || previous?.error || earlierFailure;
+          if (error) {
+            if (c.commitFailure === error) c.commitFailure = null;
+            throw error;
+          }
           for (const t of [previous?.turn, p?.turn])
             if (t && !records.includes(t)) records.push(t);
           return records;
@@ -626,16 +662,17 @@ export class DirectTranscription {
       signal,
     );
   }
-  async control(value) {
+  async control(value, waitForImages) {
     if (value.type === "start") return this.start();
     if (value.type === "stop") return this.stop();
     if (value.type === "cancel") {
-      this.asking?.abort();
+      if (this.asking?.id === value.id) this.asking.abort();
       return this.transmit(value);
     }
     if (value.type !== "ask") return this.transmit(value);
     if (this.asking) throw Error("正在准备上一轮回答。");
     const abort = new AbortController();
+    abort.id = value.id;
     this.asking = abort;
     try {
       const channels = [...this.channels.values()].filter((c) => !c.closed);
@@ -643,6 +680,9 @@ export class DirectTranscription {
       const { cut, records } = await this.boundary(channels, abort.signal);
       for (const t of retained) if (!records.includes(t)) records.push(t);
       await this.saved(records, abort.signal);
+      abort.signal.throwIfAborted();
+      if (waitForImages)
+        await observe(waitForImages(abort.signal), abort.signal);
       abort.signal.throwIfAborted();
       await this.transmit({ ...value, cut });
     } catch (error) {
@@ -741,8 +781,6 @@ export class DirectTranscription {
         this.publish(c, t);
       }
     c.vad.destroy();
-    if (this.active.get(c.role) === c) this.active.delete(c.role);
-    this.channels.delete(c.id);
     c.ws.close();
     this.notify();
   }

@@ -230,6 +230,8 @@ test("matched commit rejection is a failed boundary even without an item or ordi
   a.final("next");
   await settle();
   assert.equal(f.channel().ordinal, 1);
+  await f.direct.control({ type: "ask", id: "retry-question" });
+  assert.equal(f.sent.at(-1).id, "retry-question");
 });
 test("a failed transcription is terminal for ACK retirement but cannot start an answer", async (t) => {
   const f = fixture(t),
@@ -389,4 +391,45 @@ test("55-minute handover preserves old tails and answers include both sides of t
   await settle();
   assert(a.closed && b.closed);
   assert.equal(Object.keys(f.sent.find((v) => v.type === "ask").cut).length, 4);
+});
+test("replacement failure keeps recording; stopping during the next rotation leaves the new recording alone", async (t) => {
+  const f = fixture(t);
+  const originals = await f.start();
+  f.setToken(false);
+  f.advance(55 * 60000);
+  for (const id of [...f.direct.tokens.keys()])
+    f.direct.handle({ type: "error", id, detail: "token unavailable" });
+  await settle();
+  assert.equal(f.direct.phase, "active");
+  f.pcm();
+  assert.equal(originals[0].sent.at(-1).type, "input_audio_buffer.append");
+  f.advance(29999);
+  assert.equal(f.direct.tokens.size, 0);
+  f.advance(1);
+  assert.equal(f.direct.tokens.size, 2);
+  f.direct.stop();
+  f.setToken(true);
+  await f.start();
+  originals[0].close();
+  await settle();
+  assert.equal(f.direct.phase, "active");
+  assert.deepEqual(f.failures, []);
+});
+
+test("an automatic commit rejected just before a click is reported once", async (t) => {
+  const f = fixture(t),
+    [a] = await f.start();
+  f.pcm();
+  const commit = f.direct.commit(f.channel());
+  a.receive({
+    type: "error",
+    error: { event_id: commit.id, code: "invalid_value" },
+  });
+  await assert.rejects(
+    f.direct.control({ type: "ask", id: "missing-speech" }),
+    /提交失败/,
+  );
+  assert(!f.sent.some((v) => v.type === "ask"));
+  await f.direct.control({ type: "ask", id: "next-question" });
+  assert.equal(f.sent.at(-1).id, "next-question");
 });

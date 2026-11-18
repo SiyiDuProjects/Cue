@@ -401,3 +401,37 @@ test("partial speech read before finalization is returned again with its correct
   assert.equal(final.transcripts[0].text, "array is NOT sorted");
   assert.equal(final.transcripts[0].id, partial.transcripts[0].id);
 });
+test("an image uploading across a question change preserves the clicked question and its selected pages", async (t) => {
+  const f = await setup(t);
+  await f.sentence("before", "CLICKED_QUESTION");
+  let finish, startedWaiting;
+  const waiting = new Promise((resolve) => {
+    startedWaiting = resolve;
+  });
+  const uploading = new Promise((resolve) => {
+    finish = resolve;
+  });
+  const ask = f.client.control(
+    { type: "ask", id: "image-wait", text: "", images: ["selected"] },
+    () => {
+      startedWaiting();
+      return uploading;
+    },
+  );
+  await waiting;
+  await f.sentence("after", "FOLLOWING_QUESTION");
+  await f.image("later", 12);
+  assert.equal(f.requests.length, 0);
+  await f.image("selected", 12);
+  finish();
+  await ask;
+  await f.drain();
+  assert.equal(f.requests.length, 1);
+  const current = f.requests[0].input.at(-1).content;
+  assert.match(current[0].text, /CLICKED_QUESTION/);
+  assert.doesNotMatch(current[0].text, /FOLLOWING_QUESTION/);
+  assert.deepEqual(
+    current.filter((p) => p.type === "input_image").map((p) => p.image_url),
+    ["data:image/png;base64," + Buffer.alloc(12, "s").toString("base64")],
+  );
+});
